@@ -59,7 +59,6 @@ def chat(agent: str, req: ChatRequest):
     cwd = AGENTS[agent]["cwd"]
     session_id = sessions[agent]
 
-    # claudeコマンドの組み立て
     cmd = ["claude"]
     if session_id:
         cmd += ["--resume", session_id]
@@ -91,14 +90,16 @@ def end_session(agent: str):
     return {"status": "ok", "agent": agent}
 
 
-@app.get("/status", response_model=StatusResponse)
-def get_status():
-    """rate-limits.jsonlから最新のusage情報を返す"""
+@app.get("/status/{agent}", response_model=StatusResponse)
+def get_status(agent: str):
+    """rate-limits.jsonlから最新のusage情報とエージェントのモデルを返す"""
+    if agent not in AGENTS:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
+
     log_path = Path(RATE_LIMITS_LOG)
     if not log_path.exists():
         raise HTTPException(status_code=503, detail="rate-limits log not found")
 
-    # 最終行を取得
     last_line = None
     with open(log_path) as f:
         for line in f:
@@ -111,7 +112,7 @@ def get_status():
 
     data = json.loads(last_line)
     return StatusResponse(
-        model=data["model"],
+        model=AGENTS[agent].get("model", data["model"]),
         five_hour_pct=data["five_hour_pct"],
         seven_day_pct=data["seven_day_pct"],
         context_pct=data["context_pct"],
