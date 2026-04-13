@@ -379,8 +379,8 @@ async def reconnect_stream(agent: str, from_pos: int = Query(default=0, alias="f
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
 
     state = stream_states[agent]
-    if state.complete:
-        return Response(status_code=204)  # 処理中なし
+    if state.complete and from_pos >= len(state.buffer):
+        return Response(status_code=204)  # 完了済み かつ 未送信データなし
 
     async def generate():
         sent = max(0, from_pos)  # クライアントが既に受け取った位置から再開

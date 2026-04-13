@@ -25,7 +25,13 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [previewPath, setPreviewPath] = useState(null)
   const [treeOpen, setTreeOpen] = useState(false)
+  // スクロール制御
+  const [showScrollBtn, setShowScrollBtn] = useState(false)
+  const [hasNew, setHasNew] = useState(false)
+  const isAtBottomRef = useRef(true)
+  const messagesRef = useRef(null)
   const bottomRef = useRef(null)
+  const msgLengthRef = useRef({ agent_a: 0, agent_b: 0 })
   const menuRef = useRef(null)
   const abortControllers = useRef({ agent_a: null, agent_b: null })
   const fileInputRef = useRef(null)
@@ -69,12 +75,75 @@ export default function App() {
     localStorage.setItem('cpc_messages', JSON.stringify(toSave))
   }, [messages])
 
-  useEffect(() => {
+  // スクロールハンドラ
+  const handleScroll = () => {
+    const el = messagesRef.current
+    if (!el) return
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30
+    isAtBottomRef.current = atBottom
+    setShowScrollBtn(!atBottom)
+    if (atBottom) setHasNew(false)
+  }
+
+  const scrollToBottom = () => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, activeAgent])
+    setHasNew(false)
+  }
+
+  // 新着メッセージ時の自動スクロール（タブ切り替えは別のuseEffect）
+  useEffect(() => {
+    const currentLen = messages[activeAgent].length
+    const prevLen = msgLengthRef.current[activeAgent]
+    msgLengthRef.current[activeAgent] = currentLen
+
+    if (isAtBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    } else if (currentLen > prevLen) {
+      // 上にいる間に新着メッセージ
+      setHasNew(true)
+    }
+  }, [messages])
+
+  // タブ切り替え時は常に最下部へ
+  useEffect(() => {
+    isAtBottomRef.current = true
+    setShowScrollBtn(false)
+    setHasNew(false)
+    msgLengthRef.current[activeAgent] = messages[activeAgent].length
+    setTimeout(() => {
+      bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+    }, 0)
+  }, [activeAgent])
+
+  // 画面回転時のスクロール位置保持
+  useEffect(() => {
+    const el = messagesRef.current
+    if (!el) return
+    let savedScrollTop = null
+
+    const onOrientationChange = () => {
+      savedScrollTop = isAtBottomRef.current ? null : el.scrollTop
+    }
+    const onResize = () => {
+      if (isAtBottomRef.current) {
+        bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+      } else if (savedScrollTop !== null) {
+        requestAnimationFrame(() => {
+          el.scrollTop = savedScrollTop
+          savedScrollTop = null
+        })
+      }
+    }
+
+    window.addEventListener('orientationchange', onOrientationChange)
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('orientationchange', onOrientationChange)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [])
 
   // 処理中ストリームへの再接続チェック（重複防止つき）
-  // forceReconnect=true の時はloading中でも強制的に既存接続を切って再接続（バックグラウンド復帰時）
   const checkAndReconnect = async (forceReconnect = false) => {
     for (const agent of AGENTS) {
       if (reconnectingRef.current[agent]) continue
@@ -82,7 +151,6 @@ export default function App() {
       try {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
         if (s.streaming) {
-          // 既存の接続を切断してから再接続
           if (abortControllers.current[agent]) {
             abortControllers.current[agent].abort()
             abortControllers.current[agent] = null
@@ -96,11 +164,10 @@ export default function App() {
     }
   }
 
-  // アプリ起動時チェック（アプリ切り→再起動でも復帰）
+  // アプリ起動時チェック
   useEffect(() => { checkAndReconnect() }, [])
 
-  // アプリ復帰時チェック（ホーム画面→戻り）
-  // forceReconnect=true: loading中でも強制再接続（バックグラウンドで接続が死んでいる可能性があるため）
+  // アプリ復帰時チェック
   useEffect(() => {
     const handle = () => { if (!document.hidden) checkAndReconnect(true) }
     document.addEventListener('visibilitychange', handle)
@@ -132,7 +199,6 @@ export default function App() {
     if (!text && files.length === 0) return
     if (loading[agent]) return
 
-    // ユーザーメッセージをprewiewつきで追加
     const imageUrls = files
       .filter(f => SUPPORTED_IMAGE_TYPES.includes(f.type))
       .map(f => URL.createObjectURL(f))
@@ -157,7 +223,6 @@ export default function App() {
     const controller = new AbortController()
     abortControllers.current[agent] = controller
 
-    // 新しいメッセージ開始 → サーバー側バッファもリセットされるのでpos初期化
     saveBufPos(agent, 0)
     let localPos = 0
 
@@ -193,7 +258,6 @@ export default function App() {
           const data = line.slice(6).trim()
           if (!data) continue
 
-          // 受信するたびに位置を更新（切断時に再開できるように）
           localPos++
           saveBufPos(agent, localPos)
 
@@ -233,21 +297,26 @@ export default function App() {
       }
     } catch (e) {
       if (e.name === 'AbortError') return
-      // バックグラウンドで処理中 or 既に応答が届いている場合はエラーを出さない
+      // streaming 完了済みでもバッファに未送信データがある可能性があるため常に reconnect を試みる
+      // バックエンドの reconnect は complete=True でも from_pos < len(buffer) なら返す
       try {
-        const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
-        if (s.streaming) {
-          reconnectStream(agent)
-          return
+        const gotData = await reconnectStream(agent)
+        if (!gotData) {
+          setMessages(prev => {
+            const msgs = prev[agent]
+            const last = msgs[msgs.length - 1]
+            if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
+            return { ...prev, [agent]: [...msgs, { role: 'error', text: '送信失敗' }] }
+          })
         }
-      } catch {}
-      // 最後のagentメッセージにテキストが既にある = 応答は届いているので送信失敗は出さない
-      setMessages(prev => {
-        const msgs = prev[agent]
-        const last = msgs[msgs.length - 1]
-        if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
-        return { ...prev, [agent]: [...msgs, { role: 'error', text: '送信失敗' }] }
-      })
+      } catch {
+        setMessages(prev => {
+          const msgs = prev[agent]
+          const last = msgs[msgs.length - 1]
+          if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
+          return { ...prev, [agent]: [...msgs, { role: 'error', text: '送信失敗' }] }
+        })
+      }
     } finally {
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
@@ -261,14 +330,13 @@ export default function App() {
     }
   }
 
+  // reconnect: 204 なら false、データあり(ストリーミング完了)なら true を返す
   const reconnectStream = async (agent) => {
-    // 既読位置以降だけ受け取る（バックグラウンド中に進んだ分 or 初回から）
     const fromPos = bufferPosRef.current[agent] ?? 0
     const res = await fetch(`${API_BASE}/chat/${agent}/reconnect?from=${fromPos}`)
-    if (res.status === 204) return  // 処理中なし
+    if (res.status === 204) return false
 
     setLoading(prev => ({ ...prev, [agent]: true }))
-    // 受け皿を追加（ストリーミング中に表示を更新するため）
     setMessages(prev => {
       const msgs = prev[agent]
       const last = msgs[msgs.length - 1]
@@ -322,6 +390,7 @@ export default function App() {
           } catch {}
         }
       }
+      return true
     } finally {
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
@@ -404,68 +473,78 @@ export default function App() {
       </div>
 
       {/* メッセージ一覧 */}
-      <div className="messages">
-        {messages[activeAgent].map((msg, i) => (
-          <div key={i} className={`message ${msg.role}`}>
-            {msg.role === 'user' && (msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
-              <div className="user-block">
-                {msg.imageUrls?.length > 0 && (
-                  <div className="attach-images">
-                    {msg.imageUrls.map((url, j) => (
-                      <img key={j} src={url} className="msg-image" alt="" />
-                    ))}
-                  </div>
-                )}
-                {msg.fileNames?.length > 0 && (
-                  <div className="attach-files">
-                    {msg.fileNames.map((name, j) => (
-                      <span key={j} className="file-chip">📄 {name}</span>
-                    ))}
-                  </div>
-                )}
-                {msg.text && (
-                  <span className="bubble">
-                    <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
-                  </span>
-                )}
-              </div>
-            ) : msg.role === 'agent' && (msg.tools?.length > 0 || msg.thinking) ? (
-              <div className="agent-block">
-                {msg.thinking && (
-                  <details className="thinking-block">
-                    <summary>💭 thinking</summary>
-                    <pre className="thinking-text">{msg.thinking}</pre>
-                  </details>
-                )}
-                {msg.tools?.length > 0 && (
-                  <div className="tool-log">
-                    {msg.tools.map((t, ti) => (
-                      <div key={ti} className={`tool-line tool-${t.name.toLowerCase()}`}>
-                        {t.label}
-                      </div>
-                    ))}
-                    {msg.streaming && <div className="tool-line tool-pending">…</div>}
-                  </div>
-                )}
-                {msg.text && (
-                  <span className="bubble">
-                    <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
-                  </span>
-                )}
-              </div>
-            ) : (
-              <span className="bubble">
-                <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
-              </span>
-            )}
-          </div>
-        ))}
-        {loading[activeAgent] && !messages[activeAgent].some(m => m.streaming) && (
-          <div className="message agent">
-            <span className="bubble dim">…</span>
-          </div>
+      <div className="messages-container">
+        <div className="messages" ref={messagesRef} onScroll={handleScroll}>
+          {messages[activeAgent].map((msg, i) => (
+            <div key={i} className={`message ${msg.role}`}>
+              {msg.role === 'user' && (msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
+                <div className="user-block">
+                  {msg.imageUrls?.length > 0 && (
+                    <div className="attach-images">
+                      {msg.imageUrls.map((url, j) => (
+                        <img key={j} src={url} className="msg-image" alt="" />
+                      ))}
+                    </div>
+                  )}
+                  {msg.fileNames?.length > 0 && (
+                    <div className="attach-files">
+                      {msg.fileNames.map((name, j) => (
+                        <span key={j} className="file-chip">📄 {name}</span>
+                      ))}
+                    </div>
+                  )}
+                  {msg.text && (
+                    <span className="bubble">
+                      <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
+                    </span>
+                  )}
+                </div>
+              ) : msg.role === 'agent' && (msg.tools?.length > 0 || msg.thinking) ? (
+                <div className="agent-block">
+                  {msg.thinking && (
+                    <details className="thinking-block">
+                      <summary>💭 thinking</summary>
+                      <pre className="thinking-text">{msg.thinking}</pre>
+                    </details>
+                  )}
+                  {msg.tools?.length > 0 && (
+                    <div className="tool-log">
+                      {msg.tools.map((t, ti) => (
+                        <div key={ti} className={`tool-line tool-${t.name.toLowerCase()}`}>
+                          {t.label}
+                        </div>
+                      ))}
+                      {msg.streaming && <div className="tool-line tool-pending">…</div>}
+                    </div>
+                  )}
+                  {msg.text && (
+                    <span className="bubble">
+                      <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <span className="bubble">
+                  <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
+                </span>
+              )}
+            </div>
+          ))}
+          {loading[activeAgent] && !messages[activeAgent].some(m => m.streaming) && (
+            <div className="message agent">
+              <span className="bubble dim">…</span>
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* ↓ スクロールボタン */}
+        {showScrollBtn && (
+          <button className="scroll-btn" onClick={scrollToBottom}>
+            ↓
+            {hasNew && <span className="scroll-dot" />}
+          </button>
         )}
-        <div ref={bottomRef} />
       </div>
 
       {/* 添付ファイルプレビュー */}
