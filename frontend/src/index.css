@@ -1,0 +1,32 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #111;
+  --bg2: #1a1a1a;
+  --bg3: #222;
+  --border: #333;
+  --text: #e5e5e5;
+  --text-dim: #666;
+  --accent: #7c6fff;
+  --green: #4ade80;
+  --yellow: #facc15;
+  --red: #f87171;
+
+  font-family: system-ui, sans-serif;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+body {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+#root {
+  height: 100dvh;
+}
