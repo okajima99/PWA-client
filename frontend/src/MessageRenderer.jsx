@@ -1,7 +1,6 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-// ~/... または /Users/... で始まるパスを cpc:// リンクに変換
 const PATH_RE = /(~\/[^\s`"')\]]+|\/Users\/[^\s`"')\]]+)/g
 
 function preprocessPaths(text) {
@@ -12,7 +11,6 @@ function preprocessPaths(text) {
 
 export default function MessageRenderer({ text, onOpenFile, markdown }) {
   if (!markdown) {
-    // Markdownオフ: パスだけリンク化してプレーンテキスト表示
     const parts = []
     let last = 0
     let match
@@ -29,7 +27,6 @@ export default function MessageRenderer({ text, onOpenFile, markdown }) {
     return <span style={{ whiteSpace: 'pre-wrap' }}>{parts}</span>
   }
 
-  // Markdownオン
   const processed = preprocessPaths(text)
 
   return (
@@ -47,10 +44,15 @@ export default function MessageRenderer({ text, onOpenFile, markdown }) {
           }
           return <a href={href} target="_blank" rel="noreferrer">{children}</a>
         },
-        // コードブロックのスタイル
-        code({ inline, children }) {
-          if (inline) return <code className="inline-code">{children}</code>
-          return <pre className="md-code"><code>{children}</code></pre>
+        // v10: preでコードブロック、codeでインラインコードを処理
+        pre({ children }) {
+          return <pre className="md-code">{children}</pre>
+        },
+        code({ className, children }) {
+          // classNameがある = コードブロック内のcode（preが囲む）
+          // classNameがない = インラインコード
+          if (!className) return <code className="inline-code">{children}</code>
+          return <code className={className}>{children}</code>
         },
       }}
     >
