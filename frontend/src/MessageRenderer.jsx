@@ -5,7 +5,9 @@ import remarkGfm from 'remark-gfm'
 const PATH_RE = /(~\/[^\s`"')\]]+|\/Users\/[^\s`"')\]]+)/g
 
 function preprocessPaths(text) {
-  return text.replace(PATH_RE, (match) => `[${match}](cpc://${match})`)
+  return text.replace(PATH_RE, (match) =>
+    `[${match}](cpc://${encodeURIComponent(match)})`
+  )
 }
 
 export default function MessageRenderer({ text, onOpenFile, markdown }) {
@@ -36,7 +38,7 @@ export default function MessageRenderer({ text, onOpenFile, markdown }) {
       components={{
         a({ href, children }) {
           if (href?.startsWith('cpc://')) {
-            const path = href.slice('cpc://'.length)
+            const path = decodeURIComponent(href.slice('cpc://'.length))
             return (
               <span className="file-link" onClick={() => onOpenFile(path)}>
                 {children}
