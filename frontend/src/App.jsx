@@ -23,6 +23,9 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [previewPath, setPreviewPath] = useState(null)
   const [treeOpen, setTreeOpen] = useState(false)
+  const [markdownOn, setMarkdownOn] = useState(() => {
+    return localStorage.getItem('cpc_markdown') !== 'false'
+  })
   const bottomRef = useRef(null)
   const menuRef = useRef(null)
 
@@ -143,7 +146,7 @@ export default function App() {
         {messages[activeAgent].map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
             <span className="bubble">
-              <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
+              <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} markdown={markdownOn} />
             </span>
           </div>
         ))}
@@ -170,6 +173,14 @@ export default function App() {
             <div className="action-menu">
               <button onClick={() => { setTreeOpen(true); setMenuOpen(false) }} className="menu-item">
                 ファイルツリー
+              </button>
+              <button onClick={() => {
+                const next = !markdownOn
+                setMarkdownOn(next)
+                localStorage.setItem('cpc_markdown', String(next))
+                setMenuOpen(false)
+              }} className="menu-item">
+                {markdownOn ? 'Markdown OFF' : 'Markdown ON'}
               </button>
               <button onClick={endSession} className="menu-item end">
                 セッション終了
