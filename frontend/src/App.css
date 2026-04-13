@@ -54,13 +54,50 @@
 }
 
 /* メッセージ */
-.messages {
+.messages-container {
   flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.messages {
+  height: 100%;
   overflow-y: auto;
   padding: 12px 6px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* ↓ スクロールボタン */
+.scroll-btn {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 18px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  z-index: 10;
+}
+
+.scroll-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
 }
 
 .message {
@@ -73,7 +110,7 @@
 .message.error { justify-content: flex-start; }
 
 .bubble {
-  max-width: 94%;
+  max-width: 80%;
   padding: 8px 12px;
   border-radius: 12px;
   font-size: 14px;
@@ -321,7 +358,7 @@ button:disabled {
   flex-direction: column;
   align-items: flex-end;
   gap: 4px;
-  max-width: 94%;
+  max-width: 80%;
 }
 
 .attach-images {
@@ -375,7 +412,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-width: 94%;
+  max-width: 85%;
 }
 
 /* Markdownスタイル */
