@@ -2,9 +2,11 @@ import json
 import subprocess
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+HOME = Path.home()
 
 # --- 設定読み込み ---
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -119,3 +121,48 @@ def get_status(agent: str):
         five_hour_resets_at=data["five_hour_resets_at"],
         seven_day_resets_at=data["seven_day_resets_at"],
     )
+
+
+def _resolve_safe(path_str: str) -> Path:
+    """パスを解決してHOME配下かチェック。違う場合は403を返す"""
+    resolved = Path(path_str.replace("~", str(HOME))).resolve()
+    if not str(resolved).startswith(str(HOME)):
+        raise HTTPException(status_code=403, detail="Access denied")
+    return resolved
+
+
+@app.get("/file")
+def get_file(path: str = Query(...)):
+    """ファイル内容をテキストで返す（HOME配下のみ）"""
+    resolved = _resolve_safe(path)
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    if not resolved.is_file():
+        raise HTTPException(status_code=400, detail="Not a file")
+    try:
+        content = resolved.read_text(errors="replace")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"path": str(resolved), "content": content}
+
+
+@app.get("/files/tree")
+def get_tree(path: str = Query(default="~")):
+    """ディレクトリ一覧を返す（HOME配下のみ）"""
+    resolved = _resolve_safe(path)
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail="Directory not found")
+    if not resolved.is_dir():
+        raise HTTPException(status_code=400, detail="Not a directory")
+
+    entries = []
+    try:
+        for entry in sorted(resolved.iterdir(), key=lambda e: (e.is_file(), e.name)):
+            entries.append({
+                "name": entry.name,
+                "path": str(entry),
+                "is_dir": entry.is_dir(),
+            })
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return {"path": str(resolved), "entries": entries}
