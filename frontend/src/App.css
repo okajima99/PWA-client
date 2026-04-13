@@ -240,52 +240,12 @@ button:disabled {
   color: #fff;
 }
 
-/* thinkingブロック */
+/* エージェント応答ブロック（ツールログ + バブル） */
 .agent-block {
   display: flex;
   flex-direction: column;
   gap: 6px;
   max-width: 85%;
-}
-
-.thinking-block {
-  border-left: 2px solid var(--text-dim);
-  padding-left: 8px;
-  font-size: 11px;
-}
-
-.thinking-toggle {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  border-radius: 0;
-  color: var(--text-dim);
-  font-family: 'Menlo', 'Monaco', monospace;
-  font-size: 11px;
-  font-weight: 400;
-  padding: 0 0 4px 0;
-  cursor: pointer;
-  opacity: 0.7;
-}
-
-.thinking-toggle:hover {
-  opacity: 1;
-}
-
-.thinking-content {
-  color: var(--text-dim);
-  font-family: 'Menlo', 'Monaco', monospace;
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 500px;
-  overflow-y: auto;
-  opacity: 0.75;
 }
 
 /* Markdownスタイル */
