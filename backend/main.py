@@ -358,7 +358,35 @@ def get_status(agent: str):
         "seven_day_pct": shared_status["seven_day_pct"],
         "five_hour_resets_at": shared_status["five_hour_resets_at"],
         "seven_day_resets_at": shared_status["seven_day_resets_at"],
+        "streaming": not stream_states[agent].complete,
     }
+
+
+@app.get("/chat/{agent}/reconnect")
+async def reconnect_stream(agent: str):
+    """バックグラウンドで処理中のストリームに再接続する"""
+    if agent not in AGENTS:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
+
+    state = stream_states[agent]
+    if state.complete:
+        return Response(status_code=204)  # 処理中なし
+
+    async def generate():
+        sent = 0
+        while True:
+            while sent < len(state.buffer):
+                yield state.buffer[sent]
+                sent += 1
+            if state.complete and sent >= len(state.buffer):
+                break
+            await asyncio.sleep(0.05)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # --- Anthropic リバースプロキシ ---

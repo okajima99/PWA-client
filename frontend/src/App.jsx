@@ -57,6 +57,22 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, activeAgent])
 
+  // アプリ復帰時に処理中のストリームがあれば自動再接続
+  useEffect(() => {
+    const handleVisibility = async () => {
+      if (document.hidden) return
+      for (const agent of AGENTS) {
+        if (loading[agent]) continue  // すでに受信中
+        try {
+          const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
+          if (s.streaming) reconnectStream(agent)
+        } catch {}
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [loading])
+
   const handleFileSelect = (e) => {
     const agent = activeAgent
     const newFiles = Array.from(e.target.files || [])
@@ -174,12 +190,19 @@ export default function App() {
         }
       }
     } catch (e) {
-      if (e.name !== 'AbortError') {
-        setMessages(prev => ({
-          ...prev,
-          [agent]: [...prev[agent], { role: 'error', text: '送信失敗' }],
-        }))
-      }
+      if (e.name === 'AbortError') return
+      // バックグラウンドで処理中なら自動再接続、そうでなければ送信失敗
+      try {
+        const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
+        if (s.streaming) {
+          reconnectStream(agent)
+          return
+        }
+      } catch {}
+      setMessages(prev => ({
+        ...prev,
+        [agent]: [...prev[agent], { role: 'error', text: '送信失敗' }],
+      }))
     } finally {
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
@@ -190,6 +213,65 @@ export default function App() {
         return { ...prev, [agent]: msgs }
       })
       abortControllers.current[agent] = null
+    }
+  }
+
+  const reconnectStream = async (agent) => {
+    const res = await fetch(`${API_BASE}/chat/${agent}/reconnect`)
+    if (res.status === 204) return  // 処理中なし
+
+    setLoading(prev => ({ ...prev, [agent]: true }))
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop()
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const data = line.slice(6).trim()
+          if (!data) continue
+          try {
+            const event = JSON.parse(data)
+            if (event.type === 'assistant' && event.message?.content) {
+              const textContent = event.message.content.filter(b => b.type === 'text').map(b => b.text).join('')
+              const thinkingContent = event.message.content.filter(b => b.type === 'thinking').map(b => b.thinking).join('\n')
+              const newTools = event.message.content.filter(b => b.type === 'tool_use').map(b => formatTool(b))
+              setMessages(prev => {
+                const msgs = [...prev[agent]]
+                const last = msgs[msgs.length - 1]
+                if (!last || last.role !== 'agent') {
+                  return { ...prev, [agent]: [...msgs, { role: 'agent', text: textContent, tools: newTools, thinking: thinkingContent || undefined, streaming: true }] }
+                }
+                const updated = { ...last }
+                if (textContent) updated.text = textContent
+                if (thinkingContent) updated.thinking = thinkingContent
+                if (newTools.length > 0) {
+                  const existing = updated.tools || []
+                  const existingIds = new Set(existing.map(t => t.id))
+                  const toAdd = newTools.filter(t => !existingIds.has(t.id))
+                  if (toAdd.length > 0) updated.tools = [...existing, ...toAdd]
+                }
+                msgs[msgs.length - 1] = updated
+                return { ...prev, [agent]: msgs }
+              })
+            }
+          } catch {}
+        }
+      }
+    } finally {
+      setLoading(prev => ({ ...prev, [agent]: false }))
+      setMessages(prev => {
+        const msgs = [...prev[agent]]
+        if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
+          msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
+        }
+        return { ...prev, [agent]: msgs }
+      })
     }
   }
 
