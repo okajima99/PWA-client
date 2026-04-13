@@ -1,11 +1,13 @@
 import asyncio
+import base64
 import json
+import mimetypes
 from pathlib import Path
+from typing import List
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 HOME = Path.home()
 
@@ -16,6 +18,9 @@ with open(CONFIG_PATH) as f:
 
 AGENTS = config["agents"]
 RATE_LIMITS_LOG = config["rate_limits_log"]
+
+# Anthropic APIがサポートする画像MIMEタイプ
+SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
 # --- アプリ初期化 ---
 app = FastAPI()
@@ -34,25 +39,46 @@ sessions: dict[str, str | None] = {name: None for name in AGENTS}
 running_procs: dict[str, asyncio.subprocess.Process | None] = {}
 
 
-# --- リクエスト/レスポンス型定義 ---
-class ChatRequest(BaseModel):
-    message: str
+# --- コンテンツブロック組み立て ---
+async def build_content(message: str, files: list[UploadFile]) -> list:
+    content = []
 
+    for f in files:
+        data = await f.read()
+        mime = f.content_type or mimetypes.guess_type(f.filename or "")[0] or ""
 
-class StatusResponse(BaseModel):
-    model: str
-    five_hour_pct: float
-    seven_day_pct: float
-    context_pct: float
-    five_hour_resets_at: int
-    seven_day_resets_at: int
+        if mime in SUPPORTED_IMAGE_TYPES:
+            b64 = base64.b64encode(data).decode()
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": mime, "data": b64},
+            })
+        else:
+            # テキスト系ファイル: UTF-8でデコードしてテキストブロックに埋め込む
+            try:
+                text_content = data.decode("utf-8", errors="replace")
+                content.append({
+                    "type": "text",
+                    "text": f"[ファイル: {f.filename}]\n```\n{text_content}\n```",
+                })
+            except Exception:
+                pass  # 読めないファイルは無視
+
+    if message:
+        content.append({"type": "text", "text": message})
+
+    return content
 
 
 # --- エンドポイント ---
 
 @app.post("/chat/{agent}/stream")
-async def chat_stream(agent: str, req: ChatRequest):
-    """メッセージを送信してエージェントの出力をSSEでストリーミングする"""
+async def chat_stream(
+    agent: str,
+    message: str = Form(...),
+    files: List[UploadFile] = File(default=[]),
+):
+    """メッセージ（+任意のファイル添付）を送信してSSEでストリーミングする"""
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
 
@@ -62,23 +88,40 @@ async def chat_stream(agent: str, req: ChatRequest):
     cmd = [config.get("claude_path", "claude")]
     if session_id:
         cmd += ["--resume", session_id]
-    cmd += ["-p", req.message, "--output-format", "stream-json", "--verbose"]
+    cmd += [
+        "--input-format", "stream-json",
+        "--output-format", "stream-json",
+        "--verbose",
+        "-p",
+        "--dangerously-skip-permissions",
+    ]
+
+    content = await build_content(message, files)
+    input_msg = json.dumps({
+        "type": "user",
+        "message": {"role": "user", "content": content},
+    }) + "\n"
 
     async def generate():
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=cwd,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         running_procs[agent] = proc
+
+        # メッセージをstdinに書き込んで閉じる
+        proc.stdin.write(input_msg.encode())
+        await proc.stdin.drain()
+        proc.stdin.close()
 
         try:
             async for raw_line in proc.stdout:
                 line = raw_line.decode().strip()
                 if not line:
                     continue
-                # session_idをresultイベントから保存
                 try:
                     event = json.loads(line)
                     if event.get("type") == "result" and event.get("session_id"):
@@ -96,10 +139,7 @@ async def chat_stream(agent: str, req: ChatRequest):
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -130,7 +170,7 @@ def end_session(agent: str):
     return {"status": "ok", "agent": agent}
 
 
-@app.get("/status/{agent}", response_model=StatusResponse)
+@app.get("/status/{agent}")
 def get_status(agent: str):
     """rate-limits.jsonlから最新のusage情報とエージェントのモデルを返す"""
     if agent not in AGENTS:
@@ -151,18 +191,17 @@ def get_status(agent: str):
         raise HTTPException(status_code=503, detail="rate-limits log is empty")
 
     data = json.loads(last_line)
-    return StatusResponse(
-        model=AGENTS[agent].get("model", data["model"]),
-        five_hour_pct=data["five_hour_pct"],
-        seven_day_pct=data["seven_day_pct"],
-        context_pct=data["context_pct"],
-        five_hour_resets_at=data["five_hour_resets_at"],
-        seven_day_resets_at=data["seven_day_resets_at"],
-    )
+    return {
+        "model": AGENTS[agent].get("model", data["model"]),
+        "five_hour_pct": data["five_hour_pct"],
+        "seven_day_pct": data["seven_day_pct"],
+        "context_pct": data["context_pct"],
+        "five_hour_resets_at": data["five_hour_resets_at"],
+        "seven_day_resets_at": data["seven_day_resets_at"],
+    }
 
 
 def _resolve_safe(path_str: str) -> Path:
-    """パスを解決してHOME配下かチェック。違う場合は403を返す"""
     resolved = Path(path_str.replace("~", str(HOME))).resolve()
     if not str(resolved).startswith(str(HOME)):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -171,7 +210,6 @@ def _resolve_safe(path_str: str) -> Path:
 
 @app.get("/file")
 def get_file(path: str = Query(...)):
-    """ファイル内容をテキストで返す（HOME配下のみ）"""
     resolved = _resolve_safe(path)
     if not resolved.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -186,7 +224,6 @@ def get_file(path: str = Query(...)):
 
 @app.get("/files/tree")
 def get_tree(path: str = Query(default="~")):
-    """ディレクトリ一覧を返す（HOME配下のみ）"""
     resolved = _resolve_safe(path)
     if not resolved.exists():
         raise HTTPException(status_code=404, detail="Directory not found")
@@ -196,7 +233,7 @@ def get_tree(path: str = Query(default="~")):
     entries = []
     try:
         for entry in sorted(resolved.iterdir(), key=lambda e: (e.is_file(), e.name.lower())):
-            if entry.name.startswith('.'):
+            if entry.name.startswith("."):
                 continue
             entries.append({
                 "name": entry.name,
