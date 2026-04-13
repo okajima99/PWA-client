@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import mimetypes
+import uuid
 from pathlib import Path
 from typing import List
 
@@ -10,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 HOME = Path.home()
+UPLOADS_TMP = HOME / "cpc" / "uploads" / "tmp"
 
 # --- 設定読み込み ---
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -19,7 +21,6 @@ with open(CONFIG_PATH) as f:
 AGENTS = config["agents"]
 RATE_LIMITS_LOG = config["rate_limits_log"]
 
-# Anthropic APIがサポートする画像MIMEタイプ
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
 # --- アプリ初期化 ---
@@ -32,37 +33,65 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- セッション管理（メモリ上） ---
+# --- セッション管理 ---
 sessions: dict[str, str | None] = {name: None for name in AGENTS}
 
-# --- 実行中プロセス管理（停止ボタン用） ---
+# --- 実行中プロセス管理 ---
 running_procs: dict[str, asyncio.subprocess.Process | None] = {}
+
+# --- セッションごとの一時ファイル管理 ---
+session_tmp_files: dict[str, list[Path]] = {}
+
+
+# --- ファイル一時保存 ---
+async def save_to_tmp(files: list[UploadFile], agent: str) -> list[dict]:
+    """アップロードされたファイルをtmpディレクトリに保存してパス情報を返す"""
+    UPLOADS_TMP.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for f in files:
+        if not f.size:
+            continue
+        ext = Path(f.filename or "file").suffix or ""
+        dest = UPLOADS_TMP / f"{uuid.uuid4().hex}{ext}"
+        data = await f.read()
+        dest.write_bytes(data)
+        session_tmp_files.setdefault(agent, []).append(dest)
+        saved.append({
+            "name": f.filename or dest.name,
+            "path": str(dest),
+            "mime": f.content_type or mimetypes.guess_type(f.filename or "")[0] or "",
+        })
+    return saved
 
 
 # --- コンテンツブロック組み立て ---
-async def build_content(message: str, files: list[UploadFile]) -> list:
+def build_content(message: str, saved_files: list[dict]) -> list:
     content = []
 
-    for f in files:
-        data = await f.read()
-        mime = f.content_type or mimetypes.guess_type(f.filename or "")[0] or ""
+    for sf in saved_files:
+        mime = sf["mime"]
+        path_obj = Path(sf["path"])
 
         if mime in SUPPORTED_IMAGE_TYPES:
-            b64 = base64.b64encode(data).decode()
+            b64 = base64.b64encode(path_obj.read_bytes()).decode()
             content.append({
                 "type": "image",
                 "source": {"type": "base64", "media_type": mime, "data": b64},
             })
+            # Claudeがパスを参照できるよう通知
+            content.append({
+                "type": "text",
+                "text": f"[添付画像のパス: {sf['path']}]",
+            })
         else:
-            # テキスト系ファイル: UTF-8でデコードしてテキストブロックに埋め込む
             try:
-                text_content = data.decode("utf-8", errors="replace")
+                text_content = path_obj.read_text(errors="replace")
                 content.append({
                     "type": "text",
-                    "text": f"[ファイル: {f.filename}]\n```\n{text_content}\n```",
+                    "text": f"[添付ファイル: {sf['path']} ({sf['name']})]\n```\n{text_content}\n```",
                 })
             except Exception:
-                pass  # 読めないファイルは無視
+                pass
 
     if message:
         content.append({"type": "text", "text": message})
@@ -78,12 +107,14 @@ async def chat_stream(
     message: str = Form(...),
     files: List[UploadFile] = File(default=[]),
 ):
-    """メッセージ（+任意のファイル添付）を送信してSSEでストリーミングする"""
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
 
     cwd = AGENTS[agent]["cwd"]
     session_id = sessions[agent]
+
+    # ファイルをtmpに保存
+    saved_files = await save_to_tmp(files, agent)
 
     cmd = [config.get("claude_path", "claude")]
     if session_id:
@@ -96,7 +127,7 @@ async def chat_stream(
         "--dangerously-skip-permissions",
     ]
 
-    content = await build_content(message, files)
+    content = build_content(message, saved_files)
     input_msg = json.dumps({
         "type": "user",
         "message": {"role": "user", "content": content},
@@ -112,7 +143,6 @@ async def chat_stream(
         )
         running_procs[agent] = proc
 
-        # メッセージをstdinに書き込んで閉じる
         proc.stdin.write(input_msg.encode())
         await proc.stdin.drain()
         proc.stdin.close()
@@ -145,7 +175,6 @@ async def chat_stream(
 
 @app.post("/chat/{agent}/stop")
 async def chat_stop(agent: str):
-    """実行中のサブプロセスをkillする"""
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
 
@@ -162,17 +191,23 @@ async def chat_stop(agent: str):
 
 @app.post("/session/{agent}/end")
 def end_session(agent: str):
-    """セッションを終了してsession_idをリセットする"""
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
 
     sessions[agent] = None
+
+    # セッションのtmpファイルを削除
+    for p in session_tmp_files.pop(agent, []):
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     return {"status": "ok", "agent": agent}
 
 
 @app.get("/status/{agent}")
 def get_status(agent: str):
-    """rate-limits.jsonlから最新のusage情報とエージェントのモデルを返す"""
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
 
