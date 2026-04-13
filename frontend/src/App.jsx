@@ -171,14 +171,6 @@ export default function App() {
     setLoading(prev => ({ ...prev, [agent]: false }))
   }
 
-  const toggleThinking = (agent, index) => {
-    setMessages(prev => {
-      const msgs = [...prev[agent]]
-      msgs[index] = { ...msgs[index], thinkingOpen: !msgs[index].thinkingOpen }
-      return { ...prev, [agent]: msgs }
-    })
-  }
-
   const endSession = async () => {
     setMenuOpen(false)
     await fetch(`${API_BASE}/session/${activeAgent}/end`, { method: 'POST' })
@@ -239,21 +231,8 @@ export default function App() {
       <div className="messages">
         {messages[activeAgent].map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
-            {msg.role === 'agent' && (msg.thinking || msg.tools?.length > 0) ? (
+            {msg.role === 'agent' && msg.tools?.length > 0 ? (
               <div className="agent-block">
-                {msg.thinking && (
-                  <div className="thinking-block">
-                    <button
-                      className="thinking-toggle"
-                      onClick={() => toggleThinking(activeAgent, i)}
-                    >
-                      {msg.thinkingOpen ? '▼' : '▶'} thinking{msg.streaming ? ' …' : ''}
-                    </button>
-                    {msg.thinkingOpen && (
-                      <div className="thinking-content">{msg.thinking}</div>
-                    )}
-                  </div>
-                )}
                 {msg.tools?.length > 0 && (
                   <div className="tool-log">
                     {msg.tools.map((t, ti) => (
