@@ -121,7 +121,7 @@ def _update_shared_from_headers(headers) -> None:
             pass
 
 
-def _update_agent_from_result(agent: str, result_event: dict) -> None:
+def _update_agent_from_result(agent: str, result_event: dict, last_assistant_usage: dict = {}) -> None:
     model_usage = result_event.get("modelUsage", {})
     if not model_usage:
         return
@@ -129,17 +129,19 @@ def _update_agent_from_result(agent: str, result_event: dict) -> None:
     if not model_key:
         return
     agent_status[agent]["model"] = _format_model_name(model_key)
-    usage = model_usage[model_key]
-    ctx_window = usage.get("contextWindow", 0)
-    if ctx_window > 0:
-        # 公式計算式: input + cacheCreation + cacheRead（outputTokensは含めない）
-        # ref: https://code.claude.com/docs/en/statusline
-        total_tokens = (
-            usage.get("inputTokens", 0)
-            + usage.get("cacheCreationInputTokens", 0)
-            + usage.get("cacheReadInputTokens", 0)
-        )
-        agent_status[agent]["ctx_pct"] = min(round(total_tokens / ctx_window * 100), 100)
+    result_usage = model_usage[model_key]
+    ctx_window = result_usage.get("contextWindow", 200000)
+
+    # resultイベントのmodelUsageは全イテレーション累積値なので使わない
+    # 最後のassistantイベントのcacheRead（単一API呼び出し分）をctx%の基準にする
+    # ターミナルのstatusLineと同じ挙動: cacheRead / contextWindow
+    cache_read = last_assistant_usage.get("cache_read_input_tokens", 0)
+    if cache_read > 0 and ctx_window > 0:
+        agent_status[agent]["ctx_pct"] = min(round(cache_read / ctx_window * 100), 100)
+    elif ctx_window > 0:
+        # assistantイベントがない場合はresultから近似
+        cache_read_result = result_usage.get("cacheReadInputTokens", 0)
+        agent_status[agent]["ctx_pct"] = min(round(cache_read_result / ctx_window * 100), 100)
 
 
 def _format_model_name(key: str) -> str:
@@ -216,6 +218,8 @@ async def _run_claude_background(agent: str, cmd: list, input_msg: str, env: dic
         await proc.stdin.drain()
         proc.stdin.close()
 
+        last_assistant_usage: dict = {}
+
         async for raw_line in proc.stdout:
             line = raw_line.decode().strip()
             if not line:
@@ -223,10 +227,15 @@ async def _run_claude_background(agent: str, cmd: list, input_msg: str, env: dic
             try:
                 event = json.loads(line)
                 etype = event.get("type")
+                # assistantイベントのusageを毎回更新（最後の1回分 = 単一API呼び出し分）
+                if etype == "assistant":
+                    usage = event.get("message", {}).get("usage")
+                    if usage:
+                        last_assistant_usage = usage
                 if etype == "result" and event.get("session_id"):
                     sessions[agent] = event["session_id"]
                     _save_sessions()
-                    _update_agent_from_result(agent, event)
+                    _update_agent_from_result(agent, event, last_assistant_usage)
                 elif etype == "rate_limit_event":
                     info = event.get("rate_limit_info", {})
                     resets_at = info.get("resetsAt")
