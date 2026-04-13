@@ -262,6 +262,11 @@ button:disabled {
 .bubble strong { font-weight: 700; }
 .bubble em { font-style: italic; }
 .bubble hr { border-color: var(--border); margin: 8px 0; }
+.bubble blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 6px 0;
+  padding: 4px 12px;
+}
 
 /* ファイルプレビューのMarkdownスタイル */
 .md-preview {
@@ -285,7 +290,6 @@ button:disabled {
   border-left: 3px solid var(--accent);
   margin: 8px 0;
   padding: 4px 12px;
-  color: var(--text-dim);
 }
 .md-preview code {
   background: var(--bg3);
