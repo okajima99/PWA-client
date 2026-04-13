@@ -29,6 +29,7 @@ export default function App() {
   const menuRef = useRef(null)
   const abortControllers = useRef({ agent_a: null, agent_b: null })
   const fileInputRef = useRef(null)
+  const reconnectingRef = useRef({ agent_a: false, agent_b: false })
 
   useEffect(() => {
     const fetchStatus = async () => {
@@ -57,20 +58,30 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, activeAgent])
 
-  // アプリ復帰時に処理中のストリームがあれば自動再接続
-  useEffect(() => {
-    const handleVisibility = async () => {
-      if (document.hidden) return
-      for (const agent of AGENTS) {
-        if (loading[agent]) continue  // すでに受信中
-        try {
-          const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
-          if (s.streaming) reconnectStream(agent)
-        } catch {}
-      }
+  // 処理中ストリームへの再接続チェック（重複防止つき）
+  const checkAndReconnect = async () => {
+    for (const agent of AGENTS) {
+      if (loading[agent] || reconnectingRef.current[agent]) continue
+      try {
+        const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
+        if (s.streaming) {
+          reconnectingRef.current[agent] = true
+          reconnectStream(agent).finally(() => {
+            reconnectingRef.current[agent] = false
+          })
+        }
+      } catch {}
     }
-    document.addEventListener('visibilitychange', handleVisibility)
-    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }
+
+  // アプリ起動時チェック（アプリ切り→再起動でも復帰）
+  useEffect(() => { checkAndReconnect() }, [])
+
+  // アプリ復帰時チェック（ホーム画面→戻り）
+  useEffect(() => {
+    const handle = () => { if (!document.hidden) checkAndReconnect() }
+    document.addEventListener('visibilitychange', handle)
+    return () => document.removeEventListener('visibilitychange', handle)
   }, [loading])
 
   const handleFileSelect = (e) => {
