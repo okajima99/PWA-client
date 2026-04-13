@@ -226,6 +226,112 @@ button:disabled {
 .tool-bash { color: var(--green); }
 .tool-pending { opacity: 0.4; }
 
+/* 添付ファイルプレビューバー */
+.attachments-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px 0;
+  background: var(--bg2);
+}
+
+.attach-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  max-width: 80px;
+}
+
+.attach-thumb {
+  width: 60px;
+  height: 60px;
+  object-fit: cover;
+  display: block;
+}
+
+.attach-name {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80px;
+}
+
+.attach-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* ユーザーメッセージ内の添付 */
+.user-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: 80%;
+}
+
+.attach-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.msg-image {
+  max-width: 200px;
+  max-height: 200px;
+  border-radius: 8px;
+  object-fit: cover;
+  display: block;
+}
+
+.attach-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.file-chip {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* 添付ボタン */
+.attach-btn {
+  background: var(--bg3);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  font-size: 16px;
+  padding: 6px 10px;
+}
+
+.attach-btn:hover {
+  color: var(--text);
+}
+
 /* 停止ボタン */
 .stop {
   background: #3a1a1a;

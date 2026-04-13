@@ -6,6 +6,7 @@ import FileTreePanel from './FileTreePanel.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const AGENTS = ['agent_a', 'agent_b']
+const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 
 export default function App() {
   const [activeAgent, setActiveAgent] = useState('agent_a')
@@ -18,6 +19,7 @@ export default function App() {
     }
   })
   const [input, setInput] = useState({ agent_a: '', agent_b: '' })
+  const [attachments, setAttachments] = useState({ agent_a: [], agent_b: [] })
   const [loading, setLoading] = useState({ agent_a: false, agent_b: false })
   const [status, setStatus] = useState(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -26,8 +28,8 @@ export default function App() {
   const bottomRef = useRef(null)
   const menuRef = useRef(null)
   const abortControllers = useRef({ agent_a: null, agent_b: null })
+  const fileInputRef = useRef(null)
 
-  // タブ切り替え・10秒ごとにステータス取得
   useEffect(() => {
     const fetchStatus = async () => {
       try {
@@ -40,49 +42,85 @@ export default function App() {
     return () => clearInterval(id)
   }, [activeAgent])
 
-  // メッセージ履歴をlocalStorageに保存
   useEffect(() => {
-    localStorage.setItem('cpc_messages', JSON.stringify(messages))
+    // localStorageにはimagesのBlobURLは保存できないので除外
+    const toSave = {}
+    for (const agent of AGENTS) {
+      toSave[agent] = messages[agent].map(m =>
+        m.role === 'user' ? { ...m, imageUrls: undefined } : m
+      )
+    }
+    localStorage.setItem('cpc_messages', JSON.stringify(toSave))
   }, [messages])
 
-  // 新しいメッセージで自動スクロール
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, activeAgent])
 
+  const handleFileSelect = (e) => {
+    const agent = activeAgent
+    const newFiles = Array.from(e.target.files || [])
+    setAttachments(prev => ({
+      ...prev,
+      [agent]: [...prev[agent], ...newFiles],
+    }))
+    e.target.value = ''
+  }
+
+  const removeAttachment = (agent, index) => {
+    setAttachments(prev => {
+      const updated = [...prev[agent]]
+      updated.splice(index, 1)
+      return { ...prev, [agent]: updated }
+    })
+  }
+
   const sendMessage = async () => {
     const agent = activeAgent
     const text = input[agent].trim()
-    if (!text || loading[agent]) return
+    const files = attachments[agent]
+    if (!text && files.length === 0) return
+    if (loading[agent]) return
 
-    // ユーザーメッセージを追加
+    // ユーザーメッセージをprewiewつきで追加
+    const imageUrls = files
+      .filter(f => SUPPORTED_IMAGE_TYPES.includes(f.type))
+      .map(f => URL.createObjectURL(f))
+    const fileNames = files
+      .filter(f => !SUPPORTED_IMAGE_TYPES.includes(f.type))
+      .map(f => f.name)
+
     setMessages(prev => ({
       ...prev,
-      [agent]: [...prev[agent], { role: 'user', text }]
+      [agent]: [...prev[agent], { role: 'user', text, imageUrls, fileNames }],
     }))
     setInput(prev => ({ ...prev, [agent]: '' }))
+    setAttachments(prev => ({ ...prev, [agent]: [] }))
     setLoading(prev => ({ ...prev, [agent]: true }))
 
-    // 応答の受け皿となる空メッセージを追加
+    // 応答の受け皿
     setMessages(prev => ({
       ...prev,
-      [agent]: [...prev[agent], { role: 'agent', text: '', thinking: '', thinkingOpen: false, tools: [], streaming: true }]
+      [agent]: [...prev[agent], { role: 'agent', text: '', tools: [], streaming: true }],
     }))
 
     const controller = new AbortController()
     abortControllers.current[agent] = controller
 
     try {
+      const formData = new FormData()
+      formData.append('message', text)
+      for (const f of files) {
+        formData.append('files', f)
+      }
+
       const res = await fetch(`${API_BASE}/chat/${agent}/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text }),
+        body: formData,
         signal: controller.signal,
       })
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`)
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
@@ -94,7 +132,7 @@ export default function App() {
 
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
-        buffer = lines.pop() // 未完了の行を次回に持ち越す
+        buffer = lines.pop()
 
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue
@@ -105,10 +143,6 @@ export default function App() {
             const event = JSON.parse(data)
 
             if (event.type === 'assistant' && event.message?.content) {
-              const thinkingText = event.message.content
-                .filter(b => b.type === 'thinking')
-                .map(b => b.thinking)
-                .join('')
               const textContent = event.message.content
                 .filter(b => b.type === 'text')
                 .map(b => b.text)
@@ -120,11 +154,9 @@ export default function App() {
               setMessages(prev => {
                 const msgs = [...prev[agent]]
                 const last = { ...msgs[msgs.length - 1] }
-                if (thinkingText) last.thinking = thinkingText
                 if (textContent) last.text = textContent
                 if (newTools.length > 0) {
                   const existing = last.tools || []
-                  // 同じidのツールは重複追加しない
                   const existingIds = new Set(existing.map(t => t.id))
                   const toAdd = newTools.filter(t => !existingIds.has(t.id))
                   if (toAdd.length > 0) last.tools = [...existing, ...toAdd]
@@ -140,7 +172,7 @@ export default function App() {
       if (e.name !== 'AbortError') {
         setMessages(prev => ({
           ...prev,
-          [agent]: [...prev[agent], { role: 'error', text: '送信失敗' }]
+          [agent]: [...prev[agent], { role: 'error', text: '送信失敗' }],
         }))
       }
     } finally {
@@ -148,8 +180,7 @@ export default function App() {
       setMessages(prev => {
         const msgs = [...prev[agent]]
         if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
-          const last = { ...msgs[msgs.length - 1], streaming: false }
-          msgs[msgs.length - 1] = last
+          msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
         }
         return { ...prev, [agent]: msgs }
       })
@@ -159,12 +190,10 @@ export default function App() {
 
   const stopMessage = async () => {
     const agent = activeAgent
-    // fetchをAbort
     if (abortControllers.current[agent]) {
       abortControllers.current[agent].abort()
       abortControllers.current[agent] = null
     }
-    // サブプロセスをkill
     try {
       await fetch(`${API_BASE}/chat/${agent}/stop`, { method: 'POST' })
     } catch {}
@@ -176,11 +205,10 @@ export default function App() {
     await fetch(`${API_BASE}/session/${activeAgent}/end`, { method: 'POST' })
     setMessages(prev => ({
       ...prev,
-      [activeAgent]: [...prev[activeAgent], { role: 'system', text: '--- セッション終了 ---' }]
+      [activeAgent]: [...prev[activeAgent], { role: 'system', text: '--- セッション終了 ---' }],
     }))
   }
 
-  // メニュー外タップで閉じる
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) {
@@ -197,6 +225,8 @@ export default function App() {
       sendMessage()
     }
   }
+
+  const currentAttachments = attachments[activeAgent]
 
   return (
     <div className="app">
@@ -231,18 +261,38 @@ export default function App() {
       <div className="messages">
         {messages[activeAgent].map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
-            {msg.role === 'agent' && msg.tools?.length > 0 ? (
-              <div className="agent-block">
-                {msg.tools?.length > 0 && (
-                  <div className="tool-log">
-                    {msg.tools.map((t, ti) => (
-                      <div key={ti} className={`tool-line tool-${t.name.toLowerCase()}`}>
-                        {t.label}
-                      </div>
+            {msg.role === 'user' ? (
+              <div className="user-block">
+                {msg.imageUrls?.length > 0 && (
+                  <div className="attach-images">
+                    {msg.imageUrls.map((url, j) => (
+                      <img key={j} src={url} className="msg-image" alt="" />
                     ))}
-                    {msg.streaming && <div className="tool-line tool-pending">…</div>}
                   </div>
                 )}
+                {msg.fileNames?.length > 0 && (
+                  <div className="attach-files">
+                    {msg.fileNames.map((name, j) => (
+                      <span key={j} className="file-chip">📄 {name}</span>
+                    ))}
+                  </div>
+                )}
+                {msg.text && (
+                  <span className="bubble">
+                    <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
+                  </span>
+                )}
+              </div>
+            ) : msg.role === 'agent' && msg.tools?.length > 0 ? (
+              <div className="agent-block">
+                <div className="tool-log">
+                  {msg.tools.map((t, ti) => (
+                    <div key={ti} className={`tool-line tool-${t.name.toLowerCase()}`}>
+                      {t.label}
+                    </div>
+                  ))}
+                  {msg.streaming && <div className="tool-line tool-pending">…</div>}
+                </div>
                 {msg.text && (
                   <span className="bubble">
                     <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
@@ -264,8 +314,32 @@ export default function App() {
         <div ref={bottomRef} />
       </div>
 
+      {/* 添付ファイルプレビュー */}
+      {currentAttachments.length > 0 && (
+        <div className="attachments-bar">
+          {currentAttachments.map((f, i) => (
+            <div key={i} className="attach-chip">
+              {SUPPORTED_IMAGE_TYPES.includes(f.type) ? (
+                <img src={URL.createObjectURL(f)} className="attach-thumb" alt="" />
+              ) : (
+                <span className="attach-name">📄 {f.name}</span>
+              )}
+              <button className="attach-remove" onClick={() => removeAttachment(activeAgent, i)}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* 入力エリア */}
       <div className="inputarea">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/gif,image/webp,text/*,.py,.js,.ts,.jsx,.tsx,.md,.json,.css,.html,.yaml,.yml,.toml,.sh"
+          multiple
+          style={{ display: 'none' }}
+          onChange={handleFileSelect}
+        />
         <textarea
           value={input[activeAgent]}
           onChange={e => setInput(prev => ({ ...prev, [activeAgent]: e.target.value }))}
@@ -291,15 +365,27 @@ export default function App() {
           >
             ⋯
           </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="attach-btn"
+            disabled={loading[activeAgent]}
+          >
+            ＋
+          </button>
           {loading[activeAgent] ? (
             <button onClick={stopMessage} className="stop">■</button>
           ) : (
-            <button onClick={sendMessage} disabled={!input[activeAgent].trim()} className="send">
+            <button
+              onClick={sendMessage}
+              disabled={!input[activeAgent].trim() && currentAttachments.length === 0}
+              className="send"
+            >
               送信
             </button>
           )}
         </div>
       </div>
+
       {previewPath && (
         <FilePreviewModal path={previewPath} onClose={() => setPreviewPath(null)} />
       )}
