@@ -61,7 +61,7 @@ def chat(agent: str, req: ChatRequest):
     cwd = AGENTS[agent]["cwd"]
     session_id = sessions[agent]
 
-    cmd = ["claude"]
+    cmd = [config.get("claude_path", "claude")]
     if session_id:
         cmd += ["--resume", session_id]
     cmd += ["-p", req.message, "--output-format", "json"]
