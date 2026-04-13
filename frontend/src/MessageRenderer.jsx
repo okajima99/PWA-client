@@ -44,14 +44,22 @@ export default function MessageRenderer({ text, onOpenFile, markdown }) {
           }
           return <a href={href} target="_blank" rel="noreferrer">{children}</a>
         },
-        // v10: preでコードブロック、codeでインラインコードを処理
         pre({ children }) {
           return <pre className="md-code">{children}</pre>
         },
         code({ className, children }) {
-          // classNameがある = コードブロック内のcode（preが囲む）
-          // classNameがない = インラインコード
-          if (!className) return <code className="inline-code">{children}</code>
+          if (!className) {
+            // インラインコード: パスだったらリンク化
+            const content = String(children).trim()
+            if (/^(~\/|\/Users\/)/.test(content)) {
+              return (
+                <span className="file-link" onClick={() => onOpenFile(content)}>
+                  {children}
+                </span>
+              )
+            }
+            return <code className="inline-code">{children}</code>
+          }
           return <code className={className}>{children}</code>
         },
       }}
