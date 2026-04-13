@@ -25,7 +25,7 @@ app.add_middleware(
 )
 
 # --- セッション管理（メモリ上） ---
-# キー: agent名 ("agent_a" / "agent_b"), 値: session_id または None
+# キー: config.jsonで定義されたagent名, 値: session_id または None
 sessions: dict[str, str | None] = {name: None for name in AGENTS}
 
 
