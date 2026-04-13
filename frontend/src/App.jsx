@@ -9,7 +9,14 @@ const AGENTS = ['agent_a', 'agent_b']
 
 export default function App() {
   const [activeAgent, setActiveAgent] = useState('agent_a')
-  const [messages, setMessages] = useState({ agent_a: [], agent_b: [] })
+  const [messages, setMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cpc_messages')
+      return saved ? JSON.parse(saved) : { agent_a: [], agent_b: [] }
+    } catch {
+      return { agent_a: [], agent_b: [] }
+    }
+  })
   const [input, setInput] = useState({ agent_a: '', agent_b: '' })
   const [loading, setLoading] = useState({ agent_a: false, agent_b: false })
   const [status, setStatus] = useState(null)
@@ -31,6 +38,11 @@ export default function App() {
     const id = setInterval(fetchStatus, 10000)
     return () => clearInterval(id)
   }, [activeAgent])
+
+  // メッセージ履歴をlocalStorageに保存
+  useEffect(() => {
+    localStorage.setItem('cpc_messages', JSON.stringify(messages))
+  }, [messages])
 
   // 新しいメッセージで自動スクロール
   useEffect(() => {

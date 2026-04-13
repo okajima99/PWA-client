@@ -157,7 +157,9 @@ def get_tree(path: str = Query(default="~")):
 
     entries = []
     try:
-        for entry in sorted(resolved.iterdir(), key=lambda e: (e.is_file(), e.name)):
+        for entry in sorted(resolved.iterdir(), key=lambda e: (e.is_file(), e.name.lower())):
+            if entry.name.startswith('.'):
+                continue
             entries.append({
                 "name": entry.name,
                 "path": str(entry),
