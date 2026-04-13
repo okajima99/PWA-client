@@ -132,11 +132,12 @@ def _update_agent_from_result(agent: str, result_event: dict) -> None:
     usage = model_usage[model_key]
     ctx_window = usage.get("contextWindow", 0)
     if ctx_window > 0:
-        # cacheReadInputTokens はキャッシュ再利用分でctx消費に加算されないため除外
+        # 公式計算式: input + cacheCreation + cacheRead（outputTokensは含めない）
+        # ref: https://code.claude.com/docs/en/statusline
         total_tokens = (
             usage.get("inputTokens", 0)
-            + usage.get("outputTokens", 0)
             + usage.get("cacheCreationInputTokens", 0)
+            + usage.get("cacheReadInputTokens", 0)
         )
         agent_status[agent]["ctx_pct"] = min(round(total_tokens / ctx_window * 100), 100)
 
