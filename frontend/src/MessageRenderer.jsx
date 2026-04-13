@@ -1,22 +1,51 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { visit } from 'unist-util-visit'
 
-const PATH_PLAIN_RE = /(~\/[^\s`"')\]]+|\/Users\/[^\s`"')\]]+)/g
-const PATH_BACKTICK_RE = /`(~\/[^`\s]+|\/Users\/[^`\s]+)`/g
+const PATH_RE = /(?<![(`])(~\/[^\s`"')\]]+|\/Users\/[^\s`"')\]]+)/g
 
-function preprocessPaths(text) {
-  // バッククォート囲みのパスを先に変換（`~/...` → [~/...](cpc://...)）
-  let result = text.replace(PATH_BACKTICK_RE, (_, path) =>
-    `[${path}](cpc://${encodeURIComponent(path)})`
-  )
-  // 残りのプレーンなパスを変換（すでにリンク化済みは除く）
-  result = result.replace(PATH_PLAIN_RE, (match, offset, str) => {
-    // 直前が ] や ( ならすでにリンク内なのでスキップ
-    const before = str[offset - 1]
-    if (before === '(' || before === ']') return match
-    return `[${match}](cpc://${encodeURIComponent(match)})`
-  })
-  return result
+// remarkプラグイン: テキストノード内のファイルパスをlinkノードに変換
+function remarkFilePaths() {
+  return (tree) => {
+    visit(tree, 'text', (node, index, parent) => {
+      if (!parent || index == null) return
+      PATH_RE.lastIndex = 0
+      if (!PATH_RE.test(node.value)) return
+
+      PATH_RE.lastIndex = 0
+      const parts = []
+      let last = 0
+      let match
+
+      while ((match = PATH_RE.exec(node.value)) !== null) {
+        if (match.index > last) {
+          parts.push({ type: 'text', value: node.value.slice(last, match.index) })
+        }
+        parts.push({
+          type: 'link',
+          url: `cpc://${encodeURIComponent(match[0])}`,
+          children: [{ type: 'text', value: match[0] }],
+        })
+        last = match.index + match[0].length
+      }
+      if (last < node.value.length) {
+        parts.push({ type: 'text', value: node.value.slice(last) })
+      }
+
+      parent.children.splice(index, 1, ...parts)
+    })
+
+    // インラインコード（`~/...`）もリンクに変換
+    visit(tree, 'inlineCode', (node, index, parent) => {
+      if (!parent || index == null) return
+      if (!/^(~\/|\/Users\/)/.test(node.value)) return
+      parent.children.splice(index, 1, {
+        type: 'link',
+        url: `cpc://${encodeURIComponent(node.value)}`,
+        children: [{ type: 'text', value: node.value }],
+      })
+    })
+  }
 }
 
 export default function MessageRenderer({ text, onOpenFile, markdown }) {
@@ -24,8 +53,8 @@ export default function MessageRenderer({ text, onOpenFile, markdown }) {
     const parts = []
     let last = 0
     let match
-    PATH_PLAIN_RE.lastIndex = 0
-    while ((match = PATH_PLAIN_RE.exec(text)) !== null) {
+    PATH_RE.lastIndex = 0
+    while ((match = PATH_RE.exec(text)) !== null) {
       if (match.index > last) parts.push(text.slice(last, match.index))
       const p = match[0]
       parts.push(
@@ -37,11 +66,9 @@ export default function MessageRenderer({ text, onOpenFile, markdown }) {
     return <span style={{ whiteSpace: 'pre-wrap' }}>{parts}</span>
   }
 
-  const processed = preprocessPaths(text)
-
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={[remarkGfm, remarkFilePaths]}
       urlTransform={(url) => url}
       components={{
         a({ href, children }) {
@@ -64,7 +91,7 @@ export default function MessageRenderer({ text, onOpenFile, markdown }) {
         },
       }}
     >
-      {processed}
+      {text}
     </ReactMarkdown>
   )
 }
