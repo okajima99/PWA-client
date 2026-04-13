@@ -121,7 +121,7 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
-  font-size: 14px;
+  font-size: 16px;
   padding: 8px 10px;
   resize: none;
   outline: none;
