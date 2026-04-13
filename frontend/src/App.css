@@ -205,6 +205,64 @@ button:disabled {
   color: #ff5f57;
 }
 
+/* Markdownスタイル */
+.bubble h1, .bubble h2, .bubble h3 {
+  font-weight: 700;
+  margin: 8px 0 4px;
+  line-height: 1.3;
+}
+.bubble h1 { font-size: 16px; }
+.bubble h2 { font-size: 15px; }
+.bubble h3 { font-size: 14px; }
+
+.bubble p { margin: 4px 0; }
+
+.bubble ul, .bubble ol {
+  padding-left: 18px;
+  margin: 4px 0;
+}
+
+.bubble table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 6px 0;
+  font-size: 12px;
+}
+.bubble th, .bubble td {
+  border: 1px solid var(--border);
+  padding: 5px 8px;
+  text-align: left;
+}
+.bubble th {
+  background: var(--bg3);
+  font-weight: 600;
+}
+
+.inline-code {
+  background: var(--bg3);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: 'Menlo', 'Monaco', monospace;
+  font-size: 12px;
+}
+
+.md-code {
+  background: var(--bg3);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+.md-code code {
+  font-family: 'Menlo', 'Monaco', monospace;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.bubble strong { font-weight: 700; }
+.bubble em { font-style: italic; }
+.bubble hr { border-color: var(--border); margin: 8px 0; }
+
 /* ファイルパスリンク */
 .file-link {
   color: var(--accent);
