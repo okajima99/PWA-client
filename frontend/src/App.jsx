@@ -432,7 +432,6 @@ export default function App() {
         setMenuOpen(false)
       }
     }
-    if (!menuOpen) setConfirmEnd(false)
     if (menuOpen) document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [menuOpen])
