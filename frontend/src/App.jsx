@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import './App.css'
+import MessageRenderer from './MessageRenderer.jsx'
+import FilePreviewModal from './FilePreviewModal.jsx'
+import FileTreePanel from './FileTreePanel.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const AGENTS = ['agent_a', 'agent_b']
@@ -11,6 +14,8 @@ export default function App() {
   const [loading, setLoading] = useState({ agent_a: false, agent_b: false })
   const [status, setStatus] = useState(null)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [previewPath, setPreviewPath] = useState(null)
+  const [treeOpen, setTreeOpen] = useState(false)
   const bottomRef = useRef(null)
   const menuRef = useRef(null)
 
@@ -125,7 +130,9 @@ export default function App() {
       <div className="messages">
         {messages[activeAgent].map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
-            <span className="bubble">{msg.text}</span>
+            <span className="bubble">
+              <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
+            </span>
           </div>
         ))}
         {loading[activeAgent] && (
@@ -149,6 +156,9 @@ export default function App() {
         <div className="buttons" ref={menuRef}>
           {menuOpen && (
             <div className="action-menu">
+              <button onClick={() => { setTreeOpen(true); setMenuOpen(false) }} className="menu-item">
+                ファイルツリー
+              </button>
               <button onClick={endSession} className="menu-item end">
                 セッション終了
               </button>
@@ -165,6 +175,15 @@ export default function App() {
           </button>
         </div>
       </div>
+      {previewPath && (
+        <FilePreviewModal path={previewPath} onClose={() => setPreviewPath(null)} />
+      )}
+      {treeOpen && (
+        <FileTreePanel
+          onOpenFile={(path) => { setPreviewPath(path) }}
+          onClose={() => setTreeOpen(false)}
+        />
+      )}
     </div>
   )
 }
