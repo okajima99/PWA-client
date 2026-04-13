@@ -192,7 +192,7 @@ export default function App() {
       )}
       {treeOpen && (
         <FileTreePanel
-          onOpenFile={(path) => { setPreviewPath(path) }}
+          onOpenFile={setPreviewPath}
           onClose={() => setTreeOpen(false)}
         />
       )}
