@@ -7,10 +7,12 @@ const AGENTS = ['agent_a', 'agent_b']
 export default function App() {
   const [activeAgent, setActiveAgent] = useState('agent_a')
   const [messages, setMessages] = useState({ agent_a: [], agent_b: [] })
-  const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [input, setInput] = useState({ agent_a: '', agent_b: '' })
+  const [loading, setLoading] = useState({ agent_a: false, agent_b: false })
   const [status, setStatus] = useState(null)
+  const [menuOpen, setMenuOpen] = useState(false)
   const bottomRef = useRef(null)
+  const menuRef = useRef(null)
 
   // タブ切り替え・10秒ごとにステータス取得
   useEffect(() => {
@@ -31,18 +33,19 @@ export default function App() {
   }, [messages, activeAgent])
 
   const sendMessage = async () => {
-    const text = input.trim()
-    if (!text || loading) return
+    const agent = activeAgent
+    const text = input[agent].trim()
+    if (!text || loading[agent]) return
 
     setMessages(prev => ({
       ...prev,
-      [activeAgent]: [...prev[activeAgent], { role: 'user', text }]
+      [agent]: [...prev[agent], { role: 'user', text }]
     }))
-    setInput('')
-    setLoading(true)
+    setInput(prev => ({ ...prev, [agent]: '' }))
+    setLoading(prev => ({ ...prev, [agent]: true }))
 
     try {
-      const res = await fetch(`${API_BASE}/chat/${activeAgent}`, {
+      const res = await fetch(`${API_BASE}/chat/${agent}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text }),
@@ -50,25 +53,37 @@ export default function App() {
       const data = await res.json()
       setMessages(prev => ({
         ...prev,
-        [activeAgent]: [...prev[activeAgent], { role: 'agent', text: data.result }]
+        [agent]: [...prev[agent], { role: 'agent', text: data.result }]
       }))
     } catch {
       setMessages(prev => ({
         ...prev,
-        [activeAgent]: [...prev[activeAgent], { role: 'error', text: '送信失敗' }]
+        [agent]: [...prev[agent], { role: 'error', text: '送信失敗' }]
       }))
     } finally {
-      setLoading(false)
+      setLoading(prev => ({ ...prev, [agent]: false }))
     }
   }
 
   const endSession = async () => {
+    setMenuOpen(false)
     await fetch(`${API_BASE}/session/${activeAgent}/end`, { method: 'POST' })
     setMessages(prev => ({
       ...prev,
       [activeAgent]: [...prev[activeAgent], { role: 'system', text: '--- セッション終了 ---' }]
     }))
   }
+
+  // メニュー外タップで閉じる
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setMenuOpen(false)
+      }
+    }
+    if (menuOpen) document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [menuOpen])
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -84,9 +99,9 @@ export default function App() {
         {status ? (
           <>
             <span className="model">{status.model}</span>
-            <span className={pctClass(status.five_hour_pct)}>5h {status.five_hour_pct}%</span>
-            <span className={pctClass(status.seven_day_pct)}>7d {status.seven_day_pct}%</span>
-            <span className={pctClass(status.context_pct)}>ctx {status.context_pct}%</span>
+            <span className={pctClass(status.five_hour_pct)}>5h {Math.round(status.five_hour_pct)}% <span className="dim">{timeUntil(status.five_hour_resets_at)}</span></span>
+            <span className={pctClass(status.seven_day_pct)}>7d {Math.round(status.seven_day_pct)}%</span>
+            <span className={pctClass(status.context_pct)}>ctx {Math.round(status.context_pct)}%</span>
           </>
         ) : (
           <span className="dim">---</span>
@@ -113,7 +128,7 @@ export default function App() {
             <span className="bubble">{msg.text}</span>
           </div>
         ))}
-        {loading && activeAgent === activeAgent && (
+        {loading[activeAgent] && (
           <div className="message agent">
             <span className="bubble dim">...</span>
           </div>
@@ -124,19 +139,29 @@ export default function App() {
       {/* 入力エリア */}
       <div className="inputarea">
         <textarea
-          value={input}
-          onChange={e => setInput(e.target.value)}
+          value={input[activeAgent]}
+          onChange={e => setInput(prev => ({ ...prev, [activeAgent]: e.target.value }))}
           onKeyDown={handleKeyDown}
           placeholder="メッセージを入力..."
           rows={2}
-          disabled={loading}
+          disabled={loading[activeAgent]}
         />
-        <div className="buttons">
-          <button onClick={sendMessage} disabled={loading || !input.trim()} className="send">
-            送信
+        <div className="buttons" ref={menuRef}>
+          {menuOpen && (
+            <div className="action-menu">
+              <button onClick={endSession} className="menu-item end">
+                セッション終了
+              </button>
+            </div>
+          )}
+          <button
+            onClick={() => setMenuOpen(prev => !prev)}
+            className={`more ${menuOpen ? 'active' : ''}`}
+          >
+            ⋯
           </button>
-          <button onClick={endSession} className="end">
-            終了
+          <button onClick={sendMessage} disabled={loading[activeAgent] || !input[activeAgent].trim()} className="send">
+            送信
           </button>
         </div>
       </div>
@@ -148,4 +173,12 @@ function pctClass(pct) {
   if (pct >= 80) return 'pct red'
   if (pct >= 50) return 'pct yellow'
   return 'pct green'
+}
+
+function timeUntil(unixSec) {
+  const diff = Math.max(0, unixSec - Date.now() / 1000)
+  const h = Math.floor(diff / 3600)
+  const m = Math.floor((diff % 3600) / 60)
+  if (h > 0) return `${h}h${m}m`
+  return `${m}m`
 }
