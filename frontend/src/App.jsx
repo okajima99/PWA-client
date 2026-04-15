@@ -79,6 +79,8 @@ export default function App() {
   const abortControllers = useRef({ agent_a: null, agent_b: null })
   const fileInputRef = useRef(null)
   const reconnectingRef = useRef({ agent_a: false, agent_b: false })
+  // アンマウント時に未送信添付ファイルのBlobURLを解放するための参照
+  const attachmentsRef = useRef(attachments)
   const msgSaveTimer = useRef(null)
   const inputSaveTimer = useRef(null)
 
@@ -208,6 +210,19 @@ export default function App() {
     scheduleFlush(agent)
   }
 
+  useEffect(() => { attachmentsRef.current = attachments }, [attachments])
+
+  // アンマウント時に未送信BlobURLを解放
+  useEffect(() => {
+    return () => {
+      for (const agent of AGENTS) {
+        for (const item of attachmentsRef.current[agent]) {
+          if (item.url) URL.revokeObjectURL(item.url)
+        }
+      }
+    }
+  }, [])
+
   useEffect(() => {
     const fetchStatus = async () => {
       if (document.hidden) return
@@ -247,13 +262,14 @@ export default function App() {
 
   // 新着メッセージ時の自動スクロール（タブ切り替えは別のuseEffect）
   // ストリーミング中の内容更新（アイテム数変化なし）は followOutput が拾えないため明示的にスクロール
+  // ストリーミング中は 'auto'（instant）で発熱を抑える。新規ブロック出現時は followOutput="smooth" が担う
   useEffect(() => {
     const currentLen = messages[activeAgent].length
     const prevLen = msgLengthRef.current[activeAgent]
     msgLengthRef.current[activeAgent] = currentLen
 
     if (isAtBottomRef.current) {
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' })
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
     } else if (currentLen > prevLen) {
       setHasNew(true)
     }
@@ -455,6 +471,7 @@ export default function App() {
     const fromPos = bufferPosRef.current[agent] ?? 0
     const res = await fetch(`${API_BASE}/chat/${agent}/reconnect?from=${fromPos}`)
     if (res.status === 204) return false
+    if (!res.ok) return false
 
     isAtBottomRef.current = true
     setLoading(prev => ({ ...prev, [agent]: true }))
@@ -588,7 +605,7 @@ export default function App() {
           className="messages"
           data={displayMessages}
           computeItemKey={(_, msg) => msg.id}
-          followOutput="auto"
+          followOutput="smooth"
           atBottomStateChange={(atBottom) => {
             isAtBottomRef.current = atBottom
             setShowScrollBtn(!atBottom)
