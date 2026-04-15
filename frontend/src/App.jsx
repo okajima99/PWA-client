@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
+import { compressToUTF16, decompressFromUTF16 } from 'lz-string'
 import './App.css'
 import MessageRenderer from './MessageRenderer.jsx'
-import FilePreviewModal from './FilePreviewModal.jsx'
-import FileTreePanel from './FileTreePanel.jsx'
+const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
+const FileTreePanel = lazy(() => import('./FileTreePanel.jsx'))
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const AGENTS = ['agent_a', 'agent_b']
@@ -19,11 +20,19 @@ export default function App() {
   })
   const [messages, setMessages] = useState(() => {
     try {
-      const saved = localStorage.getItem('cpc_messages')
-      return saved ? JSON.parse(saved) : { agent_a: [], agent_b: [] }
-    } catch {
-      return { agent_a: [], agent_b: [] }
-    }
+      const raw = localStorage.getItem('cpc_messages')
+      if (raw) {
+        const decompressed = decompressFromUTF16(raw)
+        const parsed = decompressed ? JSON.parse(decompressed) : JSON.parse(raw)
+        // IDがないメッセージに付与（移行対応）
+        const result = {}
+        for (const agent of AGENTS) {
+          result[agent] = (parsed[agent] || []).map(m => m.id ? m : { ...m, id: crypto.randomUUID() })
+        }
+        return result
+      }
+    } catch {}
+    return { agent_a: [], agent_b: [] }
   })
   const [input, setInput] = useState(() => {
     try {
@@ -33,6 +42,8 @@ export default function App() {
       return { agent_a: '', agent_b: '' }
     }
   })
+  // attachments: {agent_a: [{file, url}], agent_b: [{file, url}]}
+  // urlはファイル追加時に1回だけ生成し、削除時にrevoke
   const [attachments, setAttachments] = useState({ agent_a: [], agent_b: [] })
   const [loading, setLoading] = useState({ agent_a: false, agent_b: false })
   const [status, setStatus] = useState(null)
@@ -54,6 +65,17 @@ export default function App() {
   const msgSaveTimer = useRef(null)
   const inputSaveTimer = useRef(null)
 
+  // rAFバッチング用
+  const streamBufRef = useRef(null)
+  if (streamBufRef.current === null) {
+    streamBufRef.current = {}
+    for (const a of AGENTS) {
+      streamBufRef.current[a] = { text: null, thinking: null, newTools: [], needsNewBubble: false, dirty: false }
+    }
+  }
+  const rafIdRef = useRef({ agent_a: null, agent_b: null })
+  const currentBubbleHasToolsRef = useRef({ agent_a: false, agent_b: false })
+
   // バッファ消費済み位置（エージェントごと）— localStorageで永続化してスワイプ切り後も復元
   const bufferPosRef = useRef(null)
   if (bufferPosRef.current === null) {
@@ -67,6 +89,106 @@ export default function App() {
   const saveBufPos = (agent, pos) => {
     bufferPosRef.current[agent] = pos
     localStorage.setItem('cpc_bufpos', JSON.stringify(bufferPosRef.current))
+  }
+
+  // rAFバッチング: バッファの最新状態をReact stateに1回だけ反映
+  const flushStreamBuf = (agent) => {
+    const buf = streamBufRef.current[agent]
+    if (!buf.dirty) return
+
+    const snap = {
+      text: buf.text,
+      thinking: buf.thinking,
+      newTools: [...buf.newTools],
+      needsNewBubble: buf.needsNewBubble,
+    }
+    buf.text = null
+    buf.thinking = null
+    buf.newTools = []
+    buf.needsNewBubble = false
+    buf.dirty = false
+
+    setMessages(prev => {
+      const msgs = [...prev[agent]]
+
+      if (snap.needsNewBubble) {
+        return { ...prev, [agent]: [...msgs, {
+          id: crypto.randomUUID(),
+          role: 'agent',
+          text: snap.text || '',
+          tools: [],
+          streaming: true,
+        }]}
+      }
+
+      const last = msgs[msgs.length - 1]
+      if (!last || last.role !== 'agent') return prev
+
+      const updated = { ...last }
+      if (snap.text !== null) updated.text = snap.text
+      if (snap.thinking !== null) updated.thinking = snap.thinking
+      if (snap.newTools.length > 0) {
+        const existing = updated.tools || []
+        const existingIds = new Set(existing.map(t => t.id))
+        const toAdd = snap.newTools.filter(t => !existingIds.has(t.id))
+        if (toAdd.length > 0) updated.tools = [...existing, ...toAdd]
+      }
+      msgs[msgs.length - 1] = updated
+      return { ...prev, [agent]: msgs }
+    })
+  }
+
+  const scheduleFlush = (agent) => {
+    if (rafIdRef.current[agent] !== null) return
+    rafIdRef.current[agent] = requestAnimationFrame(() => {
+      rafIdRef.current[agent] = null
+      flushStreamBuf(agent)
+    })
+  }
+
+  const cancelAndFlush = (agent) => {
+    if (rafIdRef.current[agent] !== null) {
+      cancelAnimationFrame(rafIdRef.current[agent])
+      rafIdRef.current[agent] = null
+    }
+    flushStreamBuf(agent)
+  }
+
+  // SSEイベントをバッファに積む（sendMessage / reconnectStream 共通）
+  const processStreamEvent = (agent, event) => {
+    if (event.type !== 'assistant' || !event.message?.content) return
+
+    const textContent = event.message.content
+      .filter(b => b.type === 'text')
+      .map(b => b.text)
+      .join('')
+    const thinkingContent = event.message.content
+      .filter(b => b.type === 'thinking')
+      .map(b => b.thinking)
+      .join('\n')
+    const newTools = event.message.content
+      .filter(b => b.type === 'tool_use')
+      .map(b => formatTool(b))
+
+    const buf = streamBufRef.current[agent]
+    const needsNewBubble = currentBubbleHasToolsRef.current[agent] && textContent && newTools.length === 0
+
+    if (needsNewBubble) {
+      buf.needsNewBubble = true
+      buf.text = textContent
+      buf.thinking = null
+      buf.newTools = []
+      currentBubbleHasToolsRef.current[agent] = false
+    } else {
+      if (textContent) buf.text = textContent
+      if (thinkingContent) buf.thinking = thinkingContent
+      if (newTools.length > 0) {
+        buf.newTools = [...buf.newTools, ...newTools]
+        currentBubbleHasToolsRef.current[agent] = true
+      }
+    }
+    buf.dirty = true
+    scheduleFlush(agent)
   }
 
   useEffect(() => {
@@ -85,14 +207,14 @@ export default function App() {
   useEffect(() => {
     if (msgSaveTimer.current) clearTimeout(msgSaveTimer.current)
     msgSaveTimer.current = setTimeout(() => {
-      // localStorageにはimagesのBlobURLは保存できないので除外
+      // localStorageにはimagesのBlobURLは保存できないので除外し、lz-stringで圧縮
       const toSave = {}
       for (const agent of AGENTS) {
         toSave[agent] = messages[agent].map(m =>
           m.role === 'user' ? { ...m, imageUrls: undefined } : m
         )
       }
-      localStorage.setItem('cpc_messages', JSON.stringify(toSave))
+      localStorage.setItem('cpc_messages', compressToUTF16(JSON.stringify(toSave)))
     }, 500)
   }, [messages])
 
@@ -127,7 +249,6 @@ export default function App() {
     if (isAtBottomRef.current) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     } else if (currentLen > prevLen) {
-      // 上にいる間に新着メッセージ
       setHasNew(true)
     }
   }, [messages])
@@ -204,10 +325,13 @@ export default function App() {
 
   const handleFileSelect = (e) => {
     const agent = activeAgent
-    const newFiles = Array.from(e.target.files || [])
+    const newItems = Array.from(e.target.files || []).map(file => ({
+      file,
+      url: SUPPORTED_IMAGE_TYPES.includes(file.type) ? URL.createObjectURL(file) : null,
+    }))
     setAttachments(prev => ({
       ...prev,
-      [agent]: [...prev[agent], ...newFiles],
+      [agent]: [...prev[agent], ...newItems],
     }))
     e.target.value = ''
   }
@@ -215,7 +339,8 @@ export default function App() {
   const removeAttachment = (agent, index) => {
     setAttachments(prev => {
       const updated = [...prev[agent]]
-      updated.splice(index, 1)
+      const removed = updated.splice(index, 1)
+      if (removed[0]?.url) URL.revokeObjectURL(removed[0].url)
       return { ...prev, [agent]: updated }
     })
   }
@@ -223,20 +348,16 @@ export default function App() {
   const sendMessage = async () => {
     const agent = activeAgent
     const text = input[agent].trim()
-    const files = attachments[agent]
-    if (!text && files.length === 0) return
+    const items = attachments[agent]
+    if (!text && items.length === 0) return
     if (loading[agent]) return
 
-    const imageUrls = files
-      .filter(f => SUPPORTED_IMAGE_TYPES.includes(f.type))
-      .map(f => URL.createObjectURL(f))
-    const fileNames = files
-      .filter(f => !SUPPORTED_IMAGE_TYPES.includes(f.type))
-      .map(f => f.name)
+    const imageUrls = items.filter(item => item.url).map(item => item.url)
+    const fileNames = items.filter(item => !item.url).map(item => item.file.name)
 
     setMessages(prev => ({
       ...prev,
-      [agent]: [...prev[agent], { role: 'user', text, imageUrls, fileNames }],
+      [agent]: [...prev[agent], { id: crypto.randomUUID(), role: 'user', text, imageUrls, fileNames }],
     }))
     setInput(prev => ({ ...prev, [agent]: '' }))
     setAttachments(prev => ({ ...prev, [agent]: [] }))
@@ -245,11 +366,15 @@ export default function App() {
     // 応答の受け皿
     setMessages(prev => ({
       ...prev,
-      [agent]: [...prev[agent], { role: 'agent', text: '', tools: [], streaming: true }],
+      [agent]: [...prev[agent], { id: crypto.randomUUID(), role: 'agent', text: '', tools: [], streaming: true }],
     }))
 
     const controller = new AbortController()
     abortControllers.current[agent] = controller
+
+    // バッファ初期化
+    streamBufRef.current[agent] = { text: null, thinking: null, newTools: [], needsNewBubble: false, dirty: false }
+    currentBubbleHasToolsRef.current[agent] = false
 
     saveBufPos(agent, 0)
     let localPos = 0
@@ -257,8 +382,8 @@ export default function App() {
     try {
       const formData = new FormData()
       formData.append('message', text)
-      for (const f of files) {
-        formData.append('files', f)
+      for (const item of items) {
+        formData.append('files', item.file)
       }
 
       const res = await fetch(`${API_BASE}/chat/${agent}/stream`, {
@@ -290,52 +415,12 @@ export default function App() {
           bufferPosRef.current[agent] = localPos
 
           try {
-            const event = JSON.parse(data)
-
-            if (event.type === 'assistant' && event.message?.content) {
-              const textContent = event.message.content
-                .filter(b => b.type === 'text')
-                .map(b => b.text)
-                .join('')
-              const thinkingContent = event.message.content
-                .filter(b => b.type === 'thinking')
-                .map(b => b.thinking)
-                .join('\n')
-              const newTools = event.message.content
-                .filter(b => b.type === 'tool_use')
-                .map(b => formatTool(b))
-
-              setMessages(prev => {
-                const msgs = [...prev[agent]]
-                const last = msgs[msgs.length - 1]
-                // ツール使用済みのバブルにテキストのみの新ターンが来たら新バブルを追加
-                const needsNewBubble = last?.role === 'agent' &&
-                  last?.tools?.length > 0 &&
-                  textContent &&
-                  newTools.length === 0
-                if (needsNewBubble) {
-                  return { ...prev, [agent]: [...msgs, { role: 'agent', text: textContent, tools: [], streaming: true }] }
-                }
-                const updated = { ...last }
-                if (textContent) updated.text = textContent
-                if (thinkingContent) updated.thinking = thinkingContent
-                if (newTools.length > 0) {
-                  const existing = updated.tools || []
-                  const existingIds = new Set(existing.map(t => t.id))
-                  const toAdd = newTools.filter(t => !existingIds.has(t.id))
-                  if (toAdd.length > 0) updated.tools = [...existing, ...toAdd]
-                }
-                msgs[msgs.length - 1] = updated
-                return { ...prev, [agent]: msgs }
-              })
-            }
+            processStreamEvent(agent, JSON.parse(data))
           } catch {}
         }
       }
     } catch (e) {
       if (e.name === 'AbortError') return
-      // streaming 完了済みでもバッファに未送信データがある可能性があるため常に reconnect を試みる
-      // バックエンドの reconnect は complete=True でも from_pos < len(buffer) なら返す
       try {
         const gotData = await reconnectStream(agent)
         if (!gotData) {
@@ -343,7 +428,7 @@ export default function App() {
             const msgs = prev[agent]
             const last = msgs[msgs.length - 1]
             if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
-            return { ...prev, [agent]: [...msgs, { role: 'error', text: '送信失敗' }] }
+            return { ...prev, [agent]: [...msgs, { id: crypto.randomUUID(), role: 'error', text: '送信失敗' }] }
           })
         }
       } catch {
@@ -351,10 +436,11 @@ export default function App() {
           const msgs = prev[agent]
           const last = msgs[msgs.length - 1]
           if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
-          return { ...prev, [agent]: [...msgs, { role: 'error', text: '送信失敗' }] }
+          return { ...prev, [agent]: [...msgs, { id: crypto.randomUUID(), role: 'error', text: '送信失敗' }] }
         })
       }
     } finally {
+      cancelAndFlush(agent)
       saveBufPos(agent, localPos)
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
@@ -380,8 +466,13 @@ export default function App() {
       const msgs = prev[agent]
       const last = msgs[msgs.length - 1]
       if (last?.role === 'agent' && last?.streaming) return prev
-      return { ...prev, [agent]: [...msgs, { role: 'agent', text: '', tools: [], streaming: true }] }
+      return { ...prev, [agent]: [...msgs, { id: crypto.randomUUID(), role: 'agent', text: '', tools: [], streaming: true }] }
     })
+
+    // バッファ初期化
+    streamBufRef.current[agent] = { text: null, thinking: null, newTools: [], needsNewBubble: false, dirty: false }
+    currentBubbleHasToolsRef.current[agent] = false
+
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
@@ -402,39 +493,13 @@ export default function App() {
           bufferPosRef.current[agent] = localPos
 
           try {
-            const event = JSON.parse(data)
-            if (event.type === 'assistant' && event.message?.content) {
-              const textContent = event.message.content.filter(b => b.type === 'text').map(b => b.text).join('')
-              const thinkingContent = event.message.content.filter(b => b.type === 'thinking').map(b => b.thinking).join('\n')
-              const newTools = event.message.content.filter(b => b.type === 'tool_use').map(b => formatTool(b))
-              setMessages(prev => {
-                const msgs = [...prev[agent]]
-                const last = msgs[msgs.length - 1]
-                if (!last || last.role !== 'agent') {
-                  return { ...prev, [agent]: [...msgs, { role: 'agent', text: textContent, tools: newTools, thinking: thinkingContent || undefined, streaming: true }] }
-                }
-                const needsNewBubble = last.tools?.length > 0 && textContent && newTools.length === 0
-                if (needsNewBubble) {
-                  return { ...prev, [agent]: [...msgs, { role: 'agent', text: textContent, tools: [], streaming: true }] }
-                }
-                const updated = { ...last }
-                if (textContent) updated.text = textContent
-                if (thinkingContent) updated.thinking = thinkingContent
-                if (newTools.length > 0) {
-                  const existing = updated.tools || []
-                  const existingIds = new Set(existing.map(t => t.id))
-                  const toAdd = newTools.filter(t => !existingIds.has(t.id))
-                  if (toAdd.length > 0) updated.tools = [...existing, ...toAdd]
-                }
-                msgs[msgs.length - 1] = updated
-                return { ...prev, [agent]: msgs }
-              })
-            }
+            processStreamEvent(agent, JSON.parse(data))
           } catch {}
         }
       }
       return true
     } finally {
+      cancelAndFlush(agent)
       saveBufPos(agent, localPos)
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
@@ -478,7 +543,7 @@ export default function App() {
     await fetch(`${API_BASE}/session/${activeAgent}/end`, { method: 'POST' })
     setMessages(prev => ({
       ...prev,
-      [activeAgent]: [...prev[activeAgent], { role: 'system', text: '--- セッション終了 ---' }],
+      [activeAgent]: [...prev[activeAgent], { id: crypto.randomUUID(), role: 'system', text: '--- セッション終了 ---' }],
     }))
   }
 
@@ -526,8 +591,8 @@ export default function App() {
       {/* メッセージ一覧 */}
       <div className="messages-container">
         <div className="messages" ref={messagesRef} onScroll={handleScroll}>
-          {messages[activeAgent].map((msg, i) => (
-            <div key={i} className={`message ${msg.role}`}>
+          {messages[activeAgent].map((msg) => (
+            <div key={msg.id} className={`message ${msg.role}`}>
               {msg.role === 'user' && (msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
                 <div className="user-block">
                   {msg.imageUrls?.length > 0 && (
@@ -560,8 +625,8 @@ export default function App() {
                   )}
                   {msg.tools?.length > 0 && (
                     <div className="tool-log">
-                      {msg.tools.map((t, ti) => (
-                        <div key={ti} className={`tool-line tool-${t.name.toLowerCase()}`}>
+                      {msg.tools.map((t) => (
+                        <div key={t.id} className={`tool-line tool-${t.name.toLowerCase()}`}>
                           {t.label}
                         </div>
                       ))}
@@ -601,12 +666,12 @@ export default function App() {
       {/* 添付ファイルプレビュー */}
       {currentAttachments.length > 0 && (
         <div className="attachments-bar">
-          {currentAttachments.map((f, i) => (
+          {currentAttachments.map((item, i) => (
             <div key={i} className="attach-chip">
-              {SUPPORTED_IMAGE_TYPES.includes(f.type) ? (
-                <img src={URL.createObjectURL(f)} className="attach-thumb" alt="" />
+              {item.url ? (
+                <img src={item.url} className="attach-thumb" alt="" />
               ) : (
-                <span className="attach-name">📄 {f.name}</span>
+                <span className="attach-name">📄 {item.file.name}</span>
               )}
               <button className="attach-remove" onClick={() => removeAttachment(activeAgent, i)}>×</button>
             </div>
@@ -677,15 +742,17 @@ export default function App() {
         </div>
       )}
 
-      {previewPath && (
-        <FilePreviewModal path={previewPath} onClose={() => setPreviewPath(null)} />
-      )}
-      {treeOpen && (
-        <FileTreePanel
-          onOpenFile={setPreviewPath}
-          onClose={() => setTreeOpen(false)}
-        />
-      )}
+      <Suspense fallback={null}>
+        {previewPath && (
+          <FilePreviewModal path={previewPath} onClose={() => setPreviewPath(null)} />
+        )}
+        {treeOpen && (
+          <FileTreePanel
+            onOpenFile={setPreviewPath}
+            onClose={() => setTreeOpen(false)}
+          />
+        )}
+      </Suspense>
     </div>
   )
 }

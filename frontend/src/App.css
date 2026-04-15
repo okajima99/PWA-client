@@ -102,6 +102,8 @@
 
 .message {
   display: flex;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 80px;
 }
 
 .message.user { justify-content: flex-end; }
