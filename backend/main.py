@@ -12,6 +12,7 @@ import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 HOME = Path.home()
 UPLOADS_TMP = HOME / "cpc" / "uploads" / "tmp"
@@ -492,3 +493,9 @@ def get_tree(path: str = Query(default="~")):
     except PermissionError:
         raise HTTPException(status_code=403, detail="Permission denied")
     return {"path": str(resolved), "entries": entries}
+
+
+# フロントエンド静的ファイル配信（APIルートの後に配置）
+FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
