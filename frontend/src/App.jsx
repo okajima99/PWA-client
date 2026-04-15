@@ -265,14 +265,23 @@ export default function App() {
   }, [messages])
 
   // タブ切り替え時は常に最下部へ
+  // content-visibility: auto により画面外要素のレイアウトが未計算のため
+  // scrollIntoView は効かない。scrollTop=999999 + double RAF + 300ms fallback で対処
   useEffect(() => {
     isAtBottomRef.current = true
     setShowScrollBtn(false)
     setHasNew(false)
     msgLengthRef.current[activeAgent] = messages[activeAgent].length
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = messagesRef.current
+        if (el) el.scrollTop = 999999
+      })
+    })
     setTimeout(() => {
-      bottomRef.current?.scrollIntoView({ behavior: 'instant' })
-    }, 0)
+      const el = messagesRef.current
+      if (el) el.scrollTop = 999999
+    }, 300)
   }, [activeAgent])
 
   // 画面回転時のスクロール位置保持
