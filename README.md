@@ -35,7 +35,7 @@ Claude Code CLI（`claude --resume`）をバックエンドの subprocess で呼
 
 ### バックエンド（Python / FastAPI）
 
-- `POST /chat/{agent}` — メッセージ送信 + SSE ストリーミングレスポンス
+- `POST /chat/{agent}/stream` — メッセージ送信 + SSE ストリーミングレスポンス
 - `GET /chat/{agent}/reconnect` — バックグラウンド復帰時の再接続
 - `POST /chat/{agent}/stop` — 応答の中断
 - `POST /session/{agent}/end` — セッションリセット
@@ -49,12 +49,12 @@ Claude Code CLI を `--resume <session_id>` で呼び出し、セッション継
 
 - react-markdown + remark-gfm でチャット内の Markdown をレンダリング
 - ファイルパスの自動リンク化（独自 remark プラグイン）
-- react-virtuoso でメッセージリストを仮想化（DOM に存在するのは表示中の件数のみ）
 - react-syntax-highlighter（Prism）でファイルプレビューのシンタックスハイライト
 - lz-string 圧縮 + localStorage でメッセージ履歴・バッファ位置を永続化（最新 200 件）
 - rAF バッチングによりストリーミング中の再レンダリングを 1 フレーム 1 回に抑制
 - Error Boundary でレンダリングエラーを捕捉し、blank screen を防止
 - PWA: manifest.json + SVG アイコン。ホーム画面に追加してアプリとして利用
+- プロダクションビルドをバックエンド（FastAPI）から配信（ポート 8000 のみ）
 
 ## ディレクトリ構成
 
@@ -116,13 +116,13 @@ npm install
 # .env.local を作成してバックエンドの URL を設定
 echo "VITE_API_BASE=http://<tailscale-ip>:8000" > .env.local
 
-npm run build   # 本番ビルド
-npm run dev     # 開発サーバー
+npm run build   # 本番ビルド（dist/ を生成。バックエンドが配信する）
+npm run dev     # 開発サーバー（開発時のみ。本番は不要）
 ```
 
 ### launchd 自動起動（macOS）
 
-`~/Library/LaunchAgents/` に LaunchAgent の plist を配置し、`launchctl load` で読み込みます。KeepAlive を有効にしてサーバーが落ちたら自動再起動させます。
+`~/Library/LaunchAgents/` に LaunchAgent の plist を配置し、`launchctl load` で読み込みます。KeepAlive を有効にしてサーバーが落ちたら自動再起動させます。バックエンド（ポート 8000）がフロントエンドの静的ファイルも兼ねて配信します。
 
 ## 設定ファイル（config.json）
 
