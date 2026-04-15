@@ -14,10 +14,11 @@ Claude Code CLI（`claude --resume`）をバックエンドの subprocess で呼
 - **SSE ストリーミング**: Claude のレスポンスをリアルタイムでストリーミング表示
 - **バックグラウンド処理**: スマートフォンの画面を閉じてもサーバー側で Claude の処理を継続。復帰時に自動再接続してバッファを受信する
 - **ステータスバー**: コンテキスト使用率・5 時間 usage・7 日 usage・使用モデルをリアルタイム表示
-- **ファイルプレビュー**: チャット内のファイルパスをタップしてモーダルで表示（Markdown レンダリング対応）
+- **ファイルプレビュー**: チャット内のファイルパスをタップしてモーダルで表示（Markdown レンダリング・シンタックスハイライト対応）
 - **ファイルツリー**: サーバー上のディレクトリをパネルで閲覧
-- **画像・テキストファイル添付**: マルチパートフォームで送信し、Claude に参照させる
+- **画像・テキストファイル添付**: マルチパートフォームで送信し、Claude に参照させる。送信済み画像は base64 で保存されリロード後も表示される
 - **セッション永続化**: サーバー再起動後も session_id を引き継いで会話継続
+- **メッセージ履歴の永続化**: lz-string 圧縮で localStorage に保存。最新 200 件を自動保持
 - **launchd 自動起動**: macOS の launchd で uvicorn を常時起動管理
 
 ## アーキテクチャ
@@ -48,7 +49,11 @@ Claude Code CLI を `--resume <session_id>` で呼び出し、セッション継
 
 - react-markdown + remark-gfm でチャット内の Markdown をレンダリング
 - ファイルパスの自動リンク化（独自 remark プラグイン）
-- localStorage でメッセージ履歴・バッファ位置を永続化
+- react-virtuoso でメッセージリストを仮想化（DOM に存在するのは表示中の件数のみ）
+- react-syntax-highlighter（Prism）でファイルプレビューのシンタックスハイライト
+- lz-string 圧縮 + localStorage でメッセージ履歴・バッファ位置を永続化（最新 200 件）
+- rAF バッチングによりストリーミング中の再レンダリングを 1 フレーム 1 回に抑制
+- Error Boundary でレンダリングエラーを捕捉し、blank screen を防止
 - PWA: manifest.json + SVG アイコン。ホーム画面に追加してアプリとして利用
 
 ## ディレクトリ構成
@@ -64,8 +69,9 @@ pwa-client/
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx              # メインコンポーネント（タブ・チャット・ステータスバー）
+│   │   ├── ErrorBoundary.jsx    # レンダリングエラー捕捉・リロードUI表示
 │   │   ├── MessageRenderer.jsx  # Markdown レンダリング + ファイルパスリンク化
-│   │   ├── FilePreviewModal.jsx # ファイルプレビューモーダル
+│   │   ├── FilePreviewModal.jsx # ファイルプレビューモーダル（シンタックスハイライト対応）
 │   │   └── FileTreePanel.jsx    # ファイルツリーパネル
 │   ├── public/
 │   │   └── manifest.json        # PWA マニフェスト
