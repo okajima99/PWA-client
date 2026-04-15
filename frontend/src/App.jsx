@@ -8,6 +8,9 @@ const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
 const FileTreePanel = lazy(() => import('./FileTreePanel.jsx'))
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+
+// Virtuoso Footer: padding-bottom の代替。スクロール内容の一部にすることで align:'end' が正しく計算される
+const ListFooter = () => <div style={{ height: '12px' }} />
 const AGENTS = ['agent_a', 'agent_b']
 const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 const MAX_MESSAGES = 200
@@ -615,6 +618,7 @@ export default function App() {
             if (atBottom) setHasNew(false)
           }}
           atBottomThreshold={30}
+          components={{ Footer: ListFooter }}
           itemContent={(_, msg) => {
             if (msg.role === '__loading__') {
               return (
