@@ -54,13 +54,16 @@ export default function FilePreviewModal({ path, onClose }) {
   const lang = EXT_TO_LANG[ext] || null
 
   useEffect(() => {
+    const controller = new AbortController()
     setLoading(true)
     setError(null)
-    fetch(`${API_BASE}/file?path=${encodeURIComponent(path)}`)
+    setContent(null)
+    fetch(`${API_BASE}/file?path=${encodeURIComponent(path)}`, { signal: controller.signal })
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
       .then(data => setContent(data.content))
-      .catch(e => setError(`読み込みエラー (${e})`))
+      .catch(e => { if (e.name !== 'AbortError') setError(`読み込みエラー (${e})`) })
       .finally(() => setLoading(false))
+    return () => controller.abort()
   }, [path])
 
   return (
