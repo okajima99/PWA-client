@@ -256,7 +256,7 @@ export default function App() {
   }, [input])
 
   const scrollToBottom = () => {
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' })
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' })
     setHasNew(false)
   }
 
@@ -273,7 +273,7 @@ export default function App() {
       if (!isAtBottomRef.current) setHasNew(true)
     } else if (isAtBottomRef.current) {
       // ストリーミング中の内容更新のみ
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
     }
   }, [messages])
 
@@ -284,7 +284,7 @@ export default function App() {
     setHasNew(false)
     msgLengthRef.current[activeAgent] = messages[activeAgent].length
     requestAnimationFrame(() => {
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
     })
   }, [activeAgent])
 
@@ -292,7 +292,7 @@ export default function App() {
   useEffect(() => {
     const onResize = () => {
       if (isAtBottomRef.current) {
-        virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
+        virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
       }
     }
     window.addEventListener('resize', onResize)
@@ -525,7 +525,7 @@ export default function App() {
         }
         return { ...prev, [agent]: msgs }
       })
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
     }
   }
 
