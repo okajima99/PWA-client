@@ -73,6 +73,7 @@ export default function App() {
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [hasNew, setHasNew] = useState(false)
   const isAtBottomRef = useRef(true)
+  const scrollThrottleRef = useRef(0)
   const scrollerDomRef = useRef(null)
   const msgLengthRef = useRef({ agent_a: 0, agent_b: 0 })
   const menuRef = useRef(null)
@@ -232,7 +233,7 @@ export default function App() {
       } catch {}
     }
     fetchStatus()
-    const id = setInterval(fetchStatus, 10000)
+    const id = setInterval(fetchStatus, 30000)
     return () => clearInterval(id)
   }, [activeAgent])
 
@@ -255,15 +256,19 @@ export default function App() {
     }, 500)
   }, [input])
 
+  const programmaticScrollRef = useRef(false)
+
   const scrollToBottom = (behavior = 'auto') => {
     const el = scrollerDomRef.current
     if (!el) return
+    programmaticScrollRef.current = true
     if (behavior === 'smooth') {
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
       setHasNew(false)
     } else {
       el.scrollTop = el.scrollHeight
     }
+    requestAnimationFrame(() => { programmaticScrollRef.current = false })
   }
 
   // 新着メッセージ時の自動スクロール（タブ切り替えは別のuseEffect）
@@ -566,7 +571,7 @@ export default function App() {
         return { ...prev, [agent]: msgs }
       })
       requestAnimationFrame(() => { scrollToBottom() })
-      if (needsReconnect) setTimeout(() => reconnectStream(agent), 100)
+      if (needsReconnect) setTimeout(() => reconnectStream(agent), 1000)
     }
   }
 
@@ -648,12 +653,18 @@ export default function App() {
           ref={scrollerDomRef}
           className="messages"
           onScroll={() => {
+            if (programmaticScrollRef.current) return
             const el = scrollerDomRef.current
             if (!el) return
             const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30
             isAtBottomRef.current = atBottom
-            setShowScrollBtn(!atBottom)
             if (atBottom) setHasNew(false)
+            // setShowScrollBtnはre-renderを誘発するためthrottle（150ms）
+            const now = Date.now()
+            if (now - scrollThrottleRef.current >= 150) {
+              scrollThrottleRef.current = now
+              setShowScrollBtn(!atBottom)
+            }
           }}
         >
           {displayMessages.map((msg) => {
@@ -772,6 +783,13 @@ export default function App() {
               </button>
               <button onClick={() => { setTreeOpen(true); setMenuOpen(false) }} className="menu-item">
                 ファイルツリー
+              </button>
+              <button onClick={() => {
+                setMenuOpen(false)
+                checkAndReconnect(true)
+                requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
+              }} className="menu-item">
+                最新を取得
               </button>
               <button onClick={() => { setMenuOpen(false); setConfirmEnd(true) }} className="menu-item end">
                 セッション終了
