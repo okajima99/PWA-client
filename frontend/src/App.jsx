@@ -51,6 +51,8 @@ export default function App() {
   const abortControllers = useRef({ agent_a: null, agent_b: null })
   const fileInputRef = useRef(null)
   const reconnectingRef = useRef({ agent_a: false, agent_b: false })
+  const msgSaveTimer = useRef(null)
+  const inputSaveTimer = useRef(null)
 
   // バッファ消費済み位置（エージェントごと）— localStorageで永続化してスワイプ切り後も復元
   const bufferPosRef = useRef(null)
@@ -69,6 +71,7 @@ export default function App() {
 
   useEffect(() => {
     const fetchStatus = async () => {
+      if (document.hidden) return
       try {
         const res = await fetch(`${API_BASE}/status/${activeAgent}`)
         if (res.ok) setStatus(await res.json())
@@ -80,18 +83,24 @@ export default function App() {
   }, [activeAgent])
 
   useEffect(() => {
-    // localStorageにはimagesのBlobURLは保存できないので除外
-    const toSave = {}
-    for (const agent of AGENTS) {
-      toSave[agent] = messages[agent].map(m =>
-        m.role === 'user' ? { ...m, imageUrls: undefined } : m
-      )
-    }
-    localStorage.setItem('cpc_messages', JSON.stringify(toSave))
+    if (msgSaveTimer.current) clearTimeout(msgSaveTimer.current)
+    msgSaveTimer.current = setTimeout(() => {
+      // localStorageにはimagesのBlobURLは保存できないので除外
+      const toSave = {}
+      for (const agent of AGENTS) {
+        toSave[agent] = messages[agent].map(m =>
+          m.role === 'user' ? { ...m, imageUrls: undefined } : m
+        )
+      }
+      localStorage.setItem('cpc_messages', JSON.stringify(toSave))
+    }, 500)
   }, [messages])
 
   useEffect(() => {
-    localStorage.setItem('cpc_input', JSON.stringify(input))
+    if (inputSaveTimer.current) clearTimeout(inputSaveTimer.current)
+    inputSaveTimer.current = setTimeout(() => {
+      localStorage.setItem('cpc_input', JSON.stringify(input))
+    }, 500)
   }, [input])
 
   // スクロールハンドラ
@@ -278,7 +287,7 @@ export default function App() {
           if (!data) continue
 
           localPos++
-          saveBufPos(agent, localPos)
+          bufferPosRef.current[agent] = localPos
 
           try {
             const event = JSON.parse(data)
@@ -346,6 +355,7 @@ export default function App() {
         })
       }
     } finally {
+      saveBufPos(agent, localPos)
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
         const msgs = [...prev[agent]]
@@ -389,7 +399,7 @@ export default function App() {
           if (!data) continue
 
           localPos++
-          saveBufPos(agent, localPos)
+          bufferPosRef.current[agent] = localPos
 
           try {
             const event = JSON.parse(data)
@@ -425,6 +435,7 @@ export default function App() {
       }
       return true
     } finally {
+      saveBufPos(agent, localPos)
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
         const msgs = [...prev[agent]]
