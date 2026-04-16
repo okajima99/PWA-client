@@ -785,6 +785,9 @@ export default function App() {
               <button onClick={() => { setTreeOpen(true); setMenuOpen(false) }} className="menu-item">
                 ファイルツリー
               </button>
+              <button onClick={() => { checkAndReconnect(true); requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) }); setMenuOpen(false) }} className="menu-item">
+                最新を取得
+              </button>
               <button onClick={() => { setMenuOpen(false); setConfirmEnd(true) }} className="menu-item end">
                 セッション終了
               </button>
