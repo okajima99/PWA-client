@@ -391,6 +391,9 @@ export default function App() {
     // 変換済みなので BlobURL は解放
     imageItems.forEach(item => URL.revokeObjectURL(item.url))
 
+    // 送信時は常に最下部へ（setMessages より前に立てないとuseEffectに間に合わない）
+    isAtBottomRef.current = true
+
     setMessages(prev => ({
       ...prev,
       [agent]: [...prev[agent], { id: generateId(), role: 'user', text, imageUrls, fileNames }].slice(-MAX_MESSAGES),
@@ -405,8 +408,6 @@ export default function App() {
       [agent]: [...prev[agent], { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES),
     }))
 
-    // 送信時は常に最下部へ（followOutputの内部状態に依存しない）
-    isAtBottomRef.current = true
     requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
 
     const controller = new AbortController()
