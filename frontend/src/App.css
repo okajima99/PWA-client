@@ -28,6 +28,139 @@
 .pct.red { color: var(--red); }
 .dim { color: var(--text-dim); }
 
+/* アクティビティバー */
+.activity-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.ab-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.ab-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ab-plan {
+  background: #3a2a1a;
+  color: #ffb24a;
+  border: 1px solid #ffb24a;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.ab-tool {
+  background: var(--bg3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-family: 'Menlo', 'Monaco', monospace;
+}
+
+.ab-sub {
+  background: var(--bg3);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+.ab-todos {
+  font-size: 11px;
+}
+
+.ab-todos > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  color: var(--text-dim);
+}
+
+.ab-todos > summary::-webkit-details-marker {
+  display: none;
+}
+
+.ab-todos-bar {
+  position: relative;
+  flex: 0 0 80px;
+  height: 4px;
+  background: var(--bg3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.ab-todos-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+
+.ab-todos-count {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ab-todos-active {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ab-todos-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ab-todo {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--text-dim);
+}
+
+.ab-todo-mark {
+  flex: 0 0 14px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.ab-todo-text {
+  word-break: break-word;
+}
+
+.ab-todo-completed { opacity: 0.5; }
+.ab-todo-completed .ab-todo-text { text-decoration: line-through; }
+.ab-todo-in_progress {
+  color: var(--text);
+  font-weight: 500;
+}
+.ab-todo-in_progress .ab-todo-mark { color: var(--accent); }
+
 /* タブ */
 .tabs {
   display: flex;

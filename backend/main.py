@@ -123,9 +123,21 @@ shared_status: dict = {
     "seven_day_resets_at": 0,
 }
 agent_status: dict[str, dict] = {
-    name: {"ctx_pct": 0, "model": cfg.get("model", "")}
+    name: {
+        "ctx_pct": 0,
+        "model": cfg.get("model", ""),
+        "plan_mode": False,
+        "current_tool": None,   # {"name": str, "id": str, "started_at": float}
+        "todos": None,          # list[{content, activeForm, status}]
+        "subagent": None,       # {"description": str, "last_tool": str, "task_id": str}
+    }
     for name, cfg in AGENTS.items()
 }
+
+
+def _reset_activity(agent: str) -> None:
+    agent_status[agent]["current_tool"] = None
+    agent_status[agent]["subagent"] = None
 
 
 def _update_shared_from_headers(headers) -> None:
@@ -268,14 +280,63 @@ async def _run_claude_background(agent: str, cmd: list, input_msg: str, env: dic
             try:
                 event = json.loads(line)
                 etype = event.get("type")
+                esubtype = event.get("subtype", "")
                 # assistantイベントのusageを毎回更新（最後の1回分 = 単一API呼び出し分）
                 # ストリーミング中もctx_pctを即時反映（ツール連打の途中でも値が動く）
+                # parent_tool_use_id 付きのイベントはサブエージェント内部のもの
+                # メインストリームの current_tool/todos は汚染しない（subagent 状態は task_* で別管理）
+                is_subagent_event = event.get("parent_tool_use_id") is not None
                 if etype == "assistant":
-                    usage = event.get("message", {}).get("usage")
+                    msg = event.get("message", {})
+                    usage = msg.get("usage")
                     if usage:
                         last_assistant_usage = usage
                         agent_status[agent]["ctx_pct"] = _compute_ctx_pct(usage)
-                if etype == "result" and event.get("session_id"):
+                    if not is_subagent_event:
+                        for block in msg.get("content", []):
+                            if block.get("type") != "tool_use":
+                                continue
+                            tname = block.get("name")
+                            tid = block.get("id")
+                            agent_status[agent]["current_tool"] = {
+                                "name": tname, "id": tid, "started_at": time.time(),
+                            }
+                            if tname == "TodoWrite":
+                                todos = block.get("input", {}).get("todos")
+                                if todos is not None:
+                                    agent_status[agent]["todos"] = todos
+                            elif tname == "ExitPlanMode":
+                                agent_status[agent]["plan_mode"] = False
+                elif etype == "user" and not is_subagent_event:
+                    content = event.get("message", {}).get("content")
+                    if isinstance(content, list):
+                        for block in content:
+                            if not isinstance(block, dict):
+                                continue
+                            if block.get("type") != "tool_result":
+                                continue
+                            cur = agent_status[agent].get("current_tool")
+                            if cur and cur.get("id") == block.get("tool_use_id"):
+                                agent_status[agent]["current_tool"] = None
+                elif etype == "system":
+                    if esubtype == "init":
+                        perm = event.get("permissionMode")
+                        agent_status[agent]["plan_mode"] = (perm == "plan")
+                    elif esubtype == "task_started":
+                        agent_status[agent]["subagent"] = {
+                            "description": event.get("description", ""),
+                            "last_tool": "",
+                            "task_id": event.get("task_id", ""),
+                        }
+                    elif esubtype == "task_progress":
+                        sub = agent_status[agent].get("subagent")
+                        if sub and sub.get("task_id") == event.get("task_id"):
+                            sub["last_tool"] = event.get("last_tool_name", sub.get("last_tool", ""))
+                    elif esubtype == "task_notification":
+                        sub = agent_status[agent].get("subagent")
+                        if sub and sub.get("task_id") == event.get("task_id"):
+                            agent_status[agent]["subagent"] = None
+                elif etype == "result" and event.get("session_id"):
                     sessions[agent] = event["session_id"]
                     _save_sessions()
                     _update_agent_from_result(agent, event, last_assistant_usage)
@@ -299,6 +360,7 @@ async def _run_claude_background(agent: str, cmd: list, input_msg: str, env: dic
     finally:
         running_procs[agent] = None
         state.complete = True
+        _reset_activity(agent)
 
 
 # --- エンドポイント ---
@@ -388,6 +450,7 @@ async def chat_stop(agent: str):
     if state.task and not state.task.done():
         state.task.cancel()
     state.complete = True
+    _reset_activity(agent)
 
     return {"status": "stopped"}
 
@@ -398,6 +461,9 @@ def end_session(agent: str):
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
     sessions[agent] = None
     _save_sessions()
+    agent_status[agent]["todos"] = None
+    agent_status[agent]["plan_mode"] = False
+    _reset_activity(agent)
     for p in session_tmp_files.pop(agent, []):
         try:
             p.unlink(missing_ok=True)
@@ -414,6 +480,10 @@ def get_status(agent: str):
     return {
         "model": a["model"],
         "ctx_pct": a["ctx_pct"],
+        "plan_mode": a["plan_mode"],
+        "current_tool": a["current_tool"],
+        "todos": a["todos"],
+        "subagent": a["subagent"],
         "five_hour_pct": shared_status["five_hour_pct"],
         "seven_day_pct": shared_status["seven_day_pct"],
         "five_hour_resets_at": shared_status["five_hour_resets_at"],
