@@ -3,8 +3,8 @@ import { memo } from 'react'
 function ActivityBar({ status }) {
   if (!status) return null
 
-  const { plan_mode, current_tool, subagent, todos } = status
-  const hasLine = plan_mode || current_tool || subagent
+  const { plan_mode, subagent, todos } = status
+  const hasLine = plan_mode || subagent
   const hasTodos = Array.isArray(todos) && todos.length > 0
   if (!hasLine && !hasTodos) return null
 
@@ -17,9 +17,6 @@ function ActivityBar({ status }) {
       {hasLine && (
         <div className="ab-line">
           {plan_mode && <span className="ab-chip ab-plan">PLAN</span>}
-          {current_tool && (
-            <span className="ab-chip ab-tool">⚙ {current_tool.name}</span>
-          )}
           {subagent && (
             <span className="ab-chip ab-sub">
               ↳ {subagent.description || 'Subagent'}

@@ -107,9 +107,6 @@ export default function App() {
         )}
       </div>
 
-      {/* アクティビティバー（plan/tool/subagent/todos） */}
-      <ActivityBar status={status} />
-
       {/* タブ */}
       <div className="tabs">
         {AGENTS.map(agent => (
@@ -159,6 +156,9 @@ export default function App() {
           ))}
         </div>
       )}
+
+      {/* アクティビティバー（plan/tool/subagent/todos） */}
+      <ActivityBar status={status} />
 
       {/* 入力エリア */}
       <div className="inputarea">
