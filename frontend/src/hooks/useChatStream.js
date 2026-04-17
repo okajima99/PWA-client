@@ -153,6 +153,8 @@ export function useChatStream({
   // SSEイベントをバッファに積む（sendMessage / reconnectStream 共通）
   const processStreamEvent = (agent, event) => {
     if (event.type !== 'assistant' || !event.message?.content) return
+    // サブエージェント内部のイベントはバブル内に表示しない（ActivityBar の subagent チップで状態表示）
+    if (event.parent_tool_use_id) return
 
     const textContent = event.message.content
       .filter(b => b.type === 'text')
@@ -162,8 +164,9 @@ export function useChatStream({
       .filter(b => b.type === 'thinking')
       .map(b => b.thinking)
       .join('\n')
+    // Agent（サブエージェント起動）は ActivityBar で表示するため tool-log からは除外
     const newTools = event.message.content
-      .filter(b => b.type === 'tool_use')
+      .filter(b => b.type === 'tool_use' && b.name !== 'Agent')
       .map(b => formatTool(b))
 
     const buf = streamBufRef.current[agent]
