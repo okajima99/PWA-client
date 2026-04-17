@@ -341,8 +341,25 @@ export default function App() {
     setShowScrollBtn(false)
     setHasNew(false)
     msgLengthRef.current[activeAgent] = messages[activeAgent].length
-    // 2段階rAF: DOMレンダリング完了を待つ
-    requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
+
+    const el = scrollerDomRef.current
+    if (!el) return
+    // 画像onload・markdownハイライト等で後から高さが増えるケースに備え、
+    // 500msの窓で scrollHeight 変化を追う（最下部にいる間だけ追従）
+    let cancelled = false
+    let lastHeight = -1
+    const deadline = Date.now() + 500
+    const tick = () => {
+      if (cancelled) return
+      const cur = el.scrollHeight
+      if (cur !== lastHeight && isAtBottomRef.current) {
+        lastHeight = cur
+        scrollToBottom()
+      }
+      if (Date.now() < deadline) requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+    return () => { cancelled = true }
   }, [activeAgent])
 
   // 画面回転時：最下部にいた場合は追従
