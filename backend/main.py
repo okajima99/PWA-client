@@ -160,9 +160,19 @@ def _update_shared_from_headers(headers) -> None:
             pass
 
 
+def _compute_ctx_pct(usage: dict, ctx_window: int = 200000) -> int:
+    # 1回のAPI呼び出しで送った総入力トークン = 現在のコンテキスト使用量
+    if not usage or ctx_window <= 0:
+        return 0
+    total = (
+        usage.get("input_tokens", 0)
+        + usage.get("cache_read_input_tokens", 0)
+        + usage.get("cache_creation_input_tokens", 0)
+    )
+    return min(round(total / ctx_window * 100), 100)
+
+
 def _update_agent_from_result(agent: str, result_event: dict, last_assistant_usage: dict | None = None) -> None:
-    if last_assistant_usage is None:
-        last_assistant_usage = {}
     model_usage = result_event.get("modelUsage", {})
     if not model_usage:
         return
@@ -170,19 +180,9 @@ def _update_agent_from_result(agent: str, result_event: dict, last_assistant_usa
     if not model_key:
         return
     agent_status[agent]["model"] = _format_model_name(model_key)
-    result_usage = model_usage[model_key]
-    ctx_window = result_usage.get("contextWindow", 200000)
-
-    # resultイベントのmodelUsageは全イテレーション累積値なので使わない
-    # 最後のassistantイベントのcacheRead（単一API呼び出し分）をctx%の基準にする
-    # ターミナルのstatusLineと同じ挙動: cacheRead / contextWindow
-    cache_read = last_assistant_usage.get("cache_read_input_tokens", 0)
-    if cache_read > 0 and ctx_window > 0:
-        agent_status[agent]["ctx_pct"] = min(round(cache_read / ctx_window * 100), 100)
-    elif ctx_window > 0:
-        # assistantイベントがない場合はresultから近似
-        cache_read_result = result_usage.get("cacheReadInputTokens", 0)
-        agent_status[agent]["ctx_pct"] = min(round(cache_read_result / ctx_window * 100), 100)
+    ctx_window = model_usage[model_key].get("contextWindow", 200000)
+    if last_assistant_usage:
+        agent_status[agent]["ctx_pct"] = _compute_ctx_pct(last_assistant_usage, ctx_window)
 
 
 def _format_model_name(key: str) -> str:
@@ -269,10 +269,12 @@ async def _run_claude_background(agent: str, cmd: list, input_msg: str, env: dic
                 event = json.loads(line)
                 etype = event.get("type")
                 # assistantイベントのusageを毎回更新（最後の1回分 = 単一API呼び出し分）
+                # ストリーミング中もctx_pctを即時反映（ツール連打の途中でも値が動く）
                 if etype == "assistant":
                     usage = event.get("message", {}).get("usage")
                     if usage:
                         last_assistant_usage = usage
+                        agent_status[agent]["ctx_pct"] = _compute_ctx_pct(usage)
                 if etype == "result" and event.get("session_id"):
                     sessions[agent] = event["session_id"]
                     _save_sessions()
