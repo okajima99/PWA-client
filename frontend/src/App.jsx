@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from 'react'
 import './App.css'
 import MessageItem from './components/MessageItem.jsx'
+import ActivityBar from './components/ActivityBar.jsx'
 import { API_BASE, AGENTS } from './constants.js'
 import { pctClass, timeUntil } from './utils/format.js'
 import { useStatus } from './hooks/useStatus.js'
@@ -105,6 +106,9 @@ export default function App() {
           <span className="dim">---</span>
         )}
       </div>
+
+      {/* アクティビティバー（plan/tool/subagent/todos） */}
+      <ActivityBar status={status} />
 
       {/* タブ */}
       <div className="tabs">
