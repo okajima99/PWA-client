@@ -143,6 +143,25 @@ export default function App() {
     } catch {}
   }
 
+  // 受信済み位置(localPos)とサーバーバッファを比較し、遅れていればreconnectを開始する
+  // 再接続はfire-and-forget: 呼び出し側は「再接続が走るか」だけ判断し、後続処理を止める
+  // reconnectingRef は即時セットされるので、finally内の二重起動防止も効く
+  const _reconnectIfBehind = async (agent, localPos) => {
+    try {
+      const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
+      if (!s) return false
+      if (s.buffer_id) saveBufId(agent, s.buffer_id)
+      if (s.streaming || localPos < (s.buffer_length ?? 0)) {
+        reconnectingRef.current[agent] = true
+        reconnectStream(agent).finally(() => {
+          reconnectingRef.current[agent] = false
+        })
+        return true
+      }
+    } catch {}
+    return false
+  }
+
   // rAFバッチング: バッファの最新状態をReact stateに1回だけ反映
   const flushStreamBuf = (agent) => {
     const buf = streamBufRef.current[agent]
@@ -304,23 +323,19 @@ export default function App() {
   const programmaticScrollRef = useRef(false)
   const scrollEndTimerRef = useRef(null)
 
-  const scrollToBottom = (behavior = 'auto') => {
+  // スクロールは CSS `scroll-behavior: smooth` に委ねる。scrollTo() 経由で呼べば自動的にぬるっと動く
+  // onScrollはsmoothアニメ中も発火するので、programmaticScrollRefで一定時間ガードしてユーザー操作誤認を防ぐ
+  const scrollToBottom = () => {
     const el = scrollerDomRef.current
     if (!el) return
     programmaticScrollRef.current = true
     isAtBottomRef.current = true
     setHasNew(false)
-    if (behavior === 'smooth') {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-      // smoothスクロールは数百ms続く。その間にonScrollでisAtBottomRefを書き換えられないよう保持
-      clearTimeout(scrollEndTimerRef.current)
-      scrollEndTimerRef.current = setTimeout(() => {
-        programmaticScrollRef.current = false
-      }, 600)
-    } else {
-      el.scrollTop = el.scrollHeight
-      requestAnimationFrame(() => { programmaticScrollRef.current = false })
-    }
+    el.scrollTo({ top: el.scrollHeight })
+    clearTimeout(scrollEndTimerRef.current)
+    scrollEndTimerRef.current = setTimeout(() => {
+      programmaticScrollRef.current = false
+    }, 600)
   }
 
   // 新着メッセージ時の自動スクロール（タブ切り替えは別のuseEffect）
@@ -332,12 +347,12 @@ export default function App() {
     if (currentLen > prevLen) {
       // 新規アイテム追加: 最下部にいれば追従、そうでなければ未読通知
       if (isAtBottomRef.current) {
-        requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom('smooth') }) })
+        requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
       } else {
         setHasNew(true)
       }
     } else if (isAtBottomRef.current) {
-      // ストリーミング中の内容更新（アイテム数変化なし）: autoで即時追従
+      // ストリーミング中の内容更新（アイテム数変化なし）: CSS smoothで追従
       scrollToBottom()
     }
   }, [messages, activeAgent])
@@ -387,7 +402,6 @@ export default function App() {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
         // バッファ世代が変わっていたら既読位置をリセット
         if (s.buffer_id && s.buffer_id !== bufferIdRef.current[agent]) {
-          bufferPosRef.current[agent] = 0
           saveBufId(agent, s.buffer_id)
           saveBufPos(agent, 0)
         }
@@ -403,6 +417,38 @@ export default function App() {
           })
         }
       } catch {}
+    }
+  }
+
+  // 「最新を取得」ボタン専用: 現バブルをリセットしてサーバーバッファを先頭から再構築する
+  // 「思考中に通信が途切れて見えない」ケースで確実に復旧させるための強制replay
+  const fetchLatest = async () => {
+    const agent = activeAgent
+    if (reconnectingRef.current[agent]) return
+
+    // 進行中のfetchがあれば中断
+    if (abortControllers.current[agent]) {
+      abortControllers.current[agent].abort()
+      abortControllers.current[agent] = null
+    }
+
+    // 最後のagentバブルをリセット（replayで再構築するため）
+    setMessages(prev => {
+      const msgs = [...prev[agent]]
+      const last = msgs[msgs.length - 1]
+      if (last?.role === 'agent') {
+        msgs[msgs.length - 1] = { ...last, text: '', tools: [], thinking: null, streaming: true }
+      }
+      return { ...prev, [agent]: msgs }
+    })
+
+    // バッファ位置を先頭に戻してreconnect
+    saveBufPos(agent, 0)
+    reconnectingRef.current[agent] = true
+    try {
+      await reconnectStream(agent)
+    } finally {
+      reconnectingRef.current[agent] = false
     }
   }
 
@@ -485,7 +531,7 @@ export default function App() {
       setLoading(prev => ({ ...prev, [agent]: true }))
     })
     // flushSync 後はDOMが確定しているので直接スクロール
-    scrollToBottom('smooth')
+    scrollToBottom()
 
     const controller = new AbortController()
     abortControllers.current[agent] = controller
@@ -538,33 +584,14 @@ export default function App() {
         }
       }
 
-      // ストリームが静かに切れた場合の再接続（処理中 or 未取得バッファあり）
-      try {
-        const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
-        if (s) {
-          // POSTレスポンスから直接ストリームしたので、localPosは現在バッファの正しい位置。
-          // buffer_idだけ同期し、位置はリセットしない（リセットすると全イベント再送→2重表示）
-          if (s.buffer_id) saveBufId(agent, s.buffer_id)
-          if (s.streaming || localPos < (s.buffer_length ?? 0)) {
-            await reconnectStream(agent)
-            return
-          }
-        }
-      } catch {}
+      // SSEが静かに切れた場合の復旧: サーバーにまだデータが残っていれば追いかける
+      if (await _reconnectIfBehind(agent, localPos)) return
     } catch (e) {
       if (e.name === 'AbortError') return
       const errText = describeError(e)
-      try {
-        const gotData = await reconnectStream(agent)
-        if (!gotData) {
-          setMessages(prev => {
-            const msgs = prev[agent]
-            const last = msgs[msgs.length - 1]
-            if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
-            return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'error', text: errText }] }
-          })
-        }
-      } catch {
+      // 通信失敗時: reconnectで取り戻せれば続行、ダメならエラー表示
+      const recovered = await _reconnectIfBehind(agent, localPos)
+      if (!recovered) {
         setMessages(prev => {
           const msgs = prev[agent]
           const last = msgs[msgs.length - 1]
@@ -574,21 +601,12 @@ export default function App() {
       }
     } finally {
       cancelAndFlush(agent)
-      // reconnectStreamが引き継いだ場合、状態を上書きしない（loading/streaming/bufPosの競合防止）
+      // reconnectStreamが走っている間は状態を触らない（そちらが最終化する）
       if (reconnectingRef.current[agent]) return
-      // フォールバック: post-stream checkが失敗してreconnectできなかった場合、ここで再試行
-      try {
-        const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
-        if (s) {
-          if (s.buffer_id) saveBufId(agent, s.buffer_id)
-          if (s.streaming || localPos < (s.buffer_length ?? 0)) {
-            await reconnectStream(agent)
-            return
-          }
-        }
-      } catch {}
-      bufferPosRef.current[agent] = Math.max(bufferPosRef.current[agent], localPos)
-      localStorage.setItem('cpc_bufpos', JSON.stringify(bufferPosRef.current))
+      // post-stream checkが例外で落ちた場合の最終フォールバック
+      if (await _reconnectIfBehind(agent, localPos)) return
+
+      saveBufPos(agent, Math.max(bufferPosRef.current[agent], localPos))
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
         const msgs = [...prev[agent]]
@@ -778,7 +796,7 @@ export default function App() {
 
         {/* ↓ スクロールボタン */}
         {showScrollBtn && (
-          <button className="scroll-btn" onClick={() => scrollToBottom('smooth')}>
+          <button className="scroll-btn" onClick={() => scrollToBottom()}>
             ↓
             {hasNew && <span className="scroll-dot" />}
           </button>
@@ -827,7 +845,7 @@ export default function App() {
               <button onClick={() => { setTreeOpen('~'); setMenuOpen(false) }} className="menu-item">
                 ファイルツリー
               </button>
-              <button onClick={() => { checkAndReconnect(true); requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) }); setMenuOpen(false) }} className="menu-item">
+              <button onClick={() => { fetchLatest(); requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) }); setMenuOpen(false) }} className="menu-item">
                 最新を取得
               </button>
               <button onClick={() => { setMenuOpen(false); setConfirmEnd(true) }} className="menu-item end">
