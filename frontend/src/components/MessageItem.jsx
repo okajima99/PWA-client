@@ -1,10 +1,11 @@
 import { memo } from 'react'
 import MessageRenderer from '../MessageRenderer.jsx'
+import AskUserQuestionBubble from './AskUserQuestionBubble.jsx'
 import { formatToolResultContent } from '../utils/format.js'
 
 const RESULT_PREVIEW_CHARS = 800
 
-const MessageItem = memo(function MessageItem({ msg, onOpenFile }) {
+const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer }) {
   if (msg.role === '__loading__') {
     return (
       <div className="message agent">
@@ -36,7 +37,7 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile }) {
             </span>
           )}
         </div>
-      ) : msg.role === 'agent' && (msg.tools?.length > 0 || msg.thinking) ? (
+      ) : msg.role === 'agent' && (msg.tools?.length > 0 || msg.thinking || msg.askUserQuestion) ? (
         <div className="agent-block">
           {msg.thinking && (
             <details className="thinking-block">
@@ -75,6 +76,9 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile }) {
             <span className="bubble">
               <MessageRenderer text={msg.text} onOpenFile={onOpenFile} streaming={msg.streaming} />
             </span>
+          )}
+          {msg.askUserQuestion && (
+            <AskUserQuestionBubble askUserQuestion={msg.askUserQuestion} onAnswer={onAnswer} />
           )}
         </div>
       ) : (

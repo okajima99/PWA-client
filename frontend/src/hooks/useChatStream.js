@@ -152,6 +152,33 @@ export function useChatStream({
 
   // SSEイベントをバッファに積む（sendMessage / reconnectStream 共通）
   const processStreamEvent = (agent, event) => {
+    // AskUserQuestion: 直近の agent バブルに askUserQuestion を埋め込む（既存バブルがなければ新規）
+    if (event.type === 'ask_user_question') {
+      const tool_use_id = event.tool_use_id
+      const questions = event.input?.questions || []
+      setMessages(prev => {
+        const msgs = [...prev[agent]]
+        const last = msgs[msgs.length - 1]
+        const aq = { tool_use_id, questions, answered: false, selectedAnswer: null }
+        if (last?.role === 'agent') {
+          // 同じ tool_use_id が既に埋まっていたらスキップ（再 replay 時の冪等性）
+          if (last.askUserQuestion?.tool_use_id === tool_use_id) return prev
+          msgs[msgs.length - 1] = { ...last, askUserQuestion: aq }
+        } else {
+          msgs.push({
+            id: generateId(),
+            role: 'agent',
+            text: '',
+            tools: [],
+            askUserQuestion: aq,
+            streaming: true,
+          })
+        }
+        return { ...prev, [agent]: msgs }
+      })
+      return
+    }
+
     // user イベントの tool_result を既存 tool に紐付ける
     // サブエージェント内部の tool_result は表示しない
     if (event.type === 'user' && event.message?.content && !event.parent_tool_use_id) {
@@ -193,9 +220,9 @@ export function useChatStream({
       .filter(b => b.type === 'thinking')
       .map(b => b.thinking)
       .join('\n')
-    // Agent（サブエージェント起動）は ActivityBar で表示するため tool-log からは除外
+    // Agent（サブエージェント）は ActivityBar、AskUserQuestion は専用UI(P1)で描画するため tool-log から除外
     const newTools = event.message.content
-      .filter(b => b.type === 'tool_use' && b.name !== 'Agent')
+      .filter(b => b.type === 'tool_use' && b.name !== 'Agent' && b.name !== 'AskUserQuestion')
       .map(b => formatTool(b))
 
     const buf = streamBufRef.current[agent]
@@ -239,8 +266,13 @@ export function useChatStream({
         if (s.streaming) {
           setLoading(prev => ({ ...prev, [agent]: true }))
         }
+        // AskUserQuestion 待ち中: bufPos==buffer_length でも UI 復元のため全 buffer を replay
+        // setMessages 側で同 tool_use_id は冪等にスキップされる
+        if (s.pending_question_tool_id) {
+          saveBufPos(agent, 0)
+        }
         const bufPos = bufferPosRef.current[agent] ?? 0
-        if (s.streaming || bufPos < (s.buffer_length ?? 0)) {
+        if (s.streaming || s.pending_question_tool_id || bufPos < (s.buffer_length ?? 0)) {
           if (abortControllers.current[agent]) {
             abortControllers.current[agent].abort()
             abortControllers.current[agent] = null
@@ -526,6 +558,34 @@ export function useChatStream({
     }
   }
 
+  const sendAnswer = async (agent, tool_use_id, answer) => {
+    // UI 側を先にロック（楽観更新）
+    setMessages(prev => {
+      const msgs = prev[agent].map(m => {
+        if (m.askUserQuestion?.tool_use_id !== tool_use_id) return m
+        return { ...m, askUserQuestion: { ...m.askUserQuestion, answered: true, selectedAnswer: answer } }
+      })
+      return { ...prev, [agent]: msgs }
+    })
+    try {
+      const res = await fetch(`${API_BASE}/chat/${agent}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answer }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch (e) {
+      // 失敗したらロックを解除して再試行できるようにする
+      setMessages(prev => {
+        const msgs = prev[agent].map(m => {
+          if (m.askUserQuestion?.tool_use_id !== tool_use_id) return m
+          return { ...m, askUserQuestion: { ...m.askUserQuestion, answered: false, selectedAnswer: null } }
+        })
+        return { ...prev, [agent]: msgs }
+      })
+    }
+  }
+
   const stopMessage = async () => {
     const agent = activeAgent
     if (abortControllers.current[agent]) {
@@ -549,6 +609,7 @@ export function useChatStream({
   return {
     loading,
     sendMessage,
+    sendAnswer,
     stopMessage,
     fetchLatest,
     endSession,

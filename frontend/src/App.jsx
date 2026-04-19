@@ -33,7 +33,7 @@ export default function App() {
     scrollToBottom,
     onScroll,
   } = useAutoScroll({ messages, activeAgent })
-  const { loading, sendMessage, stopMessage, fetchLatest, endSession } = useChatStream({
+  const { loading, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession } = useChatStream({
     activeAgent,
     setMessages,
     input, setInput,
@@ -55,6 +55,10 @@ export default function App() {
       setPreviewPath(path)
     }
   }, [])
+
+  const handleAnswer = useCallback((tool_use_id, answer) => {
+    sendAnswer(activeAgent, tool_use_id, answer)
+  }, [sendAnswer, activeAgent])
 
   useEffect(() => {
     fetch(`${API_BASE}/agents`).then(r => r.json()).then(agents => {
@@ -128,7 +132,7 @@ export default function App() {
           onScroll={onScroll}
         >
           {displayMessages.map((msg) => (
-            <MessageItem key={msg.id} msg={msg} onOpenFile={handleOpenPath} />
+            <MessageItem key={msg.id} msg={msg} onOpenFile={handleOpenPath} onAnswer={handleAnswer} />
           ))}
         </div>
 
