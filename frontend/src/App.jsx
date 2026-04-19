@@ -46,6 +46,9 @@ export default function App() {
   const [previewPath, setPreviewPath] = useState(null)
   const [treeOpen, setTreeOpen] = useState(null)
   const [confirmEnd, setConfirmEnd] = useState(false)
+  // 非アクティブタブで messages 増加 or loading 完了が起きたら「新着」
+  const [tabHasNew, setTabHasNew] = useState(() => Object.fromEntries(AGENTS.map(a => [a, false])))
+  const prevTabStateRef = useRef(null)
   const menuRef = useRef(null)
 
   const handleOpenPath = useCallback((path) => {
@@ -80,6 +83,62 @@ export default function App() {
 
   const currentAttachments = attachments[activeAgent]
 
+  // 非アクティブタブの状態遷移を監視して「新着」フラグを立てる:
+  //   - messages 件数の増加（新規バブル追加）
+  //   - loading の true→false 遷移（既存 streaming バブルの完了）
+  // アクティブタブに切り替わったらクリア
+  useEffect(() => {
+    if (prevTabStateRef.current === null) {
+      prevTabStateRef.current = Object.fromEntries(AGENTS.map(a => [a, { len: messages[a].length, loading: !!loading[a] }]))
+      return
+    }
+    // 1) 前回値を読んで遷移を判定
+    const transitions = {}
+    for (const a of AGENTS) {
+      const p = prevTabStateRef.current[a]
+      const len = messages[a].length
+      const isLoading = !!loading[a]
+      transitions[a] = {
+        lengthGrew: len > p.len,
+        loadingFinished: p.loading && !isLoading,
+      }
+    }
+    // 2) 前回値を更新（副作用は setState の外で行う）
+    for (const a of AGENTS) {
+      prevTabStateRef.current[a] = { len: messages[a].length, loading: !!loading[a] }
+    }
+    // 3) フラグ更新
+    setTabHasNew(prev => {
+      let changed = false
+      const next = { ...prev }
+      for (const a of AGENTS) {
+        if (a === activeAgent) {
+          if (next[a]) { next[a] = false; changed = true }
+        } else {
+          const t = transitions[a]
+          if ((t.lengthGrew || t.loadingFinished) && !next[a]) {
+            next[a] = true; changed = true
+          }
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [messages, loading, activeAgent])
+
+  // タブごとのバッジ判定。アクティブタブは常に非表示。優先度: pending(?) > processing(●青) > new(●赤)
+  const tabBadges = useMemo(() => {
+    const out = {}
+    for (const a of AGENTS) {
+      if (a === activeAgent) { out[a] = null; continue }
+      const pending = messages[a].some(m => m.askUserQuestion && !m.askUserQuestion.answered)
+      if (pending) { out[a] = { kind: 'pending', label: '?' }; continue }
+      if (loading[a]) { out[a] = { kind: 'processing', label: '●' }; continue }
+      if (tabHasNew[a]) { out[a] = { kind: 'new', label: '●' }; continue }
+      out[a] = null
+    }
+    return out
+  }, [messages, loading, tabHasNew, activeAgent])
+
   // ローディング中かつストリーミングメッセージがない場合は仮エントリを末尾に追加
   const displayMessages = useMemo(() => {
     const msgs = messages[activeAgent]
@@ -113,15 +172,19 @@ export default function App() {
 
       {/* タブ */}
       <div className="tabs">
-        {AGENTS.map(agent => (
-          <button
-            key={agent}
-            className={`tab ${activeAgent === agent ? 'active' : ''}`}
-            onClick={() => { setActiveAgent(agent); localStorage.setItem('cpc_active_agent', agent) }}
-          >
-            {displayNames[agent] || agent.toUpperCase()}
-          </button>
-        ))}
+        {AGENTS.map(agent => {
+          const badge = tabBadges[agent]
+          return (
+            <button
+              key={agent}
+              className={`tab ${activeAgent === agent ? 'active' : ''}`}
+              onClick={() => { setActiveAgent(agent); localStorage.setItem('cpc_active_agent', agent) }}
+            >
+              {displayNames[agent] || agent.toUpperCase()}
+              {badge && <span className={`tab-badge ${badge.kind}`}>{badge.label}</span>}
+            </button>
+          )
+        })}
       </div>
 
       {/* メッセージ一覧 */}
