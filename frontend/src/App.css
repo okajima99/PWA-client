@@ -186,6 +186,37 @@
   border-bottom-color: var(--accent);
 }
 
+.tab-badge {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 700;
+  vertical-align: middle;
+  text-align: center;
+}
+.tab-badge.pending {
+  background: #f0c040;
+  color: #1a1a1a;
+}
+.tab-badge.processing {
+  background: #4a8cff;
+  color: #fff;
+  animation: tab-badge-pulse 1.4s ease-in-out infinite;
+}
+.tab-badge.new {
+  background: #e74c3c;
+  color: #fff;
+}
+@keyframes tab-badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 /* メッセージ */
 .messages-container {
   flex: 1;
