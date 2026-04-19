@@ -8,7 +8,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import Any, List
 
 import httpx
 from contextlib import asynccontextmanager
@@ -16,6 +16,21 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, Up
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    RateLimitEvent,
+    ResultMessage,
+    SystemMessage,
+    TextBlock,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
+)
+from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
 HOME = Path.home()
 UPLOADS_TMP = HOME / "cpc" / "uploads" / "tmp"
@@ -38,7 +53,7 @@ ANTHROPIC_API_BASE = "https://api.anthropic.com"
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
-# --- httpx クライアント（アプリレベルで保持してコネクションプーリング） ---
+# --- httpx クライアント（プロキシ用） ---
 http_client: httpx.AsyncClient | None = None
 
 
@@ -56,7 +71,6 @@ async def lifespan(app):
                     f.unlink(missing_ok=True)
                 except Exception:
                     pass
-    # エラーログが10MB超えたら空にする
     if ERROR_LOG_PATH.exists() and ERROR_LOG_PATH.stat().st_size > 10 * 1024 * 1024:
         try:
             ERROR_LOG_PATH.write_text("")
@@ -65,11 +79,20 @@ async def lifespan(app):
 
     yield
 
+    # SDK クライアントを全て切断
+    for agent in list(stream_states.keys()):
+        state = stream_states[agent]
+        if state.client is not None:
+            try:
+                await state.client.disconnect()
+            except Exception:
+                logger.exception("disconnect failed for agent=%s", agent)
+            state.client = None
+
     await http_client.aclose()
     http_client = None
 
 
-# --- アプリ初期化 ---
 app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
@@ -99,18 +122,21 @@ def _save_sessions() -> None:
 
 sessions: dict[str, str | None] = _load_sessions()
 
-# --- ストリーム状態（エージェントごと）---
+
+# --- ストリーム状態（エージェントごと） ---
 @dataclass
 class StreamState:
     buffer: list[str] = field(default_factory=list)
     buffer_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     task: asyncio.Task | None = None
-    complete: bool = True  # 初期状態は「完了済み（次のメッセージを受け付ける）」
+    complete: bool = True
+    client: ClaudeSDKClient | None = None
+    client_session_id: str | None = None
+    pending_question: asyncio.Future | None = None
+    pending_question_tool_id: str | None = None
+
 
 stream_states: dict[str, StreamState] = {name: StreamState() for name in AGENTS}
-
-# --- 実行中プロセス管理 ---
-running_procs: dict[str, asyncio.subprocess.Process | None] = {}
 
 # --- セッションごとの一時ファイル管理 ---
 session_tmp_files: dict[str, list[Path]] = {}
@@ -173,7 +199,6 @@ def _update_shared_from_headers(headers) -> None:
 
 
 def _compute_ctx_pct(usage: dict, ctx_window: int = 200000) -> int:
-    # 1回のAPI呼び出しで送った総入力トークン = 現在のコンテキスト使用量
     if not usage or ctx_window <= 0:
         return 0
     total = (
@@ -184,8 +209,7 @@ def _compute_ctx_pct(usage: dict, ctx_window: int = 200000) -> int:
     return min(round(total / ctx_window * 100), 100)
 
 
-def _update_agent_from_result(agent: str, result_event: dict, last_assistant_usage: dict | None = None) -> None:
-    model_usage = result_event.get("modelUsage", {})
+def _update_agent_from_result(agent: str, model_usage: dict | None, last_assistant_usage: dict | None) -> None:
     if not model_usage:
         return
     model_key = next(iter(model_usage), None)
@@ -253,114 +277,286 @@ def build_content(message: str, saved_files: list[dict]) -> list:
     return content
 
 
-# --- バックグラウンドでclaude実行 ---
-async def _run_claude_background(agent: str, cmd: list, input_msg: str, env: dict):
+# --- SDK メッセージ → CLI stream-json 互換 dict に変換 ---
+def _block_to_dict(block: Any) -> dict:
+    if isinstance(block, TextBlock):
+        return {"type": "text", "text": block.text}
+    if isinstance(block, ThinkingBlock):
+        return {"type": "thinking", "thinking": block.thinking, "signature": block.signature}
+    if isinstance(block, ToolUseBlock):
+        return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+    if isinstance(block, ToolResultBlock):
+        return {
+            "type": "tool_result",
+            "tool_use_id": block.tool_use_id,
+            "content": block.content,
+            "is_error": block.is_error,
+        }
+    # 未知ブロックはそのまま
+    return {"type": "unknown", "raw": str(block)}
+
+
+def _serialize_sdk_message(msg: Any) -> dict | None:
+    """SDK Message → フロント互換 JSON dict（CLI stream-json 形式）"""
+    if isinstance(msg, AssistantMessage):
+        return {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [_block_to_dict(b) for b in msg.content],
+                "usage": msg.usage,
+                "model": msg.model,
+                "id": msg.message_id,
+                "stop_reason": msg.stop_reason,
+            },
+            "parent_tool_use_id": msg.parent_tool_use_id,
+            "session_id": msg.session_id,
+            "uuid": msg.uuid,
+        }
+    if isinstance(msg, UserMessage):
+        content = msg.content
+        if isinstance(content, list):
+            content = [_block_to_dict(b) for b in content]
+        return {
+            "type": "user",
+            "message": {"role": "user", "content": content},
+            "parent_tool_use_id": msg.parent_tool_use_id,
+            "uuid": msg.uuid,
+        }
+    if isinstance(msg, ResultMessage):
+        return {
+            "type": "result",
+            "subtype": msg.subtype,
+            "session_id": msg.session_id,
+            "num_turns": msg.num_turns,
+            "duration_ms": msg.duration_ms,
+            "duration_api_ms": msg.duration_api_ms,
+            "is_error": msg.is_error,
+            "total_cost_usd": msg.total_cost_usd,
+            "usage": msg.usage,
+            "modelUsage": msg.model_usage,  # 既存フロント/backend は camelCase
+            "result": msg.result,
+            "stop_reason": msg.stop_reason,
+            "uuid": msg.uuid,
+        }
+    if isinstance(msg, SystemMessage):
+        # TaskStartedMessage / TaskProgressMessage / TaskNotificationMessage は
+        # SystemMessage のサブクラス。data dict を展開して top-level に出す。
+        wire: dict = {"type": "system", "subtype": msg.subtype}
+        if isinstance(msg.data, dict):
+            for k, v in msg.data.items():
+                if k not in wire:
+                    wire[k] = v
+        return wire
+    if isinstance(msg, RateLimitEvent):
+        info = msg.rate_limit_info
+        rl_dict = {
+            "status": info.status,
+            "resetsAt": info.resets_at,
+            "rateLimitType": info.rate_limit_type,
+            "utilization": info.utilization,
+        }
+        if info.raw:
+            for k, v in info.raw.items():
+                rl_dict.setdefault(k, v)
+        return {
+            "type": "rate_limit_event",
+            "rate_limit_info": rl_dict,
+            "session_id": msg.session_id,
+            "uuid": msg.uuid,
+        }
+    return None
+
+
+# --- can_use_tool ハンドラ（エージェントごとにクロージャ） ---
+def _make_permission_handler(agent: str):
+    async def handler(tool_name: str, input_data: dict, context: Any):
+        if tool_name != "AskUserQuestion":
+            return PermissionResultAllow(updated_input=input_data)
+
+        state = stream_states[agent]
+        # 既存 Future が生きていたらキャンセル（通常は起きない）
+        if state.pending_question is not None and not state.pending_question.done():
+            state.pending_question.cancel()
+
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+        state.pending_question = future
+        tool_use_id = getattr(context, "tool_use_id", None)
+        state.pending_question_tool_id = tool_use_id
+
+        # SSE にも明示的な ask_user_question イベントを積む（フロントが tool_use から
+        # 検出するパスと並走。互換のため同じ情報を別タイプでも通知）
+        state.buffer.append(
+            "data: " + json.dumps({
+                "type": "ask_user_question",
+                "tool_use_id": tool_use_id,
+                "input": input_data,
+            }) + "\n\n"
+        )
+
+        try:
+            answer = await future
+        except asyncio.CancelledError:
+            state.pending_question = None
+            state.pending_question_tool_id = None
+            return PermissionResultDeny(
+                message="ユーザー応答待ちがキャンセルされました。",
+                interrupt=True,
+            )
+
+        state.pending_question = None
+        state.pending_question_tool_id = None
+        return PermissionResultDeny(
+            message=f"ユーザーの回答: {answer}",
+            interrupt=False,
+        )
+
+    return handler
+
+
+# --- SDK クライアントの生成/接続 ---
+async def _ensure_client(agent: str) -> ClaudeSDKClient:
+    state = stream_states[agent]
+    if state.client is not None:
+        return state.client
+
+    cfg = AGENTS[agent]
+    env = {"ANTHROPIC_BASE_URL": "http://localhost:8000/proxy"}
+    options = ClaudeAgentOptions(
+        cwd=cfg["cwd"],
+        resume=sessions[agent],
+        setting_sources=["user", "project", "local"],
+        can_use_tool=_make_permission_handler(agent),
+        allowed_tools=[],  # 空 = 全許可（can_use_tool は AskUserQuestion だけ介入）
+        permission_mode="bypassPermissions",
+        env=env,
+        cli_path=config.get("claude_path"),
+    )
+    client = ClaudeSDKClient(options=options)
+    await client.connect()  # 空 stream で接続、以降 client.query() で送る
+    state.client = client
+    state.client_session_id = sessions[agent]
+    return client
+
+
+async def _disconnect_client(agent: str) -> None:
+    state = stream_states[agent]
+    if state.client is not None:
+        try:
+            await state.client.disconnect()
+        except Exception:
+            logger.exception("disconnect failed for agent=%s", agent)
+        state.client = None
+        state.client_session_id = None
+
+
+# --- バックグラウンドで SDK ストリームを読む ---
+async def _run_sdk_background(agent: str, content: list):
     state = stream_states[agent]
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=AGENTS[agent]["cwd"],
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-        running_procs[agent] = proc
+        client = await _ensure_client(agent)
 
-        proc.stdin.write(input_msg.encode())
-        await proc.stdin.drain()
-        proc.stdin.close()
+        # 入力を送る（AsyncIterable で streaming mode を維持）
+        async def _single_msg():
+            yield {
+                "type": "user",
+                "message": {"role": "user", "content": content},
+                "parent_tool_use_id": None,
+                "session_id": "default",
+            }
+
+        await client.query(_single_msg())
 
         last_assistant_usage: dict = {}
 
-        async for raw_line in proc.stdout:
-            line = raw_line.decode().strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-                etype = event.get("type")
-                esubtype = event.get("subtype", "")
-                # assistantイベントのusageを毎回更新（最後の1回分 = 単一API呼び出し分）
-                # ストリーミング中もctx_pctを即時反映（ツール連打の途中でも値が動く）
-                # parent_tool_use_id 付きのイベントはサブエージェント内部のもの
-                # メインストリームの current_tool/todos は汚染しない（subagent 状態は task_* で別管理）
-                is_subagent_event = event.get("parent_tool_use_id") is not None
-                if etype == "assistant":
-                    msg = event.get("message", {})
-                    usage = msg.get("usage")
-                    if usage:
-                        last_assistant_usage = usage
-                        agent_status[agent]["ctx_pct"] = _compute_ctx_pct(usage)
-                    if not is_subagent_event:
-                        for block in msg.get("content", []):
-                            if block.get("type") != "tool_use":
-                                continue
-                            tname = block.get("name")
-                            tid = block.get("id")
+        async for msg in client.receive_response():
+            wire = _serialize_sdk_message(msg)
+            is_subagent = False
+
+            # --- ステータス更新（送出前に済ます） ---
+            if isinstance(msg, AssistantMessage):
+                is_subagent = msg.parent_tool_use_id is not None
+                if msg.usage:
+                    last_assistant_usage = msg.usage
+                    agent_status[agent]["ctx_pct"] = _compute_ctx_pct(msg.usage)
+                if not is_subagent:
+                    for block in msg.content:
+                        if isinstance(block, ToolUseBlock):
                             agent_status[agent]["current_tool"] = {
-                                "name": tname, "id": tid, "started_at": time.time(),
+                                "name": block.name,
+                                "id": block.id,
+                                "started_at": time.time(),
                             }
-                            if tname == "TodoWrite":
-                                todos = block.get("input", {}).get("todos")
+                            if block.name == "TodoWrite":
+                                todos = block.input.get("todos")
                                 if todos is not None:
                                     agent_status[agent]["todos"] = todos
-                            elif tname == "ExitPlanMode":
+                            elif block.name == "ExitPlanMode":
                                 agent_status[agent]["plan_mode"] = False
-                elif etype == "user" and not is_subagent_event:
-                    content = event.get("message", {}).get("content")
-                    if isinstance(content, list):
-                        for block in content:
-                            if not isinstance(block, dict):
-                                continue
-                            if block.get("type") != "tool_result":
-                                continue
-                            cur = agent_status[agent].get("current_tool")
-                            if cur and cur.get("id") == block.get("tool_use_id"):
-                                agent_status[agent]["current_tool"] = None
-                elif etype == "system":
-                    if esubtype == "init":
-                        perm = event.get("permissionMode")
-                        agent_status[agent]["plan_mode"] = (perm == "plan")
-                    elif esubtype == "task_started":
-                        agent_status[agent]["subagent"] = {
-                            "description": event.get("description", ""),
-                            "last_tool": "",
-                            "task_id": event.get("task_id", ""),
-                        }
-                    elif esubtype == "task_progress":
-                        sub = agent_status[agent].get("subagent")
-                        if sub and sub.get("task_id") == event.get("task_id"):
-                            sub["last_tool"] = event.get("last_tool_name", sub.get("last_tool", ""))
-                    elif esubtype == "task_notification":
-                        sub = agent_status[agent].get("subagent")
-                        if sub and sub.get("task_id") == event.get("task_id"):
-                            agent_status[agent]["subagent"] = None
-                elif etype == "result" and event.get("session_id"):
-                    sessions[agent] = event["session_id"]
-                    _save_sessions()
-                    _update_agent_from_result(agent, event, last_assistant_usage)
-                elif etype == "rate_limit_event":
-                    info = event.get("rate_limit_info", {})
-                    resets_at = info.get("resetsAt")
-                    if resets_at:
-                        limit_type = info.get("rateLimitType", "")
-                        if "five_hour" in limit_type:
-                            shared_status["five_hour_resets_at"] = resets_at
-                        elif "seven_day" in limit_type:
-                            shared_status["seven_day_resets_at"] = resets_at
-            except json.JSONDecodeError:
-                pass
-            # バッファに追加（クライアントが切断していても継続）
-            state.buffer.append(f"data: {line}\n\n")
 
-        await proc.wait()
+            elif isinstance(msg, UserMessage):
+                is_subagent = msg.parent_tool_use_id is not None
+                if not is_subagent and isinstance(msg.content, list):
+                    for block in msg.content:
+                        if isinstance(block, ToolResultBlock):
+                            cur = agent_status[agent].get("current_tool")
+                            if cur and cur.get("id") == block.tool_use_id:
+                                agent_status[agent]["current_tool"] = None
+
+            elif isinstance(msg, SystemMessage):
+                sub = msg.subtype
+                if sub == "init":
+                    perm = msg.data.get("permissionMode")
+                    agent_status[agent]["plan_mode"] = (perm == "plan")
+                elif sub == "task_started":
+                    agent_status[agent]["subagent"] = {
+                        "description": msg.data.get("description", "") or getattr(msg, "description", ""),
+                        "last_tool": "",
+                        "task_id": msg.data.get("task_id", "") or getattr(msg, "task_id", ""),
+                    }
+                elif sub == "task_progress":
+                    cur = agent_status[agent].get("subagent")
+                    task_id = msg.data.get("task_id", "") or getattr(msg, "task_id", "")
+                    if cur and cur.get("task_id") == task_id:
+                        last_tool = msg.data.get("last_tool_name") or getattr(msg, "last_tool_name", None)
+                        if last_tool:
+                            cur["last_tool"] = last_tool
+                elif sub == "task_notification":
+                    cur = agent_status[agent].get("subagent")
+                    task_id = msg.data.get("task_id", "") or getattr(msg, "task_id", "")
+                    if cur and cur.get("task_id") == task_id:
+                        agent_status[agent]["subagent"] = None
+
+            elif isinstance(msg, ResultMessage):
+                if msg.session_id:
+                    sessions[agent] = msg.session_id
+                    _save_sessions()
+                    state.client_session_id = msg.session_id
+                _update_agent_from_result(agent, msg.model_usage, last_assistant_usage)
+
+            elif isinstance(msg, RateLimitEvent):
+                info = msg.rate_limit_info
+                if info.resets_at:
+                    if info.rate_limit_type and "five_hour" in info.rate_limit_type:
+                        shared_status["five_hour_resets_at"] = info.resets_at
+                    elif info.rate_limit_type and "seven_day" in info.rate_limit_type:
+                        shared_status["seven_day_resets_at"] = info.resets_at
+
+            # --- SSE バッファへ積む ---
+            if wire is not None:
+                state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
+
+    except asyncio.CancelledError:
+        raise
     except Exception:
-        logger.exception("Error in _run_claude_background for agent=%s", agent)
+        logger.exception("Error in _run_sdk_background for agent=%s", agent)
     finally:
-        running_procs[agent] = None
         state.complete = True
         _reset_activity(agent)
+        # 回答待ちが残っていたらキャンセル
+        if state.pending_question is not None and not state.pending_question.done():
+            state.pending_question.cancel()
 
 
 # --- エンドポイント ---
@@ -376,40 +572,15 @@ async def chat_stream(
 
     state = stream_states[agent]
 
-    # 前の会話が完了済み → 新しいメッセージとして処理
     if state.complete:
         saved_files = await save_to_tmp(files, agent)
-        session_id = sessions[agent]
-
-        cmd = [config.get("claude_path", "claude")]
-        if session_id:
-            cmd += ["--resume", session_id]
-        cmd += [
-            "--input-format", "stream-json",
-            "--output-format", "stream-json",
-            "--verbose",
-            "-p",
-            "--dangerously-skip-permissions",
-        ]
-
         content = build_content(message, saved_files)
-        input_msg = json.dumps({
-            "type": "user",
-            "message": {"role": "user", "content": content},
-        }) + "\n"
 
-        env = os.environ.copy()
-        env["ANTHROPIC_BASE_URL"] = "http://localhost:8000/proxy"
-
-        # バッファをリセットして新しいバックグラウンドタスク開始
         state.buffer = []
         state.buffer_id = str(uuid.uuid4())
         state.complete = False
-        state.task = asyncio.create_task(
-            _run_claude_background(agent, cmd, input_msg, env)
-        )
+        state.task = asyncio.create_task(_run_sdk_background(agent, content))
 
-    # バッファからクライアントにSSE送信（切断・再接続どちらでも先頭から）
     async def generate():
         sent = 0
         last_heartbeat = asyncio.get_event_loop().time()
@@ -433,22 +604,43 @@ async def chat_stream(
     )
 
 
+@app.post("/chat/{agent}/answer")
+async def chat_answer(agent: str, payload: dict = Body(...)):
+    """AskUserQuestion への回答を受け取って can_use_tool ハンドラに返す"""
+    if agent not in AGENTS:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
+    state = stream_states[agent]
+    if state.pending_question is None or state.pending_question.done():
+        raise HTTPException(status_code=409, detail="回答待ちの質問がありません")
+
+    answer = payload.get("answer", "")
+    if not isinstance(answer, str):
+        raise HTTPException(status_code=400, detail="answer は文字列である必要があります")
+
+    state.pending_question.set_result(answer)
+    return {"status": "ok", "tool_use_id": state.pending_question_tool_id}
+
+
 @app.post("/chat/{agent}/stop")
 async def chat_stop(agent: str):
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
 
-    proc = running_procs.get(agent)
-    if proc:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-        running_procs[agent] = None
-
     state = stream_states[agent]
+    if state.client is not None:
+        try:
+            await state.client.interrupt()
+        except Exception:
+            logger.exception("interrupt failed for agent=%s", agent)
+
     if state.task and not state.task.done():
+        # SDK の interrupt で receive_response が終了するはずだが、
+        # 念のためタスクのキャンセルもトリガー
         state.task.cancel()
+
+    if state.pending_question is not None and not state.pending_question.done():
+        state.pending_question.cancel()
+
     state.complete = True
     _reset_activity(agent)
 
@@ -456,9 +648,11 @@ async def chat_stop(agent: str):
 
 
 @app.post("/session/{agent}/end")
-def end_session(agent: str):
+async def end_session(agent: str):
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
+    # SDK クライアントを切断（再接続で新セッションになる）
+    await _disconnect_client(agent)
     sessions[agent] = None
     _save_sessions()
     agent_status[agent]["todos"] = None
@@ -477,6 +671,7 @@ def get_status(agent: str):
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
     a = agent_status[agent]
+    state = stream_states[agent]
     return {
         "model": a["model"],
         "ctx_pct": a["ctx_pct"],
@@ -488,24 +683,24 @@ def get_status(agent: str):
         "seven_day_pct": shared_status["seven_day_pct"],
         "five_hour_resets_at": shared_status["five_hour_resets_at"],
         "seven_day_resets_at": shared_status["seven_day_resets_at"],
-        "streaming": not stream_states[agent].complete,
-        "buffer_length": len(stream_states[agent].buffer),
-        "buffer_id": stream_states[agent].buffer_id,
+        "streaming": not state.complete,
+        "buffer_length": len(state.buffer),
+        "buffer_id": state.buffer_id,
+        "pending_question_tool_id": state.pending_question_tool_id,
     }
 
 
 @app.get("/chat/{agent}/reconnect")
 async def reconnect_stream(agent: str, from_pos: int = Query(default=0, alias="from")):
-    """バックグラウンドで処理中のストリームに再接続する。from=N で既読位置以降だけ送信"""
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
 
     state = stream_states[agent]
     if state.complete and from_pos >= len(state.buffer):
-        return Response(status_code=204)  # 完了済み かつ 未送信データなし
+        return Response(status_code=204)
 
     async def generate():
-        sent = max(0, from_pos)  # クライアントが既に受け取った位置から再開
+        sent = max(0, from_pos)
         last_heartbeat = asyncio.get_event_loop().time()
         while True:
             while sent < len(state.buffer):
@@ -527,7 +722,7 @@ async def reconnect_stream(agent: str, from_pos: int = Query(default=0, alias="f
     )
 
 
-# --- Anthropic リバースプロキシ ---
+# --- Anthropic リバースプロキシ（rate limit ヘッダ取得のため温存） ---
 @app.api_route("/proxy/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def anthropic_proxy(path: str, request: Request):
     target_url = f"{ANTHROPIC_API_BASE}/{path}"
@@ -627,7 +822,6 @@ def list_agents():
     ]
 
 
-# フロントエンド静的ファイル配信（APIルートの後に配置）
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
