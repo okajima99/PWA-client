@@ -422,7 +422,10 @@ async def _ensure_client(agent: str) -> ClaudeSDKClient:
         return state.client
 
     cfg = AGENTS[agent]
-    env = {"ANTHROPIC_BASE_URL": "http://localhost:8000/proxy"}
+    env = {
+        "ANTHROPIC_BASE_URL": "http://localhost:8000/proxy",
+        "CLAUDE_CODE_EFFORT_LEVEL": "medium",
+    }
     options = ClaudeAgentOptions(
         cwd=cfg["cwd"],
         resume=sessions[agent],
@@ -572,7 +575,21 @@ async def chat_stream(
 
     state = stream_states[agent]
 
-    if state.complete:
+    # 新ターン開始: 直前のタスクが残っていれば完全にキャンセル・待機してから buffer をクリア
+    # （state.complete=True でもバッファに前ターン残骸があるケースを防ぐ）
+    if not state.complete and state.task and not state.task.done():
+        try:
+            if state.client is not None:
+                await state.client.interrupt()
+        except Exception:
+            logger.exception("interrupt failed during new-stream for agent=%s", agent)
+        state.task.cancel()
+        try:
+            await state.task
+        except Exception:
+            pass
+
+    if state.complete or state.task is None or state.task.done():
         saved_files = await save_to_tmp(files, agent)
         content = build_content(message, saved_files)
 
@@ -642,6 +659,9 @@ async def chat_stop(agent: str):
         state.pending_question.cancel()
 
     state.complete = True
+    # バッファ残骸をクリア（次ターン以降の reconnect で古い内容が replay されないように）
+    state.buffer = []
+    state.buffer_id = str(uuid.uuid4())
     _reset_activity(agent)
 
     return {"status": "stopped"}
