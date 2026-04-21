@@ -2,8 +2,52 @@ import { memo } from 'react'
 import MessageRenderer from '../MessageRenderer.jsx'
 import AskUserQuestionBubble from './AskUserQuestionBubble.jsx'
 import { formatToolResultContent, formatCost, formatDuration, formatModelName, formatTokens } from '../utils/format.js'
+import { diffLines, compactDiff } from '../utils/diff.js'
 
 const RESULT_PREVIEW_CHARS = 800
+
+function DiffView({ diffInput }) {
+  if (!diffInput) return null
+  if (diffInput.kind === 'edit') {
+    const ops = compactDiff(diffLines(diffInput.old_string, diffInput.new_string), 2)
+    return (
+      <div className="diff-view">
+        {diffInput.file_path && (
+          <div className="diff-path">{diffInput.file_path}{diffInput.replace_all ? ' (replace_all)' : ''}</div>
+        )}
+        <pre className="diff-body">
+          {ops.map((op, i) => (
+            <div key={i} className={`diff-line ${op.type}`}>
+              <span className="diff-marker">{op.type === 'add' ? '+' : op.type === 'del' ? '-' : op.type === 'gap' ? ' ' : ' '}</span>
+              <span className="diff-text">{op.text}</span>
+            </div>
+          ))}
+        </pre>
+      </div>
+    )
+  }
+  // write: 新規作成扱いで全行を + で
+  if (diffInput.kind === 'write') {
+    const lines = String(diffInput.content ?? '').split('\n')
+    if (lines.length > 0 && lines[lines.length - 1] === '' && diffInput.content.endsWith('\n')) lines.pop()
+    return (
+      <div className="diff-view">
+        {diffInput.file_path && (
+          <div className="diff-path">{diffInput.file_path} (new file)</div>
+        )}
+        <pre className="diff-body">
+          {lines.map((line, i) => (
+            <div key={i} className="diff-line add">
+              <span className="diff-marker">+</span>
+              <span className="diff-text">{line}</span>
+            </div>
+          ))}
+        </pre>
+      </div>
+    )
+  }
+  return null
+}
 
 // 通常完了 (end_turn / tool_use) 以外の停止理由をチップで強調表示
 const STOP_REASON_LABELS = {
@@ -104,23 +148,36 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
               {msg.tools.map((t) => {
                 const resultText = t.result ? formatToolResultContent(t.result.content) : null
                 const truncated = resultText && resultText.length > RESULT_PREVIEW_CHARS
+                const hasDiff = !!t.diffInput
+                const hasMore = hasDiff || (t.shortLabel && t.shortLabel !== t.label) || !!t.result
                 return (
-                  <div key={t.id} className="tool-block">
-                    <div className={`tool-line tool-${t.name.toLowerCase()}`}>
-                      {t.label}
-                    </div>
-                    {t.result && (
-                      <details className={`tool-result ${t.result.is_error ? 'is-error' : ''}`}>
-                        <summary>
-                          {t.result.is_error ? '⚠ tool error' : '結果'}
-                          {resultText ? ` · ${resultText.length}文字` : ''}
-                        </summary>
-                        <pre className="tool-result-text">
-                          {truncated ? resultText.slice(0, RESULT_PREVIEW_CHARS) + '\n…（省略）' : resultText}
-                        </pre>
-                      </details>
+                  <details
+                    key={t.id}
+                    className={`tool-block ${t.result?.is_error ? 'is-error' : ''}`}
+                  >
+                    <summary className={`tool-line tool-${t.name.toLowerCase()}`}>
+                      <span className="tool-marker">{hasMore ? '▸' : '·'}</span>
+                      <span className="tool-short">{t.shortLabel || t.label}</span>
+                      {t.result?.is_error && <span className="tool-err-mark"> ⚠</span>}
+                      {resultText && (
+                        <span className="tool-meta"> · {resultText.length}文字</span>
+                      )}
+                    </summary>
+                    {hasMore && (
+                      <div className="tool-body">
+                        {hasDiff ? (
+                          <DiffView diffInput={t.diffInput} />
+                        ) : t.shortLabel !== t.label && (
+                          <pre className="tool-input-full">{t.label}</pre>
+                        )}
+                        {t.result && (
+                          <pre className={`tool-result-text ${t.result.is_error ? 'is-error' : ''}`}>
+                            {truncated ? resultText.slice(0, RESULT_PREVIEW_CHARS) + '\n…（省略）' : resultText}
+                          </pre>
+                        )}
+                      </div>
                     )}
-                  </div>
+                  </details>
                 )
               })}
               {msg.streaming && <div className="tool-line tool-pending">…</div>}

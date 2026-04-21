@@ -1,29 +1,68 @@
+const SHORT_LABEL_MAX = 60
+
+function truncate(str, max = SHORT_LABEL_MAX) {
+  if (!str) return ''
+  return str.length > max ? str.slice(0, max) + '…' : str
+}
+
 export function formatTool(block) {
   const { id, name, input } = block
   let label = ''
+  let shortLabel = ''
+  // Edit / Write は diff 描画のため input を保持する
+  let diffInput = null
+  if (name === 'Edit' && input && typeof input === 'object') {
+    diffInput = {
+      kind: 'edit',
+      file_path: input.file_path,
+      old_string: input.old_string ?? '',
+      new_string: input.new_string ?? '',
+      replace_all: !!input.replace_all,
+    }
+  } else if (name === 'Write' && input && typeof input === 'object') {
+    diffInput = {
+      kind: 'write',
+      file_path: input.file_path,
+      content: input.content ?? '',
+    }
+  }
   switch (name) {
     case 'Bash':
       label = `$ ${input?.command ?? ''}`
+      shortLabel = truncate(label)
       break
     case 'Read':
       label = `read  ${input?.file_path ?? ''}`
+      shortLabel = truncate(label)
       break
     case 'Write':
       label = `write ${input?.file_path ?? ''}`
+      shortLabel = truncate(label)
       break
     case 'Edit':
       label = `edit  ${input?.file_path ?? ''}`
+      shortLabel = truncate(label)
       break
     case 'Glob':
       label = `glob  ${input?.pattern ?? ''}`
+      shortLabel = truncate(label)
       break
     case 'Grep':
       label = `grep  ${input?.pattern ?? ''}`
+      shortLabel = truncate(label)
       break
-    default:
+    default: {
       label = `[${name}] ${JSON.stringify(input ?? {})}`
+      // Extract the first string-valued field as a human-readable hint
+      const firstString = input && typeof input === 'object'
+        ? Object.values(input).find(v => typeof v === 'string' && v.length > 0)
+        : null
+      shortLabel = firstString
+        ? `[${name}] ${truncate(firstString, SHORT_LABEL_MAX - name.length - 3)}`
+        : `[${name}]`
+    }
   }
-  return { id, name, label }
+  return { id, name, label, shortLabel, diffInput }
 }
 
 export function formatCost(usd) {
