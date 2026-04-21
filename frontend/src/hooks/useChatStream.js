@@ -427,6 +427,9 @@ export function useChatStream({
       // 通信失敗時: reconnectで取り戻せれば続行、ダメならエラー表示
       const recovered = await _reconnectIfStreaming(agent)
       if (!recovered) {
+        // バッファ未反映の text/tools があると last の判定をすり抜け、余計なエラーバブルが
+        // 追加されたあと後段の flush で内容が復活して二重表示になる。先に確定させる。
+        cancelAndFlush(agent)
         setMessages(prev => {
           const msgs = prev[agent]
           const last = msgs[msgs.length - 1]
