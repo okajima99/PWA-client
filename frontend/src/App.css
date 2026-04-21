@@ -483,31 +483,125 @@ button:disabled {
 .tool-bash { color: var(--green); }
 .tool-pending { opacity: 0.4; }
 
-/* tool 実行結果（折りたたみ） */
+/* tool 実行（全体折りたたみ、デフォルト閉じ） */
 .tool-block {
-  display: flex;
-  flex-direction: column;
+  display: block;
 }
 
-.tool-result {
-  margin: 2px 0 4px 12px;
+.tool-block > summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  padding: 1px 0;
+  opacity: 0.7;
+}
+
+.tool-block > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-block > summary:hover {
+  opacity: 1;
+}
+
+.tool-marker {
+  display: inline-block;
+  width: 10px;
+  opacity: 0.6;
+  margin-right: 2px;
+}
+
+.tool-block[open] > summary .tool-marker::before {
+  content: '▾';
+}
+
+.tool-block[open] > summary .tool-marker {
+  /* Hide the static ▸ when open (::before replaces it) */
+  font-size: 0;
+}
+
+.tool-block[open] > summary .tool-marker::before {
   font-size: 11px;
+}
+
+.tool-meta {
+  opacity: 0.55;
+}
+
+.tool-err-mark {
+  color: #ff5f57;
+}
+
+.tool-block.is-error > summary {
+  color: #ff5f57;
+  opacity: 0.9;
+}
+
+.tool-body {
+  margin: 2px 0 6px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool-input-full {
+  margin: 0;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border-left: 2px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
   font-family: 'Menlo', 'Monaco', monospace;
 }
 
-.tool-result summary {
-  cursor: pointer;
-  user-select: none;
-  opacity: 0.55;
-  padding: 1px 0;
+.diff-view {
+  margin: 0;
+  border-left: 2px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 11px;
+  line-height: 1.5;
+  font-family: 'Menlo', 'Monaco', monospace;
 }
-
-.tool-result summary:hover {
-  opacity: 0.85;
+.diff-path {
+  padding: 4px 8px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  opacity: 0.8;
+}
+.diff-body {
+  margin: 0;
+  padding: 4px 0;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre;
+}
+.diff-line {
+  display: flex;
+  padding: 0 8px;
+  white-space: pre;
+}
+.diff-line.add { background: rgba(80, 200, 120, 0.12); color: #8ae6a8; }
+.diff-line.del { background: rgba(255, 95, 87, 0.12); color: #ff9b94; }
+.diff-line.ctx { color: var(--text-dim); }
+.diff-line.gap { color: var(--text-dim); opacity: 0.5; font-style: italic; }
+.diff-marker {
+  width: 1em;
+  flex: 0 0 auto;
+  opacity: 0.7;
+  user-select: none;
+}
+.diff-text {
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .tool-result-text {
-  margin: 4px 0 0 0;
+  margin: 0;
   padding: 6px 8px;
   background: rgba(255, 255, 255, 0.03);
   border-left: 2px solid var(--border);
@@ -520,12 +614,7 @@ button:disabled {
   line-height: 1.5;
 }
 
-.tool-result.is-error summary {
-  color: #ff5f57;
-  opacity: 0.9;
-}
-
-.tool-result.is-error .tool-result-text {
+.tool-result-text.is-error {
   background: rgba(255, 95, 87, 0.08);
   border-left-color: #ff5f57;
   color: #ffb3ad;
