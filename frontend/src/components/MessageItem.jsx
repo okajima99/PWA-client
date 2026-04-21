@@ -23,14 +23,9 @@ function LinkifiedResult({ text, onOpenFile, errorClass }) {
         if (!looksLikePath || !onOpenFile) {
           return <div key={i}>{line || ' '}</div>
         }
-        const handleClick = (e) => {
-          e.stopPropagation()
-          e.preventDefault()
-          onOpenFile(pathCandidate)
-        }
         return (
           <div key={i}>
-            <span className="file-link" onClick={handleClick} role="link" tabIndex={0}>{pathCandidate}</span>
+            <span className="file-link" onClick={() => onOpenFile(pathCandidate)}>{pathCandidate}</span>
             {rest}
           </div>
         )
