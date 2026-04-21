@@ -1,8 +1,9 @@
-import { memo } from 'react'
+import { memo, useEffect, useState } from 'react'
 import MessageRenderer from '../MessageRenderer.jsx'
 import AskUserQuestionBubble from './AskUserQuestionBubble.jsx'
 import { formatToolResultContent, formatCost, formatDuration, formatModelName, formatTokens } from '../utils/format.js'
 import { diffLines, compactDiff } from '../utils/diff.js'
+import { API_BASE } from '../constants.js'
 
 const RESULT_PREVIEW_CHARS = 800
 
@@ -34,27 +35,105 @@ function LinkifiedResult({ text, onOpenFile, errorClass }) {
   )
 }
 
+// Edit の場合、編集後のファイル本体を取得して new_string の開始行 (1-indexed) を返す。
+// 取れない / 見つからない場合は null を返す（呼び出し側で relative=1 fallback）。
+async function fetchEditBaseLine(filePath, newString, signal) {
+  if (!filePath || !newString) return null
+  try {
+    const res = await fetch(`${API_BASE}/file?path=${encodeURIComponent(filePath)}`, { signal })
+    if (!res.ok) return null
+    const data = await res.json()
+    const content = data?.content
+    if (typeof content !== 'string') return null
+    const idx = content.indexOf(newString)
+    if (idx < 0) return null
+    // idx 以前の \n 数 + 1 = 開始行番号 (1-indexed)
+    let line = 1
+    for (let i = 0; i < idx; i++) if (content.charCodeAt(i) === 10) line++
+    return line
+  } catch {
+    return null
+  }
+}
+
+// ops (compactDiff 済み) を走査して、各行に old/new 行番号を付ける。
+function annotateLineNumbers(ops, baseLine) {
+  let oldNum = baseLine
+  let newNum = baseLine
+  return ops.map(op => {
+    if (op.type === 'gap') {
+      const skip = op.skippedLines || 0
+      oldNum += skip
+      newNum += skip
+      return { ...op, oldNum: null, newNum: null }
+    }
+    if (op.type === 'del') {
+      const n = { ...op, oldNum, newNum: null }
+      oldNum++
+      return n
+    }
+    if (op.type === 'add') {
+      const n = { ...op, oldNum: null, newNum }
+      newNum++
+      return n
+    }
+    // ctx
+    const n = { ...op, oldNum, newNum }
+    oldNum++
+    newNum++
+    return n
+  })
+}
+
+function formatLineNum(n) {
+  if (n == null) return ''
+  return String(n)
+}
+
 function DiffView({ diffInput }) {
+  const [baseLine, setBaseLine] = useState(null)
+  const [baseKnown, setBaseKnown] = useState(false)
+
+  useEffect(() => {
+    if (!diffInput || diffInput.kind !== 'edit') return
+    const ctrl = new AbortController()
+    fetchEditBaseLine(diffInput.file_path, diffInput.new_string, ctrl.signal)
+      .then(line => {
+        setBaseLine(line)
+        setBaseKnown(true)
+      })
+    return () => ctrl.abort()
+  }, [diffInput])
+
   if (!diffInput) return null
+
   if (diffInput.kind === 'edit') {
-    const ops = compactDiff(diffLines(diffInput.old_string, diffInput.new_string), 2)
+    const effectiveBase = baseLine ?? 1
+    const isRelative = baseLine == null
+    const rawOps = compactDiff(diffLines(diffInput.old_string, diffInput.new_string), 2)
+    const ops = annotateLineNumbers(rawOps, effectiveBase)
     return (
       <div className="diff-view">
         {diffInput.file_path && (
-          <div className="diff-path">{diffInput.file_path}{diffInput.replace_all ? ' (replace_all)' : ''}</div>
+          <div className="diff-path">
+            {diffInput.file_path}{diffInput.replace_all ? ' (replace_all)' : ''}
+            {baseKnown && isRelative && <span className="diff-path-note"> · 行番号は相対</span>}
+          </div>
         )}
         <pre className="diff-body">
           {ops.map((op, i) => (
             <div key={i} className={`diff-line ${op.type}`}>
-              <span className="diff-marker">{op.type === 'add' ? '+' : op.type === 'del' ? '-' : op.type === 'gap' ? ' ' : ' '}</span>
-              <span className="diff-text">{op.text}</span>
+              <span className="diff-lineno diff-lineno-old">{formatLineNum(op.oldNum)}</span>
+              <span className="diff-lineno diff-lineno-new">{formatLineNum(op.newNum)}</span>
+              <span className="diff-marker">{op.type === 'add' ? '+' : op.type === 'del' ? '-' : op.type === 'gap' ? '…' : ' '}</span>
+              <span className="diff-text">{op.type === 'gap' ? '' : op.text}</span>
             </div>
           ))}
         </pre>
       </div>
     )
   }
-  // write: 新規作成扱いで全行を + で
+  // write: 新規作成扱いで全行を + で。行番号は 1 始まり
   if (diffInput.kind === 'write') {
     const lines = String(diffInput.content ?? '').split('\n')
     if (lines.length > 0 && lines[lines.length - 1] === '' && diffInput.content.endsWith('\n')) lines.pop()
@@ -66,6 +145,8 @@ function DiffView({ diffInput }) {
         <pre className="diff-body">
           {lines.map((line, i) => (
             <div key={i} className="diff-line add">
+              <span className="diff-lineno diff-lineno-old"></span>
+              <span className="diff-lineno diff-lineno-new">{i + 1}</span>
               <span className="diff-marker">+</span>
               <span className="diff-text">{line}</span>
             </div>
