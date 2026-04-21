@@ -77,16 +77,16 @@ export function compactDiff(ops, contextLines = 3) {
     }
   }
   const result = []
-  let gap = false
+  let gapSkipped = 0 // 飛ばされた ctx 行数 (行番号計算に使う)
   for (let i = 0; i < ops.length; i++) {
     if (keep[i]) {
-      if (gap) {
-        result.push({ type: 'gap', text: '…' })
-        gap = false
+      if (gapSkipped > 0) {
+        result.push({ type: 'gap', text: '…', skippedLines: gapSkipped })
+        gapSkipped = 0
       }
       result.push(ops[i])
     } else {
-      gap = true
+      gapSkipped++
     }
   }
   return result
