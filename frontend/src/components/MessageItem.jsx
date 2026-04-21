@@ -112,12 +112,14 @@ function DiffView({ diffInput }) {
     const isRelative = baseLine == null
     const rawOps = compactDiff(diffLines(diffInput.old_string, diffInput.new_string), 2)
     const ops = annotateLineNumbers(rawOps, effectiveBase)
+    // path は summary に出てるので冗長。replace_all フラグ or 行番号相対注記があるときだけヘッダを出す
+    const showHeader = diffInput.replace_all || (baseKnown && isRelative)
     return (
       <div className="diff-view">
-        {diffInput.file_path && (
+        {showHeader && (
           <div className="diff-path">
-            {diffInput.file_path}{diffInput.replace_all ? ' (replace_all)' : ''}
-            {baseKnown && isRelative && <span className="diff-path-note"> · 行番号は相対</span>}
+            {diffInput.replace_all && <span>replace_all</span>}
+            {baseKnown && isRelative && <span className="diff-path-note">行番号は相対</span>}
           </div>
         )}
         <pre className="diff-body">
@@ -139,9 +141,7 @@ function DiffView({ diffInput }) {
     if (lines.length > 0 && lines[lines.length - 1] === '' && diffInput.content.endsWith('\n')) lines.pop()
     return (
       <div className="diff-view">
-        {diffInput.file_path && (
-          <div className="diff-path">{diffInput.file_path} (new file)</div>
-        )}
+        <div className="diff-path"><span>new file</span></div>
         <pre className="diff-body">
           {lines.map((line, i) => (
             <div key={i} className="diff-line add">
