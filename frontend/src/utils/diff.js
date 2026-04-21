@@ -1,11 +1,10 @@
 // 軽量な line-based diff (LCS)。外部依存なし。
 // 返り値: [{ type: 'ctx'|'add'|'del', text: string }]
 
+// 改行で分割。ただし末尾が \n のときに生まれる余分な空要素は落とす。
 function splitLines(s) {
   if (s == null) return []
-  // 末尾の空行を作らないために trailing \n を単純には split しない
   const lines = String(s).split('\n')
-  // 末尾が空で、元テキストが \n で終わる場合はその空行は削除（表示ノイズ回避）
   if (lines.length > 0 && lines[lines.length - 1] === '' && String(s).endsWith('\n')) {
     lines.pop()
   }
