@@ -269,6 +269,9 @@ export function useChatStream({
     const newTools = event.message.content
       .filter(b => b.type === 'tool_use' && b.name !== 'Agent' && b.name !== 'AskUserQuestion' && b.name !== 'TodoWrite')
       .map(b => formatTool(b))
+    // バブル分割判定はフィルタ前の全 tool_use 数を使う。
+    // フィルタで除外された tool (TodoWrite 等) を挟んだ後の text が前のテキストを上書きしてしまうバグの対策。
+    const hasAnyToolUse = event.message.content.some(b => b.type === 'tool_use')
 
     const buf = streamBufRef.current[agent]
     // reconnect中は既存バブルに積むだけ（分割すると2重表示になる）
@@ -285,6 +288,9 @@ export function useChatStream({
       if (thinkingContent) buf.thinking = thinkingContent
       if (newTools.length > 0) {
         buf.newTools = [...buf.newTools, ...newTools]
+      }
+      // 表示しない tool でもバブル分割の境界として扱う
+      if (hasAnyToolUse) {
         currentBubbleHasToolsRef.current[agent] = true
       }
     }
