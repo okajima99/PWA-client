@@ -19,7 +19,7 @@ export function useChatStorage() {
         }
         return result
       }
-    } catch {}
+    } catch { /* ignored */ }
     return { agent_a: [], agent_b: [] }
   })
 

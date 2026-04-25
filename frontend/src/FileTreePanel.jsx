@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const HOME = '~'
@@ -10,12 +10,7 @@ export default function FileTreePanel({ onOpenFile, onClose, initialPath }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  useEffect(() => {
-    setHistory([])
-    loadDir(initialPath || HOME)
-  }, [initialPath])
-
-  const loadDir = (path) => {
+  const loadDir = useCallback((path) => {
     setLoading(true)
     setError(null)
     fetch(`${API_BASE}/files/tree?path=${encodeURIComponent(path)}`)
@@ -26,7 +21,14 @@ export default function FileTreePanel({ onOpenFile, onClose, initialPath }) {
       })
       .catch(e => setError(`読み込みエラー (${e})`))
       .finally(() => setLoading(false))
-  }
+  }, [])
+
+  useEffect(() => {
+    // initialPath プロップ変更時の history リセットは意図的
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setHistory([])
+    loadDir(initialPath || HOME)
+  }, [initialPath, loadDir])
 
   const handleEntry = (entry) => {
     if (entry.is_dir) {
