@@ -33,7 +33,6 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
 HOME = Path.home()
-UPLOADS_TMP = HOME / "cpc" / "uploads" / "tmp"
 ERROR_LOG_PATH = Path(__file__).parent.parent / "logs" / "backend.error.log"
 
 logging.basicConfig(
@@ -49,6 +48,8 @@ with open(CONFIG_PATH) as f:
     config = json.load(f)
 
 AGENTS = config["agents"]
+# uploads_tmp は config.json で上書き可能。デフォルトは ~/.claude-pwa-client/uploads/tmp
+UPLOADS_TMP = Path(config.get("uploads_tmp", str(HOME / ".claude-pwa-client" / "uploads" / "tmp"))).expanduser()
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}

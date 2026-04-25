@@ -24,7 +24,7 @@ function remarkFilePaths() {
         }
         parts.push({
           type: 'link',
-          url: `cpc://${encodeURIComponent(match[0])}`,
+          url: `cpc-file://${encodeURIComponent(match[0])}`,
           children: [{ type: 'text', value: match[0] }],
         })
         last = match.index + match[0].length
@@ -42,7 +42,7 @@ function remarkFilePaths() {
       if (!/^(~\/|\/Users\/)/.test(node.value)) return
       parent.children.splice(index, 1, {
         type: 'link',
-        url: `cpc://${encodeURIComponent(node.value)}`,
+        url: `cpc-file://${encodeURIComponent(node.value)}`,
         children: [{ type: 'text', value: node.value }],
       })
     })
@@ -58,9 +58,9 @@ const MessageRenderer = React.memo(function MessageRenderer({ text, onOpenFile }
       urlTransform={(url) => url}
       components={{
         a({ href, children }) {
-          if (href?.startsWith('cpc://')) {
+          if (href?.startsWith('cpc-file://')) {
             let path
-            try { path = decodeURIComponent(href.slice('cpc://'.length)) } catch { path = href.slice('cpc://'.length) }
+            try { path = decodeURIComponent(href.slice('cpc-file://'.length)) } catch { path = href.slice('cpc-file://'.length) }
             return (
               <span className="file-link" onClick={() => onOpenFile(path)}>
                 {children}
