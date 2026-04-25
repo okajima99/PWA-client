@@ -32,7 +32,7 @@ export function useStatus(activeAgent) {
           schedule(isBusy(data) ? INTERVAL_BUSY : INTERVAL_IDLE)
           return
         }
-      } catch {}
+      } catch { /* ignored */ }
       schedule(INTERVAL_IDLE)
     }
 

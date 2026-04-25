@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 
 // 全完了 TODO を画面から消すまでの猶予（進行中は残し続ける）
 const TODOS_HIDE_AFTER_DONE_MS = 5_000
@@ -11,7 +11,12 @@ function ActivityBar({ status }) {
   // 全完了に遷移してから N 秒後に非表示。進行中の TODO は放置されても消さない
   const [hideDone, setHideDone] = useState(false)
   useEffect(() => {
-    if (!allDone) { setHideDone(false); return }
+    if (!allDone) {
+      // allDone が false に戻った時に hideDone を解除するための意図的なリセット
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setHideDone(prev => (prev ? false : prev))
+      return
+    }
     const id = setTimeout(() => setHideDone(true), TODOS_HIDE_AFTER_DONE_MS)
     return () => clearTimeout(id)
   }, [allDone])

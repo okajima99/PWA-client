@@ -183,8 +183,8 @@ export function pctClass(pct) {
   return 'pct green'
 }
 
-export function timeUntil(unixSec) {
-  const now = Date.now() / 1000
+export function timeUntil(unixSec, nowSec) {
+  const now = nowSec ?? Date.now() / 1000
   let resetAt = unixSec
   if (resetAt < now) {
     const periods = Math.ceil((now - resetAt) / (5 * 3600))

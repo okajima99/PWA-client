@@ -14,14 +14,16 @@ function normalizeOption(opt) {
 function AskUserQuestionBubble({ askUserQuestion, onAnswer }) {
   const { tool_use_id, questions, answered, selectedAnswer, lastError } = askUserQuestion
   const q = questions?.[0]
+  // Hooks は早期 return より前に呼ぶ（rules-of-hooks）
+  const multi = !!q?.multiSelect
+  const [selected, setSelected] = useState(() => (multi ? [] : null))
+  const [freeText, setFreeText] = useState('')
+
   if (!q) return null
 
-  const multi = !!q.multiSelect
   const options = Array.isArray(q.options) ? q.options.map(normalizeOption).filter(o => o.label) : []
   const questionText = typeof q.question === 'string' ? q.question : JSON.stringify(q.question ?? '')
   const headerText = typeof q.header === 'string' ? q.header : ''
-  const [selected, setSelected] = useState(() => (multi ? [] : null))
-  const [freeText, setFreeText] = useState('')
 
   const submit = (answer) => {
     if (answered || !answer) return

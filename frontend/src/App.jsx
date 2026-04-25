@@ -48,6 +48,12 @@ export default function App() {
   const [confirmEnd, setConfirmEnd] = useState(false)
   // 非アクティブタブで messages 増加 or loading 完了が起きたら「新着」
   const [tabHasNew, setTabHasNew] = useState(() => Object.fromEntries(AGENTS.map(a => [a, false])))
+  // ステータスバーの相対時刻表示用に30秒間隔でtickする秒値
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
+  useEffect(() => {
+    const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 30000)
+    return () => clearInterval(id)
+  }, [])
   const prevTabStateRef = useRef(null)
   const menuRef = useRef(null)
 
@@ -108,6 +114,7 @@ export default function App() {
       prevTabStateRef.current[a] = { len: messages[a].length, loading: !!loading[a] }
     }
     // 3) フラグ更新
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTabHasNew(prev => {
       let changed = false
       const next = { ...prev }
@@ -164,10 +171,10 @@ export default function App() {
             {(() => {
               // resets_at が未知 (0) の間は生の pct を信用する。
               // 既知かつ過去の時刻になった時だけ「ウィンドウが切れた」= 0% と解釈する。
-              const expired = status.five_hour_resets_at > 0 && status.five_hour_resets_at < Date.now() / 1000
+              const expired = status.five_hour_resets_at > 0 && status.five_hour_resets_at < nowSec
               const pct = expired ? 0 : status.five_hour_pct
               return (
-                <span className={pctClass(pct)}>5h {Math.round(pct)}% <span className="dim">{timeUntil(status.five_hour_resets_at)}</span></span>
+                <span className={pctClass(pct)}>5h {Math.round(pct)}% <span className="dim">{timeUntil(status.five_hour_resets_at, nowSec)}</span></span>
               )
             })()}
             <span className={pctClass(status.seven_day_pct)}>7d {Math.round(status.seven_day_pct)}%</span>

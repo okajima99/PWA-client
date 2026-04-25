@@ -44,7 +44,7 @@ export function useChatStream({
     try {
       localStorage.removeItem('cpc_bufpos')
       localStorage.removeItem('cpc_bufid')
-    } catch {}
+    } catch { /* ignored */ }
   }, [])
 
   // サーバーがまだ streaming 中なら reconnect を起動（fire-and-forget）
@@ -60,7 +60,7 @@ export function useChatStream({
         })
         return true
       }
-    } catch {}
+    } catch { /* ignored */ }
     return false
   }
 
@@ -315,7 +315,7 @@ export function useChatStream({
             reconnectingRef.current[agent] = false
           })
         }
-      } catch {}
+      } catch { /* ignored */ }
     }
   }
 
@@ -335,7 +335,7 @@ export function useChatStream({
       if (s?.streaming) {
         setLoading(prev => ({ ...prev, [agent]: true }))
       }
-    } catch {}
+    } catch { /* ignored */ }
 
     reconnectingRef.current[agent] = true
     try {
@@ -351,17 +351,19 @@ export function useChatStream({
     }
   }
 
-  // アプリ起動時チェック
+  // アプリ起動時チェック（マウント時に1回だけ）
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { checkAndReconnect() }, [])
 
-  // オフライン復帰時チェック
+  // オフライン復帰時チェック（リスナー登録は1回だけ。checkAndReconnect は最新参照を使う）
   useEffect(() => {
     const handle = () => checkAndReconnect(true)
     window.addEventListener('online', handle)
     return () => window.removeEventListener('online', handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // アプリ復帰時チェック
+  // アプリ復帰時チェック（同上、リスナー登録は1回だけ）
   useEffect(() => {
     const handle = () => {
       if (!document.hidden) {
@@ -375,6 +377,7 @@ export function useChatStream({
     }
     document.addEventListener('visibilitychange', handle)
     return () => document.removeEventListener('visibilitychange', handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const sendMessage = async () => {
@@ -456,7 +459,7 @@ export function useChatStream({
 
           try {
             processStreamEvent(agent, JSON.parse(data))
-          } catch {}
+          } catch { /* ignored */ }
         }
       }
 
@@ -482,30 +485,32 @@ export function useChatStream({
         })
       }
     } finally {
-      // 古い send (stop で中断され、すでに新 send が走り始めているケース) は
-      // streamBuf / loading / 最後のバブル を一切触らずに撤退する。新 send が
-      // 自分の世界で setMessages / setLoading を回しているのでここで巻き込まない。
-      if (!isCurrentGen()) return
-      cancelAndFlush(agent)
-      // reconnectStreamが走っている間は状態を触らない（そちらが最終化する）
-      if (reconnectingRef.current[agent]) return
-      // post-stream checkが例外で落ちた場合の最終フォールバック
-      if (await _reconnectIfStreaming(agent)) return
-      // await のあとに新 send が割り込んでいる可能性があるため再チェック
-      if (!isCurrentGen()) return
-
-      setLoading(prev => ({ ...prev, [agent]: false }))
-      setMessages(prev => {
-        if (!isCurrentGen()) return prev
-        const msgs = [...prev[agent]]
-        if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
-          msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
+      // finally 内の早期 return は no-unsafe-finally 違反になるため、
+      // 条件をネストして同等の挙動を保つ:
+      // - 古い send (stop で中断され新 send が走り始めているケース): 状態を触らずに撤退
+      // - reconnectStream が走っている間: そちらが最終化するので触らない
+      // - post-stream check (再接続) が走った場合: そちらが最終化
+      if (isCurrentGen()) {
+        cancelAndFlush(agent)
+        if (!reconnectingRef.current[agent]) {
+          const handledByReconnect = await _reconnectIfStreaming(agent)
+          // await のあとに新 send が割り込んでいる可能性があるため再チェック
+          if (!handledByReconnect && isCurrentGen()) {
+            setLoading(prev => ({ ...prev, [agent]: false }))
+            setMessages(prev => {
+              if (!isCurrentGen()) return prev
+              const msgs = [...prev[agent]]
+              if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
+                msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
+              }
+              return { ...prev, [agent]: msgs }
+            })
+            // compare-and-swap: 自分の controller がまだ載っているときだけ null に戻す
+            if (abortControllers.current[agent] === controller) {
+              abortControllers.current[agent] = null
+            }
+          }
         }
-        return { ...prev, [agent]: msgs }
-      })
-      // compare-and-swap: 自分の controller がまだ載っているときだけ null に戻す
-      if (abortControllers.current[agent] === controller) {
-        abortControllers.current[agent] = null
       }
     }
   }
@@ -555,7 +560,7 @@ export function useChatStream({
 
           try {
             processStreamEvent(agent, JSON.parse(data))
-          } catch {}
+          } catch { /* ignored */ }
         }
       }
 
@@ -563,7 +568,7 @@ export function useChatStream({
       try {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
         if (s?.streaming) needsReconnect = true
-      } catch {}
+      } catch { /* ignored */ }
 
       return true
     } finally {
@@ -619,7 +624,7 @@ export function useChatStream({
     }
     try {
       await fetch(`${API_BASE}/chat/${agent}/stop`, { method: 'POST' })
-    } catch {}
+    } catch { /* ignored */ }
     setLoading(prev => ({ ...prev, [agent]: false }))
     // バッファ残りを今のバブルに反映してから streaming フラグを下ろす。
     // (このあと新 send が走った場合、古い send の finally は世代チェックで撤退するので、
