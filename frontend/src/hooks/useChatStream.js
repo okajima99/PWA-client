@@ -19,6 +19,11 @@ export function useChatStream({
   const abortControllers = useRef({ agent_a: null, agent_b: null })
   const reconnectingRef = useRef({ agent_a: false, agent_b: false })
   const loadingRef = useRef(loading)
+  // 送信世代カウンタ。stop → 新 send の race で「古い send の finally が新 send の状態
+  // (loading / streaming flag / 最後のバブル / streamBuf) を巻き込んで壊す」のを防ぐ。
+  // 新 send は myGen++ で世代を進める。古い finally は myGen が最新かを await の前後で
+  // 確認し、世代が古ければ何もせず抜ける。
+  const sendGenRef = useRef({ agent_a: 0, agent_b: 0 })
 
   // rAFバッチング用
   const streamBufRef = useRef(null)
@@ -379,6 +384,11 @@ export function useChatStream({
     if (!text && items.length === 0) return
     if (loading[agent]) return
 
+    // 世代を進めて自分専用の myGen を確保。古い send の finally は myGen の鮮度で
+    // 「自分はもう過去の send」と判定して撤退する。
+    const myGen = ++sendGenRef.current[agent]
+    const isCurrentGen = () => sendGenRef.current[agent] === myGen
+
     const imageItems = items.filter(item => item.url)
     const fileNames = items.filter(item => !item.url).map(item => item.file.name)
 
@@ -454,10 +464,13 @@ export function useChatStream({
       if (await _reconnectIfStreaming(agent)) return
     } catch (e) {
       if (e.name === 'AbortError') return
+      // 自分が「過去の send」になっていたらエラー表示も新 send の世界を汚すので何もしない
+      if (!isCurrentGen()) return
       const errText = describeError(e)
       // 通信失敗時: reconnectで取り戻せれば続行、ダメならエラー表示
       const recovered = await _reconnectIfStreaming(agent)
       if (!recovered) {
+        if (!isCurrentGen()) return
         // バッファ未反映の text/tools があると last の判定をすり抜け、余計なエラーバブルが
         // 追加されたあと後段の flush で内容が復活して二重表示になる。先に確定させる。
         cancelAndFlush(agent)
@@ -469,21 +482,31 @@ export function useChatStream({
         })
       }
     } finally {
+      // 古い send (stop で中断され、すでに新 send が走り始めているケース) は
+      // streamBuf / loading / 最後のバブル を一切触らずに撤退する。新 send が
+      // 自分の世界で setMessages / setLoading を回しているのでここで巻き込まない。
+      if (!isCurrentGen()) return
       cancelAndFlush(agent)
       // reconnectStreamが走っている間は状態を触らない（そちらが最終化する）
       if (reconnectingRef.current[agent]) return
       // post-stream checkが例外で落ちた場合の最終フォールバック
       if (await _reconnectIfStreaming(agent)) return
+      // await のあとに新 send が割り込んでいる可能性があるため再チェック
+      if (!isCurrentGen()) return
 
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
+        if (!isCurrentGen()) return prev
         const msgs = [...prev[agent]]
         if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
           msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
         }
         return { ...prev, [agent]: msgs }
       })
-      abortControllers.current[agent] = null
+      // compare-and-swap: 自分の controller がまだ載っているときだけ null に戻す
+      if (abortControllers.current[agent] === controller) {
+        abortControllers.current[agent] = null
+      }
     }
   }
 
@@ -598,6 +621,17 @@ export function useChatStream({
       await fetch(`${API_BASE}/chat/${agent}/stop`, { method: 'POST' })
     } catch {}
     setLoading(prev => ({ ...prev, [agent]: false }))
+    // バッファ残りを今のバブルに反映してから streaming フラグを下ろす。
+    // (このあと新 send が走った場合、古い send の finally は世代チェックで撤退するので、
+    //  ここで確定させておかないと中断バブルが「ぐるぐる」のまま残る)
+    cancelAndFlush(agent)
+    setMessages(prev => {
+      const msgs = [...prev[agent]]
+      if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
+        msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
+      }
+      return { ...prev, [agent]: msgs }
+    })
   }
 
   const endSession = async () => {

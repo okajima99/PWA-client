@@ -686,6 +686,19 @@ async def chat_stop(agent: str):
     if cur and cur.get("id"):
         state.orphaned_tool_use_id = cur["id"]
 
+    # ここでタスクが完全に終わるまで await する。await しないと、stop のすぐ後に
+    # 新 stream が来たときに前タスクがまだ SDK client を握っていて新タスクと衝突する。
+    # asyncio.CancelledError は BaseException 派生なので Exception では捕まらない。
+    # gather(return_exceptions=True) で CancelledError ごと握りつぶす。
+    if state.task and not state.task.done():
+        await asyncio.gather(state.task, return_exceptions=True)
+
+    # interrupt 後の SDK client は内部状態が壊れている可能性があり、再利用すると
+    # 次ターンの ResultMessage が is_error=true で帰ってきて「⚠ エラーで停止」
+    # チップが出たり、以降のターンで挙動がおかしくなる。明示的に disconnect して
+    # 新 send で _ensure_client が新しい client を建て直すようにする。
+    await _disconnect_client(agent)
+
     state.complete = True
     _reset_activity(agent)
 
