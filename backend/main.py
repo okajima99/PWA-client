@@ -154,6 +154,7 @@ shared_status: dict = {
 agent_status: dict[str, dict] = {
     name: {
         "ctx_pct": 0,
+        "ctx_window": 1_000_000,   # Max プラン + Opus 前提。ResultMessage で上書き更新
         "model": cfg.get("model", ""),
         "plan_mode": False,
         "current_tool": None,   # {"name": str, "id": str, "started_at": float}
@@ -201,7 +202,7 @@ def _update_shared_from_headers(headers) -> None:
             pass
 
 
-def _compute_ctx_pct(usage: dict, ctx_window: int = 200000) -> int:
+def _compute_ctx_pct(usage: dict, ctx_window: int = 1_000_000) -> int:
     if not usage or ctx_window <= 0:
         return 0
     total = (
@@ -219,7 +220,8 @@ def _update_agent_from_result(agent: str, model_usage: dict | None, last_assista
     if not model_key:
         return
     agent_status[agent]["model"] = _format_model_name(model_key)
-    ctx_window = model_usage[model_key].get("contextWindow", 200000)
+    ctx_window = model_usage[model_key].get("contextWindow") or agent_status[agent].get("ctx_window") or 1_000_000
+    agent_status[agent]["ctx_window"] = ctx_window
     if last_assistant_usage:
         agent_status[agent]["ctx_pct"] = _compute_ctx_pct(last_assistant_usage, ctx_window)
 
@@ -486,7 +488,8 @@ async def _run_sdk_background(agent: str, content: list):
                 # サブエージェントは親とは別コンテキストで走るので ctx_pct を汚染させない
                 if msg.usage and not is_subagent:
                     last_assistant_usage = msg.usage
-                    agent_status[agent]["ctx_pct"] = _compute_ctx_pct(msg.usage)
+                    ctx_window = agent_status[agent].get("ctx_window") or 1_000_000
+                    agent_status[agent]["ctx_pct"] = _compute_ctx_pct(msg.usage, ctx_window)
                 if not is_subagent:
                     for block in msg.content:
                         if isinstance(block, ToolUseBlock):
