@@ -483,7 +483,8 @@ async def _run_sdk_background(agent: str, content: list):
             # --- ステータス更新（送出前に済ます） ---
             if isinstance(msg, AssistantMessage):
                 is_subagent = msg.parent_tool_use_id is not None
-                if msg.usage:
+                # サブエージェントは親とは別コンテキストで走るので ctx_pct を汚染させない
+                if msg.usage and not is_subagent:
                     last_assistant_usage = msg.usage
                     agent_status[agent]["ctx_pct"] = _compute_ctx_pct(msg.usage)
                 if not is_subagent:
