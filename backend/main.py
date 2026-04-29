@@ -147,6 +147,20 @@ VAPID_SUB = config.get("vapid_sub", "mailto:admin@example.com")
 # それが無ければ config.notification_title (グローバル fallback)、最後に "Notification"。
 NOTIFICATION_TITLE_DEFAULT = config.get("notification_title", "Notification")
 
+# クライアントが PWA をフォアで見ている間、定期的に /push/heartbeat を打つ。
+# その時刻を保持し、HEARTBEAT_TTL 以内なら「見てる」と判定して通知を抑止する。
+# (見てない = アプリ背面 / 終了 / 画面オフ → 通知を OS バナーで届けたい場面)
+last_visible_at: float = 0.0
+HEARTBEAT_TTL = 60.0
+
+
+def _user_is_visible() -> bool:
+    return (time.time() - last_visible_at) < HEARTBEAT_TTL
+
+
+# ターン中の assistant text を agent ごとに蓄積。ResultMessage 時に通知本文として使う。
+last_assistant_text: dict[str, str] = {name: "" for name in AGENTS}
+
 
 def _notification_title_for(agent: str) -> str:
     cfg = AGENTS.get(agent) or {}
@@ -614,23 +628,13 @@ async def _run_sdk_background(agent: str, content: list):
                                     agent_status[agent]["todos"] = todos
                             elif block.name == "ExitPlanMode":
                                 agent_status[agent]["plan_mode"] = False
-                            elif block.name == "PushNotification":
-                                # 自発通知 (アイドル中・長尺タスク中の「気づき」通知) は通常返信の
-                                # bubble フローから外し、専用 system イベントとして扱う。
-                                # 同じバブルに混ざると次の返信が 1 ターン遅れて見える事象を防ぐ。
-                                notif_msg = ""
-                                if isinstance(block.input, dict):
-                                    notif_msg = str(block.input.get("message", "") or "")
-                                state.buffer.append(
-                                    "data: " + json.dumps({
-                                        "type": "proactive_notification",
-                                        "message": notif_msg,
-                                        "ts": time.time(),
-                                        "tool_use_id": block.id,
-                                    }, ensure_ascii=False) + "\n\n"
-                                )
-                                # アプリ閉じてる時のために Web Push でも配信
-                                asyncio.create_task(_broadcast_push(notif_msg, _notification_title_for(agent)))
+                    # ターン完了通知のために assistant text を蓄積する。
+                    # 各 AssistantMessage は完結した発話単位 (tool_use を挟むと
+                    # 1 ターン内に複数飛んでくる) なので、最後の text を保持して
+                    # 「仕上げの返信」を通知 body にする。
+                    text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
+                    if text_parts:
+                        last_assistant_text[agent] = "\n".join(text_parts)
 
             elif isinstance(msg, UserMessage):
                 is_subagent = msg.parent_tool_use_id is not None
@@ -671,6 +675,14 @@ async def _run_sdk_background(agent: str, content: list):
                     _save_sessions()
                     state.client_session_id = msg.session_id
                 _update_agent_from_result(agent, msg.model_usage, last_assistant_usage)
+
+                # ターン完了通知: PWA をフォアで見ていない時のみ Web Push で届ける。
+                # 直前ターンの assistant text を冒頭 140 文字に切って body に。
+                turn_text = last_assistant_text.get(agent, "").strip()
+                last_assistant_text[agent] = ""  # 次ターンに備えてクリア
+                if turn_text and not _user_is_visible():
+                    body = turn_text if len(turn_text) <= 140 else (turn_text[:140] + "…")
+                    asyncio.create_task(_broadcast_push(body, _notification_title_for(agent)))
 
             elif isinstance(msg, RateLimitEvent):
                 info = msg.rate_limit_info
@@ -974,6 +986,16 @@ def push_subscribe(subscription: dict = Body(...)):
         subscriptions.append(subscription)
     _save_subscriptions()
     return {"ok": True, "count": len(subscriptions)}
+
+
+@app.post("/push/heartbeat")
+def push_heartbeat():
+    """フロントから定期的に呼ばれる「PWA をフォアで見ているよ」のシグナル。
+    最後の heartbeat から HEARTBEAT_TTL 以内ならターン完了通知を抑止する。
+    """
+    global last_visible_at
+    last_visible_at = time.time()
+    return {"ok": True}
 
 
 @app.post("/push/unsubscribe")
