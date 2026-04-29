@@ -186,6 +186,30 @@ export default function App() {
     }
   }
 
+  // PWA をフォアで見ている間 30 秒ごとに backend に heartbeat を打つ。
+  // backend はこの heartbeat を「ユーザが PWA を見ている」シグナルとして使い、
+  // ターン完了通知 (Web Push) を抑止する。離れた瞬間に止まるので、それ以降の
+  // ターン完了は OS 通知として届く。
+  useEffect(() => {
+    let timer = null
+    const beat = () => {
+      if (document.hidden) return
+      fetch(`${API_BASE}/push/heartbeat`, { method: 'POST', keepalive: true }).catch(() => {})
+    }
+    const start = () => {
+      if (timer) return
+      beat()
+      timer = setInterval(beat, 30_000)
+    }
+    const stop = () => {
+      if (timer) { clearInterval(timer); timer = null }
+    }
+    if (!document.hidden) start()
+    const onVis = () => { if (document.hidden) stop(); else start() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { stop(); document.removeEventListener('visibilitychange', onVis) }
+  }, [])
+
   // PWA リセット (Service Worker + Cache Storage を消して強制再読み込み)。
   // iOS のホーム画面 PWA は Safari 経由でデータ削除できないので、アプリ内から
   // 同等のことができるようにする。会話ログ (localStorage) は触らない。
