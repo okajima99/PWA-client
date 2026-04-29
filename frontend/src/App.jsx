@@ -186,6 +186,30 @@ export default function App() {
     }
   }
 
+  // PWA リセット (Service Worker + Cache Storage を消して強制再読み込み)。
+  // iOS のホーム画面 PWA は Safari 経由でデータ削除できないので、アプリ内から
+  // 同等のことができるようにする。会話ログ (localStorage) は触らない。
+  const [confirmReset, setConfirmReset] = useState(false)
+
+  const handleReset = async () => {
+    setConfirmReset(false)
+    setMenuOpen(false)
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations()
+        await Promise.all(regs.map(r => r.unregister().catch(() => {})))
+      }
+      if (typeof caches !== 'undefined') {
+        const keys = await caches.keys()
+        await Promise.all(keys.map(k => caches.delete(k).catch(() => {})))
+      }
+    } catch { /* ignore */ }
+    // 強制 reload (キャッシュバスタ付き)。location.reload(true) は仕様廃止なのでクエリで代替
+    const u = new URL(window.location.href)
+    u.searchParams.set('_r', String(Date.now()))
+    window.location.replace(u.toString())
+  }
+
   return (
     <div className="app">
       {/* ステータスバー */}
@@ -307,6 +331,9 @@ export default function App() {
                   {pushEnabled ? '通知を無効にする' : '通知を有効にする'}
                 </button>
               )}
+              <button onClick={() => { setMenuOpen(false); setConfirmReset(true) }} className="menu-item">
+                リセット (キャッシュ・SW 削除)
+              </button>
               <button onClick={() => { setMenuOpen(false); setConfirmEnd(true) }} className="menu-item end">
                 セッション終了
               </button>
@@ -339,6 +366,18 @@ export default function App() {
             <div className="confirm-actions">
               <button onClick={() => setConfirmEnd(false)} className="confirm-btn no">いいえ</button>
               <button onClick={handleEndSession} className="confirm-btn yes">はい</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmReset && (
+        <div className="confirm-overlay" onClick={() => setConfirmReset(false)}>
+          <div className="confirm-dialog" onClick={e => e.stopPropagation()}>
+            <p className="confirm-text">本当にリセットしますか？<br /><span className="dim">キャッシュと Service Worker を削除して再読み込みします。会話ログは消えません。</span></p>
+            <div className="confirm-actions">
+              <button onClick={() => setConfirmReset(false)} className="confirm-btn no">いいえ</button>
+              <button onClick={handleReset} className="confirm-btn yes">はい</button>
             </div>
           </div>
         </div>
