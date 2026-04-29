@@ -143,7 +143,14 @@ subscriptions: list[dict] = _load_subscriptions()
 # VAPID claim の sub (連絡先) は config.json で上書き可。デフォルトは汎用 mailto
 VAPID_SUB = config.get("vapid_sub", "mailto:admin@example.com")
 # OS 通知のタイトル (バナー / ロック画面に出る見出し)
-NOTIFICATION_TITLE = config.get("notification_title", "Notification")
+# エージェントごとに agents.<name>.notification_title で上書き可。
+# それが無ければ config.notification_title (グローバル fallback)、最後に "Notification"。
+NOTIFICATION_TITLE_DEFAULT = config.get("notification_title", "Notification")
+
+
+def _notification_title_for(agent: str) -> str:
+    cfg = AGENTS.get(agent) or {}
+    return cfg.get("notification_title") or NOTIFICATION_TITLE_DEFAULT
 
 
 # --- セッション管理 ---
@@ -418,7 +425,7 @@ def _serialize_sdk_message(msg: Any) -> dict | None:
 
 
 # --- Web Push 配信 ---
-async def _broadcast_push(message: str) -> None:
+async def _broadcast_push(message: str, title: str | None = None) -> None:
     """登録済みの全 Web Push サブスクリプションに通知を送る。
 
     アプリ起動中は SSE で proactive_notification が届くが、
@@ -431,7 +438,10 @@ async def _broadcast_push(message: str) -> None:
     if not private_pem:
         return
 
-    payload = json.dumps({"title": NOTIFICATION_TITLE, "body": message or ""}, ensure_ascii=False)
+    payload = json.dumps({
+        "title": title or NOTIFICATION_TITLE_DEFAULT,
+        "body": message or "",
+    }, ensure_ascii=False)
     dead: list[dict] = []
 
     def _send_one(sub: dict) -> None:
@@ -613,7 +623,7 @@ async def _run_sdk_background(agent: str, content: list):
                                     }, ensure_ascii=False) + "\n\n"
                                 )
                                 # アプリ閉じてる時のために Web Push でも配信
-                                asyncio.create_task(_broadcast_push(notif_msg))
+                                asyncio.create_task(_broadcast_push(notif_msg, _notification_title_for(agent)))
 
             elif isinstance(msg, UserMessage):
                 is_subagent = msg.parent_tool_use_id is not None
