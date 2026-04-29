@@ -990,11 +990,24 @@ def push_subscribe(subscription: dict = Body(...)):
 
 @app.post("/push/heartbeat")
 def push_heartbeat():
-    """フロントから定期的に呼ばれる「PWA をフォアで見ているよ」のシグナル。
-    最後の heartbeat から HEARTBEAT_TTL 以内ならターン完了通知を抑止する。
+    """フロントから定期的に呼ばれる「PWA をフォアで見ているよ」の保険シグナル。
+    visibilitychange で state を取りこぼした (アプリが kill 等) ケースを救う。
     """
     global last_visible_at
     last_visible_at = time.time()
+    return {"ok": True}
+
+
+@app.post("/push/state")
+def push_state(payload: dict = Body(...)):
+    """visibility 切替の瞬間に呼ばれる。visible=true なら今見ている、
+    false なら離れたという明示シグナル。即時反映する。
+    """
+    global last_visible_at
+    if payload.get("visible"):
+        last_visible_at = time.time()
+    else:
+        last_visible_at = 0.0  # 即抑止解除 (= 通知発火可能)
     return {"ok": True}
 
 

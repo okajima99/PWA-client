@@ -186,28 +186,40 @@ export default function App() {
     }
   }
 
-  // PWA をフォアで見ている間 30 秒ごとに backend に heartbeat を打つ。
-  // backend はこの heartbeat を「ユーザが PWA を見ている」シグナルとして使い、
-  // ターン完了通知 (Web Push) を抑止する。離れた瞬間に止まるので、それ以降の
-  // ターン完了は OS 通知として届く。
+  // PWA フォア視聴の状態を backend に通知する。
+  // - visibilitychange の瞬間に POST /push/state で即時反映 (連続性最大)
+  // - visible 中は 60 秒間隔で POST /push/heartbeat (アプリ kill 時の保険)
+  // backend はこれをもとにターン完了通知 (Web Push) を抑止/解除する。
   useEffect(() => {
     let timer = null
+    const sendState = (visible) => {
+      fetch(`${API_BASE}/push/state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visible }),
+        keepalive: true,
+      }).catch(() => {})
+    }
     const beat = () => {
       if (document.hidden) return
       fetch(`${API_BASE}/push/heartbeat`, { method: 'POST', keepalive: true }).catch(() => {})
     }
     const start = () => {
       if (timer) return
-      beat()
-      timer = setInterval(beat, 30_000)
+      sendState(true)
+      timer = setInterval(beat, 60_000)
     }
     const stop = () => {
       if (timer) { clearInterval(timer); timer = null }
+      sendState(false)
     }
     if (!document.hidden) start()
     const onVis = () => { if (document.hidden) stop(); else start() }
     document.addEventListener('visibilitychange', onVis)
-    return () => { stop(); document.removeEventListener('visibilitychange', onVis) }
+    return () => {
+      if (timer) clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVis)
+    }
   }, [])
 
   // PWA リセット (Service Worker + Cache Storage を消して強制再読み込み)。
