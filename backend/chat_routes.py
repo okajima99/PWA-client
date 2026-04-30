@@ -33,6 +33,18 @@ from state import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 検証用: chat_routes も request_id.log に POST 入口を記録する
+import pathlib as _pathlib
+_req_log_path = _pathlib.Path(__file__).parent.parent / "logs" / "request_id.log"
+_req_log_path.parent.mkdir(parents=True, exist_ok=True)
+_req_handler = logging.FileHandler(str(_req_log_path))
+_req_handler.setLevel(logging.INFO)
+_req_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+logger.addHandler(_req_handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
+
 router = APIRouter()
 
 
@@ -131,10 +143,26 @@ async def chat_stream(
             ]
             state.orphaned_tool_use_id = None
 
+        # user_request_id: この POST 起点ターンを識別する ID。
+        # SDK が同じ receive_response で自発ターン (CronCreate/ScheduleWakeup 由来) の
+        # ResultMessage を追加で吐くケースがある。ID で送信ボタン解放を ユーザーターンの
+        # ResultMessage 1 個に限定し、自発の Result でロックが外れないようにする。
+        user_request_id = uuid.uuid4().hex[:12]
+        state.user_request_id = user_request_id
+        logger.info(
+            "[POST /chat/stream] agent=%s user_request_id=%s text=%r files=%d",
+            agent, user_request_id, message[:80], len(saved_files),
+        )
+
         state.buffer = []
         state.buffer_id = str(uuid.uuid4())
+        # SSE 先頭で request_id をフロントに通知
+        import json as _json
+        state.buffer.append(
+            "data: " + _json.dumps({"type": "request_id", "request_id": user_request_id}) + "\n\n"
+        )
         state.complete = False
-        state.task = asyncio.create_task(run_sdk_background(agent, content))
+        state.task = asyncio.create_task(run_sdk_background(agent, content, user_request_id))
 
     async def generate():
         sent = 0

@@ -51,20 +51,41 @@ export function useStreamBuffer({ setMessages }) {
 
     setMessages(prev => {
       const msgs = [...prev[agent]]
+      const last = msgs[msgs.length - 1]
+      const lastIsEmptyAgent = last
+        && last.role === 'agent'
+        && last.streaming
+        && !last.text
+        && !last.thinking
+        && (!last.tools || last.tools.length === 0)
+        && !last.askUserQuestion
 
       if (snap.needsNewBubble) {
+        // AssistantMessage 単位で 1 bubble。ただし送信直後に追加された
+        // 空 streaming placeholder (= useChatStream が user とペアで push したやつ) が
+        // 末尾にある場合は、そこに今回の中身を埋めて推論中表示を消す。これで
+        // 「user → 推論中… → 中身 bubble」と推論中バブルが残るのを防ぐ。
+        if (lastIsEmptyAgent) {
+          msgs[msgs.length - 1] = {
+            ...last,
+            text: snap.text || '',
+            thinking: snap.thinking || null,
+            tools: [...(snap.newTools || [])],
+          }
+          return { ...prev, [agent]: msgs }
+        }
         return { ...prev, [agent]: [...msgs, {
           id: generateId(),
           role: 'agent',
           text: snap.text || '',
-          tools: [],
+          thinking: snap.thinking || null,
+          tools: [...(snap.newTools || [])],
           streaming: true,
         }]}
       }
 
-      const last = msgs[msgs.length - 1]
+      // reconnect 再生など、既存バブルに積み増すパス
       if (!last || last.role !== 'agent') return prev
-
       const updated = { ...last }
       if (snap.text !== null) updated.text = snap.text
       if (snap.thinking !== null) updated.thinking = snap.thinking

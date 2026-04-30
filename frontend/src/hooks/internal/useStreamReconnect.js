@@ -21,6 +21,8 @@ export function useStreamReconnect({
   loadingRef,
   abortControllers,
   activeAgentRef,
+  onUserRequestId,
+  onResultMessage,
 }) {
   const reconnectingRef = useRef({ agent_a: false, agent_b: false })
 
@@ -32,6 +34,8 @@ export function useStreamReconnect({
     streamBufRef: buffer.streamBufRef,
     currentBubbleHasToolsRef: buffer.currentBubbleHasToolsRef,
     replayModeRef: buffer.replayModeRef,
+    onUserRequestId,
+    onResultMessage,
   }
 
   // reconnect: T1 移行で常に from=0 で全 buffer 再生する

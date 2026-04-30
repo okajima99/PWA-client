@@ -66,13 +66,39 @@ subscriptions: list[dict] = _load_subscriptions()
 
 _NOTIF_BODY_RE = re.compile(r"\s+")
 
+# Markdown 記号 strip 用 (Web Push 通知はリッチテキストを描画できないので
+# `#` `**bold**` などの記号がそのまま見えてしまう。読みやすさを優先して記号を消す)
+_MD_FENCE_RE = re.compile(r"```(?:\w+)?\n?(.*?)```", re.DOTALL)
+_MD_PATTERNS = [
+    (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""),       # 見出し記号
+    (re.compile(r"\*\*([^*]+)\*\*"), r"\1"),               # bold
+    (re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)"), r"\1"),    # italic
+    (re.compile(r"`([^`\n]+)`"), r"\1"),                   # inline code
+    (re.compile(r"!?\[([^\]]+)\]\([^)]+\)"), r"\1"),       # [text](url) / ![alt](url)
+    (re.compile(r"^[-*+]\s+", re.MULTILINE), "• "),        # 箇条書き → 中黒
+    (re.compile(r"^\d+\.\s+", re.MULTILINE), ""),          # 番号付きリスト
+    (re.compile(r"^>\s*", re.MULTILINE), ""),              # 引用
+    (re.compile(r"^[-*_]{3,}\s*$", re.MULTILINE), ""),     # 水平線
+]
+
+
+def strip_markdown(text: str) -> str:
+    """Markdown 記号を取り除いて素のテキストに近づける (loss-y、通知 body 用)。"""
+    if not text:
+        return text
+    text = _MD_FENCE_RE.sub(lambda m: m.group(1), text)
+    for pattern, repl in _MD_PATTERNS:
+        text = pattern.sub(repl, text)
+    return text
+
 
 def sanitize_notif_body(text: str) -> str:
-    """改行・連続空白・制御文字を 1 個のスペースに畳む。
-    iOS のロック画面通知は 1 行表示で、生改行や制御文字が入ると見え方が崩れる。
+    """通知 body 用の整形。Markdown 記号を消し、改行・連続空白を 1 スペースに畳む。
+    iOS のロック画面通知は 1 行表示で、生改行や Markdown 記号が入ると見え方が崩れる。
     """
     if not text:
         return ""
+    text = strip_markdown(text)
     return _NOTIF_BODY_RE.sub(" ", text).strip()
 
 

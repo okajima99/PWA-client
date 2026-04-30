@@ -55,6 +55,9 @@ class StreamState:
     # /stop や新ターン割り込みで tool_use が宙ぶらりんになった場合の id。
     # 次の /stream で synthetic tool_result を先頭に入れて履歴を閉じる。
     orphaned_tool_use_id: str | None = None
+    # 直近 POST が発行した user_request_id。wire イベントに付与してフロントが
+    # 「ユーザー起点 ResultMessage」と「自発 ResultMessage」を区別できるようにする。
+    user_request_id: str | None = None
 
 
 stream_states: dict[str, StreamState] = {name: StreamState() for name in AGENTS}
