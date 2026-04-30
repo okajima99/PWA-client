@@ -21,7 +21,17 @@ export function processStreamEvent(deps, agent, event) {
     streamBufRef,
     currentBubbleHasToolsRef,
     replayModeRef,
+    onUserRequestId,
+    onResultMessage,
   } = deps
+
+  // request_id: SSE 先頭で backend が発行する ユーザー POST 起点 ID。
+  // 自発ターンの ResultMessage で送信ボタンが解放されないよう、フロントは
+  // この ID を保持し、result イベントの request_id と一致した時だけ loading を解放する。
+  if (event.type === 'request_id') {
+    if (typeof onUserRequestId === 'function') onUserRequestId(agent, event.request_id)
+    return
+  }
 
   // system init: apiKeySource を取得（"none" なら subscription/OAuth 経路で課金ゼロ）
   if (event.type === 'system' && event.subtype === 'init') {
@@ -83,6 +93,9 @@ export function processStreamEvent(deps, agent, event) {
       msgs[msgs.length - 1] = { ...last, meta }
       return { ...prev, [agent]: msgs }
     })
+    // ユーザーターンの ResultMessage の場合だけ送信ボタンを解放する。
+    // 自発ターンの ResultMessage は request_id がマッチしないので無視 → ロック継続。
+    if (typeof onResultMessage === 'function') onResultMessage(agent, event.request_id)
     return
   }
 
@@ -167,27 +180,27 @@ export function processStreamEvent(deps, agent, event) {
   // フィルタで除外された tool (TodoWrite 等) を挟んだ後の text が前のテキストを上書きしてしまうバグの対策。
   const hasAnyToolUse = event.message.content.some(b => b.type === 'tool_use')
 
+  // AssistantMessage 単位で 1 bubble に揃える: 各 assistant event を独立した bubble
+  // として扱う。SDK が出した発話順序 (= ワイヤー順) をそのまま画面に並べて、bubble の
+  // 分割 / マージで誤って結合させない。reconnect 再生中は SSE の重複再生を避けるため
+  // 既存バブルへの積み増しに切り替える (分割するとリプレイで二重化する)。
   const buf = streamBufRef.current[agent]
-  // reconnect中は既存バブルに積むだけ（分割すると2重表示になる）
-  const needsNewBubble = !replayModeRef.current[agent] && currentBubbleHasToolsRef.current[agent] && textContent && newTools.length === 0
-
-  if (needsNewBubble) {
-    buf.needsNewBubble = true
-    buf.text = textContent
-    buf.thinking = null
-    buf.newTools = []
-    currentBubbleHasToolsRef.current[agent] = false
-  } else {
+  if (replayModeRef.current[agent]) {
     if (textContent) buf.text = textContent
     if (thinkingContent) buf.thinking = thinkingContent
     if (newTools.length > 0) {
       buf.newTools = [...buf.newTools, ...newTools]
     }
-    // 表示しない tool でもバブル分割の境界として扱う
-    if (hasAnyToolUse) {
-      currentBubbleHasToolsRef.current[agent] = true
-    }
+  } else {
+    // 通常受信: この event の中身だけで bubble を組む。直前 bubble に内容が
+    // あれば flushStreamBuf 側が末尾追加、空 streaming placeholder なら埋める。
+    buf.needsNewBubble = true
+    buf.text = textContent
+    buf.thinking = thinkingContent || null
+    buf.newTools = newTools
   }
+  // hasAnyToolUse は旧 needsNewBubble 判定でしか使ってなかったので保持しない
+  void hasAnyToolUse
   buf.dirty = true
   scheduleFlush(agent)
 }

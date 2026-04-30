@@ -40,7 +40,38 @@ export function useChatStream({
   // 確認し、世代が古ければ何もせず抜ける。
   const sendGenRef = useRef({ agent_a: 0, agent_b: 0 })
 
+  // 直近 POST が発行した user_request_id を保持。result イベントの request_id が
+  // 一致した時だけ loading を解放する (自発ターンの ResultMessage では解放しない)。
+  const pendingRequestIdRef = useRef({ agent_a: null, agent_b: null })
+
   const buffer = useStreamBuffer({ setMessages })
+
+  const onUserRequestId = (agent, request_id) => {
+    pendingRequestIdRef.current[agent] = request_id || null
+  }
+
+  const onResultMessage = (agent, request_id) => {
+    const pending = pendingRequestIdRef.current[agent]
+    if (!pending || pending !== request_id) {
+      // 自発ターンの ResultMessage、または既に解放済み → 何もしない
+      return
+    }
+    // ユーザーターン完了 → 送信ボタン解放、bubble の streaming フラグも下ろす
+    pendingRequestIdRef.current[agent] = null
+    buffer.cancelAndFlush(agent)
+    setLoading(prev => ({ ...prev, [agent]: false }))
+    setMessages(prev => {
+      const msgs = [...prev[agent]]
+      // 直近の agent バブルが streaming 中なら解除
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === 'agent' && msgs[i].streaming) {
+          msgs[i] = { ...msgs[i], streaming: false }
+          break
+        }
+      }
+      return { ...prev, [agent]: msgs }
+    })
+  }
 
   const reconnect = useStreamReconnect({
     setMessages,
@@ -52,6 +83,8 @@ export function useChatStream({
     loadingRef,
     abortControllers,
     activeAgentRef,
+    onUserRequestId,
+    onResultMessage,
   })
 
   const sendMessage = async () => {
@@ -226,6 +259,8 @@ export function useChatStream({
     try {
       await fetch(`${API_BASE}/chat/${agent}/stop`, { method: 'POST' })
     } catch { /* ignored */ }
+    // stop で中断された場合は pending request_id を捨てる (matching Result が来ない可能性)
+    pendingRequestIdRef.current[agent] = null
     setLoading(prev => ({ ...prev, [agent]: false }))
     // バッファ残りを今のバブルに反映してから streaming フラグを下ろす。
     // (このあと新 send が走った場合、古い send の finally は世代チェックで撤退するので、

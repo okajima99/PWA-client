@@ -9,6 +9,8 @@ import logging
 import time
 from typing import Any
 
+from anyio import WouldBlock
+
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -22,6 +24,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
+from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
 from config import AGENTS, CLAUDE_PATH
@@ -40,6 +43,17 @@ from state import (
 )
 
 logger = logging.getLogger(__name__)
+
+# request_id 検証用デバッグログ (logs/request_id.log) を別ファイルに分ける。
+# main.py の basicConfig が ERROR レベルなので、INFO はここで個別に拾う。
+_req_log_path = __import__("pathlib").Path(__file__).parent.parent / "logs" / "request_id.log"
+_req_log_path.parent.mkdir(parents=True, exist_ok=True)
+_req_handler = logging.FileHandler(str(_req_log_path))
+_req_handler.setLevel(logging.INFO)
+_req_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+logger.addHandler(_req_handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
 
 # --- SDK メッセージ → CLI stream-json 互換 dict ---
@@ -212,10 +226,81 @@ async def disconnect_client(agent: str) -> None:
 
 
 # --- バックグラウンドで SDK ストリームを読む ---
-async def run_sdk_background(agent: str, content: list):
+async def run_sdk_background(agent: str, content: list, user_request_id: str | None = None):
     state = stream_states[agent]
+    # ターンの所有者を識別する request_id。ユーザー起点ターンには user_request_id を、
+    # 自発ターン (CronCreate / ScheduleWakeup でキューされたもの) には毎回別の
+    # proactive_xxx を付与する。
+    # SDK は ユーザー POST と同じ receive_response 内に、キュー済みの自発ターンを
+    # 先または後に混ぜて流すことがある。各 UserMessage の content を ユーザーの
+    # 入力 text と照合して所有者を切り替える。
+    import uuid as _uuid
+
+    def _extract_user_text(content_obj) -> str:
+        """user content (list of blocks or str) から text 部分を抽出して結合。"""
+        if isinstance(content_obj, str):
+            return content_obj.strip()
+        if not isinstance(content_obj, list):
+            return ""
+        parts = []
+        for b in content_obj:
+            if isinstance(b, dict):
+                if b.get("type") == "text":
+                    parts.append(b.get("text", ""))
+            elif isinstance(b, TextBlock):
+                parts.append(b.text)
+        return "\n".join(parts).strip()
+
+    user_input_text = _extract_user_text(content)
+
+    current_request_id = f"proactive_{_uuid.uuid4().hex[:8]}"
+    user_turn_done = False
+    logger.info(
+        "[run_sdk] === START agent=%s user_request_id=%s user_text=%r ===",
+        agent, user_request_id, user_input_text[:80],
+    )
     try:
         client = await ensure_client(agent)
+
+        # ---- 過去ターン応答の非ブロッキング drain ----
+        # SDK の _message_receive に wakeup / Monitor 由来の応答が溜まっている可能性がある
+        # (ユーザー POST より前に runtime がそれらのターンを処理して buffer に積んでいる場合)。
+        # query 送信前に取り出して proactive_id でタグ付けし、wire に流す。
+        # 受信は receive_nowait で時間待ちなし、buffer 空になったら即抜ける。
+        drain_stream = client._query._message_receive
+        drained_count = 0
+        proactive_id_drain = f"proactive_{_uuid.uuid4().hex[:8]}"
+        while True:
+            try:
+                data = drain_stream.receive_nowait()
+            except WouldBlock:
+                break
+            if not isinstance(data, dict):
+                continue
+            t = data.get("type")
+            if t in ("end", "error"):
+                continue
+            drained_count += 1
+            msg = parse_message(data)
+            if msg is None:
+                continue
+            wire = serialize_sdk_message(msg)
+            if wire is None:
+                continue
+            # ResultMessage 検出で proactive_id を更新 (turn 境界)
+            wire["request_id"] = proactive_id_drain
+            state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
+            logger.info(
+                "[drain] type=%s request_id=%s",
+                wire.get("type"), proactive_id_drain,
+            )
+            if isinstance(msg, ResultMessage):
+                proactive_id_drain = f"proactive_{_uuid.uuid4().hex[:8]}"
+        logger.info("[drain] total=%d before query", drained_count)
+
+        # drain 後の最初のターン = ユーザーのターン。user_request_id でタグする。
+        if user_request_id:
+            current_request_id = user_request_id
 
         async def _single_msg():
             yield {
@@ -232,6 +317,29 @@ async def run_sdk_background(agent: str, content: list):
         async for msg in client.receive_response():
             wire = serialize_sdk_message(msg)
             is_subagent = False
+
+            # --- メッセージ単位の詳細ログ ---
+            if isinstance(msg, AssistantMessage):
+                _text_preview = "".join(b.text for b in msg.content if isinstance(b, TextBlock))[:80]
+                _tools = [b.name for b in msg.content if isinstance(b, ToolUseBlock)]
+                logger.info(
+                    "[msg] AssistantMessage stop_reason=%s parent_tool=%s text=%r tools=%s",
+                    msg.stop_reason, msg.parent_tool_use_id, _text_preview, _tools,
+                )
+            elif isinstance(msg, ResultMessage):
+                logger.info(
+                    "[msg] ResultMessage subtype=%s is_error=%s session=%s num_turns=%s stop_reason=%s",
+                    msg.subtype, msg.is_error, msg.session_id, msg.num_turns, msg.stop_reason,
+                )
+            elif isinstance(msg, UserMessage):
+                _text = _extract_user_text(msg.content)[:80]
+                _has_tr = isinstance(msg.content, list) and any(isinstance(b, ToolResultBlock) for b in msg.content)
+                logger.info(
+                    "[msg] UserMessage parent_tool=%s tool_result=%s text=%r",
+                    msg.parent_tool_use_id, _has_tr, _text,
+                )
+            elif isinstance(msg, SystemMessage):
+                logger.info("[msg] SystemMessage subtype=%s", msg.subtype)
 
             # --- ステータス更新（送出前に済ます） ---
             if isinstance(msg, AssistantMessage):
@@ -318,15 +426,36 @@ async def run_sdk_background(agent: str, content: list):
                     elif info.rate_limit_type and "seven_day" in info.rate_limit_type:
                         shared_status["seven_day_resets_at"] = info.resets_at
 
-            # --- SSE バッファへ積む ---
+            # --- SSE バッファへ積む (request_id 付与) ---
             if wire is not None:
+                wire["request_id"] = current_request_id
                 state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
+                # 検証ログ: メッセージ種別 + request_id を 1 行で残す
+                logger.info(
+                    "[wire] type=%s request_id=%s%s",
+                    wire.get("type"),
+                    current_request_id,
+                    " (user-turn-end)" if (isinstance(msg, ResultMessage) and current_request_id == user_request_id) else "",
+                )
+
+            # ResultMessage 通過後はターン終了。次に来るメッセージは別ターン (自発)
+            # として扱うため、いったん proactive_id に切り替えて待機する。
+            # (続く UserMessage の content 照合で再度切り替わる)
+            if isinstance(msg, ResultMessage):
+                if current_request_id == user_request_id:
+                    user_turn_done = True
+                current_request_id = f"proactive_{_uuid.uuid4().hex[:8]}"
 
     except asyncio.CancelledError:
+        logger.info("[run_sdk] CANCELLED agent=%s user_request_id=%s", agent, user_request_id)
         raise
     except Exception:
         logger.exception("Error in run_sdk_background for agent=%s", agent)
     finally:
+        logger.info(
+            "[run_sdk] === END agent=%s user_request_id=%s user_turn_done=%s ===",
+            agent, user_request_id, user_turn_done,
+        )
         state.complete = True
         reset_activity(agent)
         # ターン中に蓄積した assistant text を必ずクリアする。
