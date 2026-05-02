@@ -51,13 +51,20 @@ export function useStreamReconnect({
     setLoading(prev => ({ ...prev, [sid]: true }))
     setMessages(prev => {
       const cur = prev[sid] || []
-      const last = cur[cur.length - 1]
+      // 直前の send が失敗して error bubble が末尾に積まれているケースでは、
+      // それを削除してから replay する。 そうしないと
+      // [user] [error] [新 agent bubble] の順で表示されて UX が崩れる。
+      let trimmed = [...cur]
+      while (trimmed.length > 0 && trimmed[trimmed.length - 1].role === 'error') {
+        trimmed.pop()
+      }
+      const last = trimmed[trimmed.length - 1]
       if (last?.role === 'agent') {
-        const updated = [...cur]
+        const updated = [...trimmed]
         updated[updated.length - 1] = { ...last, text: '', tools: [], thinking: null, meta: undefined, streaming: true }
         return { ...prev, [sid]: updated }
       }
-      return { ...prev, [sid]: [...cur, { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES) }
+      return { ...prev, [sid]: [...trimmed, { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES) }
     })
 
     buffer.resetBuf(sid)

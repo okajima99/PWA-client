@@ -171,7 +171,18 @@ export function useChatStream({
           const msgs = prev[sid] || []
           const last = msgs[msgs.length - 1]
           if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
-          return { ...prev, [sid]: [...msgs, { id: generateId(), role: 'error', text: errText }] }
+          // 直前の空 streaming placeholder（推論中... 表示中の bubble）が残ってると
+          // 「推論中... + ネットワークエラー」 の見た目で固まってしまう。 中身ゼロなら削除してから error を入れる。
+          const isEmptyPlaceholder = (
+            last?.role === 'agent' &&
+            last.streaming &&
+            !last.text &&
+            !(last.tools?.length) &&
+            !last.askUserQuestion &&
+            !last.thinking
+          )
+          const base = isEmptyPlaceholder ? msgs.slice(0, -1) : msgs
+          return { ...prev, [sid]: [...base, { id: generateId(), role: 'error', text: errText }] }
         })
       }
     } finally {
