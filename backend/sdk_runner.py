@@ -162,6 +162,21 @@ def make_permission_handler(session_id: str):
             }) + "\n\n"
         )
 
+        # Web Push: アプリが前面表示されてないなら、 質問テキストを通知に流す
+        # (回答待ちでロックされるので、 ターン完了まで待つと体感が悪い)
+        if not flags["user_visible"]:
+            try:
+                questions = input_data.get("questions") or []
+                first_q = questions[0] if isinstance(questions, list) and questions else {}
+                question_text = first_q.get("question") if isinstance(first_q, dict) else None
+                if question_text:
+                    asyncio.create_task(broadcast_push(
+                        f"❓ {question_text}",
+                        notification_title_for(session_id),
+                    ))
+            except Exception:
+                logger.exception("ask_user_question push failed for session=%s", session_id)
+
         try:
             answer = await future
         except asyncio.CancelledError:
@@ -262,8 +277,9 @@ async def idle_disconnect_loop():
                     await disconnect_client(session_id)
                 except Exception:
                     logger.exception("idle-gc disconnect failed for session=%s", session_id)
-                # disconnect の成否に関わらず buffer は捨てる (どうせ誰も replay に来ない)
-                state.buffer = []
+                # buffer は残す: PWA を長時間離れたあとに「最新を取得」 で直近ターンを
+                # 復元できるようにするため。 次ターン開始時に chat_routes で空にされる
+                # ので memory はターン 1 個ぶんで bound される。
                 # ログハンドルも閉じて fd を解放する。 次の発話で勝手に開き直される
                 close_session_log(session_id)
         except asyncio.CancelledError:

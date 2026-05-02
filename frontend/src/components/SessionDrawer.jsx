@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 
-// 左サイドからスライドインするセッション一覧ドロワー (ChatGPT 風)。
-// - 上部: 「+ 新規セッション」 → agent を選ぶ → createSession
-// - リスト: セッション項目をタップで activeSession 切替、 ⋯ メニューでリネーム / 削除
+// 左サイドからスライドインする会話一覧ドロワー (ChatGPT 風)。
+// - 上部: 「+ 新規会話」 → agent を選ぶ → createSession
+// - リスト: 会話項目をタップで activeSession 切替、 ⋯ メニューでリネーム / 削除
 // - badges: pending(?)、 processing(●青)、 new(●赤) を項目右に表示
 //
 // props:
@@ -83,14 +83,14 @@ export default function SessionDrawer({
       {open && <div className="drawer-overlay" onClick={onClose} />}
       <aside className={`drawer ${open ? 'open' : ''}`}>
         <div className="drawer-header">
-          <span className="drawer-title">セッション</span>
+          <span className="drawer-title">会話</span>
           <button className="drawer-close" onClick={onClose} aria-label="閉じる">×</button>
         </div>
 
         <div className="drawer-create">
           {!agentPicker ? (
             <button className="drawer-new" onClick={() => setAgentPicker(true)}>
-              + 新規セッション
+              + 新規会話
             </button>
           ) : (
             <div className="agent-picker">
@@ -113,7 +113,7 @@ export default function SessionDrawer({
 
         <div className="drawer-list">
           {sessions.length === 0 && (
-            <div className="drawer-empty">セッションがありません。 上の「+ 新規セッション」 から作成してください。</div>
+            <div className="drawer-empty">会話がありません。 上の「+ 新規会話」 から作成してください。</div>
           )}
           {sessions.map(s => {
             const badge = sessionBadges[s.id]

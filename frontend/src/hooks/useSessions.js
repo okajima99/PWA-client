@@ -84,7 +84,7 @@ export function useSessions() {
       meta = await res.json()
     } catch (e) {
       // backend 不到達 / エラー: UI に通知して終了 (ローカルだけ作ると整合性崩れる)
-      alert(`セッション作成に失敗しました: ${e?.message || e}`)
+      alert(`会話の作成に失敗しました: ${e?.message || e}`)
       return null
     }
     // 新しい順で並べたいので先頭に挿す

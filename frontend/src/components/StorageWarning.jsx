@@ -15,7 +15,7 @@ export default function StorageWarning({ info, dismissed, onDismiss }) {
       <span className="storage-warn-icon">⚠</span>
       <span className="storage-warn-text">
         ストレージ使用率 {pct}% ({fmtMB(info.usage)} / {fmtMB(info.quota)})
-        <span className="storage-warn-hint">不要なセッションを削除すると解消します</span>
+        <span className="storage-warn-hint">不要な会話を削除すると解消します</span>
       </span>
       <button className="storage-warn-close" onClick={onDismiss} aria-label="閉じる">×</button>
     </div>

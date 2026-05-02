@@ -66,14 +66,15 @@ export default function App() {
   const [treeOpen, setTreeOpen] = useState(null)
   const [confirmEnd, setConfirmEnd] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(null) // 削除確認中の session_id
-  // 非アクティブセッションの「新着」 フラグ (session_id ごと)
-  const [tabHasNew, setTabHasNew] = useState({})
+  // 「最後に見た時点の messages.length」 を session_id 別に保持。 active な会話は
+  // 常にこの ref を最新化し、 sessionBadges 計算で `arr.length > lastSeen` を新着判定とする。
+  // tabHasNew の state 同期で取りこぼすケースを潰すため ref ベースに統一。
+  const lastSeenLenRef = useRef({})
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
   useEffect(() => {
     const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 30000)
     return () => clearInterval(id)
   }, [])
-  const prevTabStateRef = useRef(null)
   const menuRef = useRef(null)
 
   const handleOpenPath = useCallback((path) => {
@@ -102,49 +103,27 @@ export default function App() {
   const sids = useMemo(() => sessions.map(s => s.id), [sessions])
   const currentAttachments = (activeSid && attachments[activeSid]) || []
 
-  // 非アクティブセッションの状態遷移を見て「新着」 フラグを立てる
+  // active な会話は「見ている」 とみなし、 messages 変化のたびに lastSeen を最新化する。
+  // 非アクティブ会話の lastSeen は更新しないので、 そのタブの messages が増えれば
+  // sessionBadges 計算で arr.length > lastSeen として新着判定される。
   useEffect(() => {
-    if (prevTabStateRef.current === null) {
-      const init = {}
-      for (const sid of sids) init[sid] = { len: (messages[sid] || []).length, loading: !!loading[sid] }
-      prevTabStateRef.current = init
-      return
+    if (!activeSid) return
+    lastSeenLenRef.current[activeSid] = (messages[activeSid] || []).length
+  }, [activeSid, messages])
+
+  // 削除された会話の lastSeen キーは掃除 + 新規 / 未初期化 sid は現在 length で seed する
+  // (起動時に既存 messages を「もう見た扱い」 にしないと全部赤丸になってしまう)
+  useEffect(() => {
+    const sidSet = new Set(sids)
+    for (const k of Object.keys(lastSeenLenRef.current)) {
+      if (!sidSet.has(k)) delete lastSeenLenRef.current[k]
     }
-    const transitions = {}
     for (const sid of sids) {
-      const p = prevTabStateRef.current[sid] || { len: 0, loading: false }
-      const len = (messages[sid] || []).length
-      const isLoading = !!loading[sid]
-      transitions[sid] = {
-        lengthGrew: len > p.len,
-        loadingFinished: p.loading && !isLoading,
+      if (lastSeenLenRef.current[sid] == null) {
+        lastSeenLenRef.current[sid] = (messages[sid] || []).length
       }
     }
-    const newPrev = {}
-    for (const sid of sids) {
-      newPrev[sid] = { len: (messages[sid] || []).length, loading: !!loading[sid] }
-    }
-    prevTabStateRef.current = newPrev
-    setTabHasNew(prev => {
-      let changed = false
-      const next = { ...prev }
-      for (const sid of sids) {
-        if (sid === activeSid) {
-          if (next[sid]) { next[sid] = false; changed = true }
-        } else {
-          const t = transitions[sid]
-          if (t && (t.lengthGrew || t.loadingFinished) && !next[sid]) {
-            next[sid] = true; changed = true
-          }
-        }
-      }
-      // 削除されたセッションのフラグも掃除
-      for (const sid of Object.keys(next)) {
-        if (!sids.includes(sid)) { delete next[sid]; changed = true }
-      }
-      return changed ? next : prev
-    })
-  }, [messages, loading, activeSid, sids])
+  }, [sids, messages])
 
   const sessionBadges = useMemo(() => {
     const out = {}
@@ -154,11 +133,12 @@ export default function App() {
       const pending = arr.some(m => m.askUserQuestion && !m.askUserQuestion.answered)
       if (pending) { out[sid] = { kind: 'pending', label: '?' }; continue }
       if (loading[sid]) { out[sid] = { kind: 'processing', label: '●' }; continue }
-      if (tabHasNew[sid]) { out[sid] = { kind: 'new', label: '●' }; continue }
+      const lastSeen = lastSeenLenRef.current[sid] ?? arr.length
+      if (arr.length > lastSeen) { out[sid] = { kind: 'new', label: '●' }; continue }
       out[sid] = null
     }
     return out
-  }, [messages, loading, tabHasNew, activeSid, sids])
+  }, [messages, loading, activeSid, sids])
 
   const displayMessages = useMemo(() => {
     if (!activeSid) return []
@@ -286,10 +266,10 @@ export default function App() {
 
       {/* ヘッダ: ハンバーガー + セッション名 */}
       <header className="topbar">
-        <button className="hamburger" onClick={() => setDrawerOpen(true)} aria-label="セッション一覧">
+        <button className="hamburger" onClick={() => setDrawerOpen(true)} aria-label="会話一覧">
           ☰
         </button>
-        <span className="topbar-title">{activeSession?.title || 'セッションなし'}</span>
+        <span className="topbar-title">{activeSession?.title || '会話なし'}</span>
       </header>
 
       <SessionDrawer
@@ -356,7 +336,7 @@ export default function App() {
         <textarea
           value={activeSid ? (input[activeSid] || '') : ''}
           onChange={e => activeSid && setInput(prev => ({ ...prev, [activeSid]: e.target.value }))}
-          placeholder={activeSession ? 'メッセージを入力...' : '左の ☰ からセッションを作成してください'}
+          placeholder={activeSession ? 'メッセージを入力...' : '左の ☰ から会話を作成してください'}
           rows={2}
           disabled={inputDisabled}
         />
@@ -385,7 +365,7 @@ export default function App() {
                 className="menu-item end"
                 disabled={!activeSession}
               >
-                セッション終了 (会話のみリセット)
+                セッション終了
               </button>
             </div>
           )}
@@ -411,7 +391,7 @@ export default function App() {
 
       <ConfirmDialog
         open={confirmEnd}
-        text="このセッションの会話をリセットしますか？ (タブは残ります)"
+        text="このセッションを終了しますか?"
         onCancel={() => setConfirmEnd(false)}
         onConfirm={handleEndSession}
       />
@@ -431,7 +411,7 @@ export default function App() {
         open={!!confirmDelete}
         text={
           <>
-            このセッションを削除しますか？
+            この会話を削除しますか？
             <br />
             <span className="dim">会話履歴も削除されます。 元に戻せません。</span>
           </>
