@@ -232,6 +232,64 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.screen-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+.screen-toggle:hover {
+  background: var(--bg3);
+}
+.screen-toggle.active {
+  border-color: #4abf8a;
+  color: #4abf8a;
+}
+.screen-toggle.connecting {
+  border-color: #d4a64a;
+  color: #d4a64a;
+}
+
+/* デスクトップ画面共有エリア (topbar と messages の間に挟む) */
+.desktop-view {
+  width: 100%;
+  height: 40dvh;
+  background: #000;
+  overflow: hidden;
+  touch-action: none;
+  position: relative;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+.desktop-view video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+  background: #000;
+}
+.desktop-view-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  font-size: 13px;
+  pointer-events: none;
+}
+@media (orientation: landscape) {
+  .desktop-view {
+    height: 60dvh;
+  }
+}
 
 /* サイドドロワー */
 .drawer-overlay {

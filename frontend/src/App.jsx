@@ -6,6 +6,7 @@ import StatusBar from './components/StatusBar.jsx'
 import SessionDrawer from './components/SessionDrawer.jsx'
 import StorageWarning from './components/StorageWarning.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
+import DesktopView from './components/DesktopView.jsx'
 import { API_BASE } from './constants.js'
 import { useStatus } from './hooks/useStatus.js'
 import { useAttachments } from './hooks/useAttachments.js'
@@ -14,6 +15,7 @@ import { useAutoScroll } from './hooks/useAutoScroll.js'
 import { useChatStream } from './hooks/useChatStream.js'
 import { useSessions } from './hooks/useSessions.js'
 import { useStorageQuota } from './hooks/useStorageQuota.js'
+import { useDesktopShare } from './hooks/useDesktopShare.js'
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
 const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
@@ -58,6 +60,7 @@ export default function App() {
     scrollToBottom, isAtBottomRef,
   })
 
+  const desktopShare = useDesktopShare()
   const storageInfo = useStorageQuota()
   const [storageWarnDismissed, setStorageWarnDismissed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -264,13 +267,28 @@ export default function App() {
         onDismiss={() => setStorageWarnDismissed(true)}
       />
 
-      {/* ヘッダ: ハンバーガー + セッション名 */}
+      {/* ヘッダ: ハンバーガー + セッション名 + 画面共有 */}
       <header className="topbar">
         <button className="hamburger" onClick={() => setDrawerOpen(true)} aria-label="会話一覧">
           ☰
         </button>
         <span className="topbar-title">{activeSession?.title || '会話なし'}</span>
+        <button
+          className={`screen-toggle ${desktopShare.connected ? 'active' : ''} ${desktopShare.connecting ? 'connecting' : ''}`}
+          onClick={() => {
+            if (desktopShare.connected || desktopShare.connecting) desktopShare.disconnect()
+            else desktopShare.connect()
+          }}
+          aria-label="デスクトップ画面共有"
+          title={desktopShare.error || (desktopShare.connected ? '切断' : '接続')}
+        >
+          🖥
+        </button>
       </header>
+
+      {(desktopShare.connecting || desktopShare.connected) && (
+        <DesktopView stream={desktopShare.stream} />
+      )}
 
       <SessionDrawer
         open={drawerOpen}

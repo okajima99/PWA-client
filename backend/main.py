@@ -10,6 +10,7 @@
 - files_routes.py  ファイル系エンドポイント
 - proxy_routes.py  Anthropic プロキシ
 - push.py          Web Push 配信 + エンドポイント
+- screen_routes.py デスクトップ画面 + 音声の WebRTC 配信
 """
 import logging
 import time
@@ -40,6 +41,7 @@ import chat_routes  # noqa: E402
 import files_routes  # noqa: E402
 import proxy_routes  # noqa: E402
 import push  # noqa: E402
+import screen_routes  # noqa: E402
 
 
 @asynccontextmanager
@@ -83,6 +85,11 @@ async def lifespan(app: FastAPI):
     for session_id in list(stream_states.keys()):
         await disconnect_client(session_id)
     close_all_session_logs()
+    # screen share の peer / capture が残ってたら確実に止める
+    try:
+        await screen_routes.shutdown()
+    except Exception:
+        logger.exception("screen_routes.shutdown failed")
     await http_client.aclose()
 
 
@@ -99,6 +106,7 @@ app.include_router(chat_routes.router)
 app.include_router(files_routes.router)
 app.include_router(proxy_routes.router)
 app.include_router(push.router)
+app.include_router(screen_routes.router)
 
 
 # --- 静的ファイル配信 (Vite ビルド成果物) ---

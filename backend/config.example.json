@@ -11,5 +11,12 @@
   },
   "rate_limits_log": "/path/to/rate-limits.jsonl",
   "vapid_sub": "mailto:you@example.com",
-  "notification_title": "Notification"
+  "notification_title": "Notification",
+  "screen_share": {
+    "enabled": false,
+    "video_device": "3",
+    "audio_device": "BlackHole 2ch",
+    "video_size": "1600x1000",
+    "framerate": 30
+  }
 }
