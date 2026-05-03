@@ -113,7 +113,55 @@ router = APIRouter()
 _pc: Optional["RTCPeerConnection"] = None
 _player: Optional["MediaPlayer"] = None
 _ffmpeg: Optional[subprocess.Popen] = None
+# 接続前の出力先 (例: AirPods) を覚えておいて、 切断時に戻す
+_prev_audio_output: Optional[str] = None
 _lock = asyncio.Lock()
+
+# === Adaptive Bitrate Rate (ABR) controller ===
+# 5 秒ごとに pc.getStats() を見て loss / RTT に応じて video sender の maxBitrate を上下。
+# ヒステリシス 10 秒 (頻繁に変えない)。 Google Remote Desktop 風の挙動を簡易再現。
+_abr_task: Optional[asyncio.Task] = None
+_abr_target_kbps: int = 1000  # 現在の target bitrate (kbps)
+_video_codec_label: str = "rawvideo"  # 表示用 (h264hw / vp8 / rawvideo)
+ABR_INTERVAL_SEC = 5
+ABR_HYSTERESIS_SEC = 10
+ABR_MIN_KBPS = 300
+ABR_MAX_KBPS = 1500    # 現実的な上限 (4G で安定運用、 LAN でも体感差は小さい)
+ABR_LOSS_HIGH = 0.05   # 5% 超で下げる
+ABR_LOSS_LOW = 0.01    # 1% 未満で上げる
+ABR_RTT_OK_MS = 200    # RTT これ以下なら上げ判定対象
+
+
+def _switchaudio_path() -> str:
+    p = shutil.which("SwitchAudioSource")
+    return p or "/opt/homebrew/bin/SwitchAudioSource"
+
+
+def _get_current_audio_output() -> str:
+    """現在の system 出力先デバイス名を返す。 取得失敗は空文字。"""
+    try:
+        res = subprocess.run(
+            [_switchaudio_path(), "-c", "-t", "output"],
+            capture_output=True, timeout=3, text=True,
+        )
+        return (res.stdout or "").strip()
+    except Exception:
+        logger.exception("get current audio output failed")
+        return ""
+
+
+def _switch_audio_output(device_name: str) -> None:
+    """system 出力先を切り替える (best-effort、 失敗しても進行)。"""
+    if not device_name:
+        return
+    try:
+        subprocess.run(
+            [_switchaudio_path(), "-s", device_name, "-t", "output"],
+            capture_output=True, timeout=3,
+        )
+        logger.info("[audio-output] switched to %s", device_name)
+    except Exception:
+        logger.exception("audio output switch failed for %s", device_name)
 
 
 def _enabled() -> bool:
@@ -124,9 +172,9 @@ async def _teardown() -> None:
     """既存 peer / player / ffmpeg subprocess を停止する。 lock 内で呼ぶこと。
 
     subprocess.wait は最大 2 秒 block するので `asyncio.to_thread` 経由で呼んで
-    event loop を解放する。
+    event loop を解放する。 接続前に切り替えた音声出力先も復元する。
     """
-    global _pc, _player, _ffmpeg
+    global _pc, _player, _ffmpeg, _prev_audio_output
     if _pc is not None:
         try:
             await _pc.close()
@@ -159,12 +207,159 @@ async def _teardown() -> None:
                     pass
         except Exception:
             logger.exception("ffmpeg terminate failed")
+    # 出力先を接続前の値に戻す
+    if _prev_audio_output:
+        prev = _prev_audio_output
+        _prev_audio_output = None
+        try:
+            await asyncio.to_thread(_switch_audio_output, prev)
+        except Exception:
+            logger.exception("audio output switch (restore) failed")
+    # ABR loop は次回接続まで止める (peer 無くなれば判定スキップだけど task は cancel)
+    global _abr_task
+    if _abr_task is not None and not _abr_task.done():
+        _abr_task.cancel()
+        try:
+            await _abr_task
+        except (Exception, asyncio.CancelledError):
+            pass
+        _abr_task = None
 
 
 async def shutdown() -> None:
     """lifespan 終了時に呼ばれる。 既存接続を全てクリーンアップ。"""
+    global _abr_task
+    if _abr_task is not None and not _abr_task.done():
+        _abr_task.cancel()
+        try:
+            await _abr_task
+        except (Exception, asyncio.CancelledError):
+            pass
+        _abr_task = None
     async with _lock:
         await _teardown()
+
+
+# aiortc のバージョンによって sender が getParameters/setParameters を持たないことがある。
+# 1.14 系には未実装、 1.15+ で追加された。 持ってない場合 ABR loop を即終了させて
+# 例外 spam で CPU を食わないようにする。
+_abr_unsupported_reason: Optional[str] = None
+
+
+def _set_video_max_bitrate(target_kbps: int) -> bool:
+    """video sender の encoder target_bitrate を直接書き換える。
+
+    aiortc 1.14 の RTCRtpSender は public な setParameters を持たないが、 内部で
+    `self.__encoder.target_bitrate = bitrate` (REMB feedback で) と同じパターンを
+    使ってる。 同じ private mangled 属性 `_RTCRtpSender__encoder` を読み出して
+    直接書き換えれば、 次フレームから新 bitrate が反映される。
+
+    encoder は最初の frame 送信時に lazy 生成されるので、 None の場合は次回リトライ
+    (unsupported flag は立てない)。 sender 自体が無いか attr が無い時のみ unsupported。
+    """
+    global _abr_unsupported_reason
+    if _pc is None:
+        return False
+    for sender in _pc.getSenders():
+        track = sender.track
+        if track is None or getattr(track, "kind", None) != "video":
+            continue
+        # 公開 API があればそっちを優先 (aiortc 1.15+ 用、 forward compat)
+        if hasattr(sender, "setParameters") and hasattr(sender, "getParameters"):
+            try:
+                params = sender.getParameters()
+                if getattr(params, "encodings", None):
+                    params.encodings[0].maxBitrate = target_kbps * 1000
+                    res = sender.setParameters(params)
+                    if asyncio.iscoroutine(res):
+                        asyncio.create_task(res)
+                    return True
+            except Exception:
+                pass  # fall through to private path
+        # aiortc 1.14: private mangled attribute
+        encoder = getattr(sender, "_RTCRtpSender__encoder", None)
+        if encoder is None:
+            return False  # 未生成 (まだ frame 送信前)、 次回リトライ
+        if not hasattr(encoder, "target_bitrate"):
+            _abr_unsupported_reason = (
+                f"encoder ({type(encoder).__name__}) lacks target_bitrate attr"
+            )
+            logger.warning("[ABR] disabled: %s", _abr_unsupported_reason)
+            return False
+        try:
+            encoder.target_bitrate = target_kbps * 1000
+            return True
+        except Exception:
+            logger.exception("[ABR] target_bitrate set failed")
+            return False
+    return False
+
+
+async def _abr_loop():
+    """ABR 制御ループ。 _pc が active な間、 stats を見て maxBitrate を調整する。
+
+    setParameters / encoder.target_bitrate が aiortc バージョンで使えない場合、
+    最初の試行で _abr_unsupported_reason がセットされて以後 loop は即抜ける
+    (例外 spam で CPU を食うのを防ぐ)。
+    """
+    global _abr_target_kbps
+    last_change = 0.0
+    last_packets_lost = 0
+    last_packets_sent = 0
+    while True:
+        try:
+            await asyncio.sleep(ABR_INTERVAL_SEC)
+            if _abr_unsupported_reason is not None:
+                # API 未対応が判明したら以後は何もしない (CPU 節約)
+                return
+            if _pc is None or _pc.connectionState != "connected":
+                continue
+            stats = await _pc.getStats()
+            packets_sent = 0
+            packets_lost = 0
+            rtt = 0.0
+            for s in stats.values():
+                t = getattr(s, "type", None)
+                kind = getattr(s, "kind", None)
+                if t == "outbound-rtp" and kind == "video":
+                    packets_sent = getattr(s, "packetsSent", 0) or 0
+                elif t == "remote-inbound-rtp" and kind == "video":
+                    packets_lost = getattr(s, "packetsLost", 0) or 0
+                    rtt = float(getattr(s, "roundTripTime", 0) or 0)
+
+            # ロス率は「直近の interval」 のみで判定 (累積値の差分から計算)
+            d_sent = max(0, packets_sent - last_packets_sent)
+            d_lost = max(0, packets_lost - last_packets_lost)
+            last_packets_sent = packets_sent
+            last_packets_lost = packets_lost
+
+            if d_sent <= 0:
+                continue
+            loss = d_lost / d_sent
+            rtt_ms = rtt * 1000
+
+            now = _time.monotonic()
+            if now - last_change < ABR_HYSTERESIS_SEC:
+                continue
+
+            new_target = _abr_target_kbps
+            if loss > ABR_LOSS_HIGH:
+                new_target = max(ABR_MIN_KBPS, int(_abr_target_kbps * 0.7))
+            elif loss < ABR_LOSS_LOW and rtt_ms < ABR_RTT_OK_MS:
+                new_target = min(ABR_MAX_KBPS, int(_abr_target_kbps * 1.2))
+
+            if new_target != _abr_target_kbps:
+                if _set_video_max_bitrate(new_target):
+                    logger.info(
+                        "[ABR] %d→%d kbps (loss=%.1f%% rtt=%.0fms d_sent=%d)",
+                        _abr_target_kbps, new_target, loss * 100, rtt_ms, d_sent,
+                    )
+                    _abr_target_kbps = new_target
+                    last_change = now
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[ABR] loop iteration error")
 
 
 def _ffmpeg_path() -> str:
@@ -189,13 +384,23 @@ def _drain_stderr(proc: subprocess.Popen) -> None:
         logger.exception("ffmpeg stderr drain failed")
 
 
-def _spawn_ffmpeg() -> subprocess.Popen:
-    """avfoundation を ffmpeg で読んで、 stdout に matroska (rawvideo + opus) を流す。"""
+def _spawn_ffmpeg() -> tuple:
+    """avfoundation を ffmpeg で読んで、 stdout に matroska を流す。
+
+    返り値: (subprocess.Popen, decode_required: bool, codec_label: str)
+
+    config の `video_encode`:
+      - "rawvideo" (default): aiortc が decode + 自前 sw VP8 encode (現状互換)
+      - "vp8": ffmpeg で libvpx-vp8 encode + decode=False で passthrough
+      - "h264_videotoolbox": M2 hw H264 encode + decode=False で passthrough (最も軽い)
+    """
     cfg = SCREEN_SHARE
     video_device = cfg.get("video_device", "1")
     audio_device = cfg.get("audio_device", "0")
     framerate = str(cfg.get("framerate", 30))
-    video_size = cfg.get("video_size", "1280x800")
+    video_size = cfg.get("video_size", "1024x640")
+    encode_mode = (cfg.get("video_encode") or "rawvideo").lower()
+    initial_bitrate = int(cfg.get("initial_bitrate_kbps", 1000))
 
     if audio_device in (None, "", "none"):
         input_arg = f"{video_device}:none"
@@ -209,26 +414,63 @@ def _spawn_ffmpeg() -> subprocess.Popen:
             "-ac", "2",
         ]
 
+    # video encoder 切替
+    if encode_mode == "h264_videotoolbox":
+        # M2 のメディアエンジンで H264 hw encode。 iOS Safari は H264 hw decode 持ってるので
+        # 端末側も軽い。 baseline で互換性最大化。
+        # NOTE: `-level` / `-bsf:v dump_extra=freq=k` は Encoder open エラー (-12902) を
+        # 起こすので入れない。 SPS/PPS は matroska CodecPrivate で運ばれる。
+        video_args = [
+            "-c:v", "h264_videotoolbox",
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "baseline",
+            "-realtime", "1",
+            "-allow_sw", "1",       # hw encoder 失敗時に sw fallback
+            "-b:v", f"{initial_bitrate}k",
+            "-maxrate", f"{int(initial_bitrate * 1.5)}k",
+            "-g", "30",              # keyframe 1 秒に 1 回
+            "-bf", "0",               # B-frame 禁止 (低遅延)
+        ]
+        decode_required = False
+        codec_label = "h264hw"
+    elif encode_mode == "vp8":
+        video_args = [
+            "-c:v", "libvpx",
+            "-deadline", "realtime",
+            "-cpu-used", "8",
+            "-threads", "4",
+            "-b:v", f"{initial_bitrate}k",
+            "-g", "30",
+            "-quality", "realtime",
+        ]
+        decode_required = False
+        codec_label = "vp8"
+    else:
+        # rawvideo (現状互換)
+        video_args = ["-c:v", "rawvideo"]
+        decode_required = True
+        codec_label = "rawvideo"
+
     cmd = [
         _ffmpeg_path(),
         "-hide_banner",
         "-loglevel", "warning",
-        # input
+        # input: pixel_format は指定しない (avfoundation の screen capture device は
+        # uyvy422 を強制すると "Invalid device index" 系で開けないことがある)
         "-f", "avfoundation",
         "-framerate", framerate,
         "-video_size", video_size,
         "-capture_cursor", "1",
-        "-pixel_format", "uyvy422",
         "-i", input_arg,
         # video filter: yuv420p (encoder 互換) + 16 倍数アライメント
         "-vf", "format=yuv420p,scale=trunc(iw/16)*16:trunc(ih/16)*16",
-        "-c:v", "rawvideo",
+        *video_args,
         *audio_args,
         # output container: matroska は streaming 可能で video+audio をまとめられる
         "-f", "matroska",
         "pipe:1",
     ]
-    logger.error("[SCREEN-DIAG] spawning ffmpeg: %s", " ".join(cmd))
+    logger.error("[SCREEN-DIAG] spawning ffmpeg (encode=%s): %s", encode_mode, " ".join(cmd))
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -236,7 +478,7 @@ def _spawn_ffmpeg() -> subprocess.Popen:
         bufsize=10 * 1024 * 1024,
     )
     threading.Thread(target=_drain_stderr, args=(proc,), daemon=True).start()
-    return proc
+    return proc, decode_required, codec_label
 
 
 import time as _time
@@ -244,7 +486,7 @@ import time as _time
 
 def _build_player_sync() -> tuple:
     """ffmpeg subprocess を立ち上げて、 そこから matroska を PyAV で読み込む。
-    返り値: (MediaPlayer, subprocess.Popen)
+    返り値: (MediaPlayer, subprocess.Popen, codec_label)
 
     **同期 (sync) 関数**。 av.open() が container header 待ちで read を block するため、
     呼び出し側は `asyncio.to_thread()` でラップして event loop を解放すること。
@@ -255,7 +497,7 @@ def _build_player_sync() -> tuple:
     cfg = SCREEN_SHARE
     if cfg.get("video_device") is None:
         raise RuntimeError("screen_share.video_device が未設定です")
-    proc = _spawn_ffmpeg()
+    proc, decode_required, codec_label = _spawn_ffmpeg()
     # fast-fail: ffmpeg が起動失敗 (Invalid device index 等) なら即捕まえる
     deadline = _time.monotonic() + 0.3
     while _time.monotonic() < deadline:
@@ -267,11 +509,10 @@ def _build_player_sync() -> tuple:
         _time.sleep(0.03)
 
     try:
-        # MediaPlayer は av.open(file=proc.stdout, format='matroska') で初期化される。
-        # ffmpeg がまだ header を吐いてない瞬間は read で待たされるが、
-        # 上の fast-fail で生きていることは確認済みなので ms 単位で抜ける想定。
-        player = MediaPlayer(proc.stdout, format="matroska")
-        return player, proc
+        # decode=False で encoded packet を直接 aiortc に passthrough (h264hw / vp8 path)
+        # decode=True (default) なら frame を decode して aiortc が再 encode (rawvideo path)
+        player = MediaPlayer(proc.stdout, format="matroska", decode=decode_required)
+        return player, proc, codec_label
     except Exception:
         # PyAV 起動失敗時は ffmpeg を必ず止める
         try:
@@ -316,11 +557,26 @@ async def screen_offer(payload: dict = Body(...)):
 
     # === 1. 重い処理 (ffmpeg spawn + av.open) を thread executor に逃がす ===
     # event loop を block しないため。 失敗時はこの中で ffmpeg を始末済み。
+    global _video_codec_label
     try:
-        player, proc = await asyncio.to_thread(_build_player_sync)
+        player, proc, codec_label = await asyncio.to_thread(_build_player_sync)
+        _video_codec_label = codec_label
     except Exception as e:
         logger.exception("MediaPlayer build failed")
         raise HTTPException(status_code=500, detail=f"capture init failed: {e}")
+
+    # === 1.5. 出力先デバイスを「マルチ出力 (BlackHole + speaker)」 に切替 ===
+    # 元の出力先 (AirPods 等) を覚えておいて _teardown で戻す。
+    audio_active = SCREEN_SHARE.get("audio_output_active")
+    if audio_active:
+        global _prev_audio_output
+        try:
+            current = await asyncio.to_thread(_get_current_audio_output)
+            if current and current != audio_active:
+                _prev_audio_output = current
+                await asyncio.to_thread(_switch_audio_output, audio_active)
+        except Exception:
+            logger.exception("audio output switch (active) failed")
 
     # === 2. peer 生成 + ICE gathering まで lock 外で進める ===
     pc = RTCPeerConnection()  # No ICE servers; LAN 直結 (Tailscale) 前提
@@ -331,53 +587,77 @@ async def screen_offer(payload: dict = Body(...)):
         if pc.connectionState in ("failed", "closed", "disconnected"):
             asyncio.create_task(_async_cleanup_if(pc))
 
+    # decode=False で encoded packet を relay してるので _Yuv420Track の reformat は不要
     if player.video is not None:
-        pc.addTrack(_Yuv420Track(player.video))
+        pc.addTrack(player.video)
     if player.audio is not None:
         pc.addTrack(player.audio)
 
+    # try / finally で**必ず resource を片付ける** (CancelledError 含む).
+    # `installed` が True で正常完了した時だけ globals 占有を維持し、
+    # それ以外 (例外 / cancel) は player + ffmpeg + pc を確実に潰す。
+    installed = False
     try:
-        await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=typ))
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
-        await _wait_ice_gathering_complete(pc)
-    except Exception as e:
-        logger.exception("offer handling failed")
-        # ローカル resource を thread で片付ける (block しないように)
         try:
-            await pc.close()
-        except Exception:
-            pass
-        try:
-            for t in (player.video, player.audio):
-                if t is not None:
-                    t.stop()
-        except Exception:
-            pass
-        try:
-            proc.terminate()
-            await asyncio.to_thread(proc.wait, 2)
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=f"offer handling failed: {e}")
+            await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=typ))
+            answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+            await _wait_ice_gathering_complete(pc)
+        except (Exception, asyncio.CancelledError) as e:
+            if not isinstance(e, asyncio.CancelledError):
+                logger.exception("offer handling failed")
+            raise
 
-    # === 3. ここまで来たら全部できた → 短時間 lock を取って globals に install ===
-    async with _lock:
-        await _teardown()  # 旧 peer / player / ffmpeg を片付け
-        _pc = pc
-        _player = player
-        _ffmpeg = proc
+        # === 3. ここまで来たら全部できた → 短時間 lock を取って globals に install ===
+        global _abr_task, _abr_target_kbps
+        async with _lock:
+            await _teardown()  # 旧 peer / player / ffmpeg を片付け
+            _pc = pc
+            _player = player
+            _ffmpeg = proc
+            installed = True
 
-        # 診断: negotiated codec を SDP answer から拾って log
-        try:
-            ans_sdp = pc.localDescription.sdp
-            for line in ans_sdp.splitlines():
-                if line.startswith("a=rtpmap:") and ("/" in line):
-                    logger.error("[SCREEN-DIAG] negotiated rtpmap: %s", line)
-        except Exception:
-            logger.exception("[SCREEN-DIAG] codec log failed")
+            # 診断: negotiated codec を SDP answer から拾って log
+            try:
+                ans_sdp = pc.localDescription.sdp
+                for line in ans_sdp.splitlines():
+                    if line.startswith("a=rtpmap:") and ("/" in line):
+                        logger.error("[SCREEN-DIAG] negotiated rtpmap: %s", line)
+            except Exception:
+                logger.exception("[SCREEN-DIAG] codec log failed")
+
+            # 初期 bitrate を ABR の target と一致させる
+            _abr_target_kbps = int(SCREEN_SHARE.get("initial_bitrate_kbps", 1000))
+            _set_video_max_bitrate(_abr_target_kbps)
+
+            # ABR loop 起動 (既に動いてれば残す)
+            if _abr_task is None or _abr_task.done():
+                _abr_task = asyncio.create_task(_abr_loop())
 
         return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+    finally:
+        if not installed:
+            # globals に install してない = 自分専有のリソースなので潰す
+            try:
+                await pc.close()
+            except Exception:
+                pass
+            try:
+                for t in (player.video, player.audio):
+                    if t is not None:
+                        t.stop()
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+                await asyncio.to_thread(proc.wait, 2)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
 
 async def _wait_ice_gathering_complete(pc: "RTCPeerConnection", timeout: float = 5.0) -> None:
@@ -411,3 +691,64 @@ async def screen_disconnect():
     async with _lock:
         await _teardown()
     return {"ok": True}
+
+
+@router.get("/screen/stats")
+async def screen_stats():
+    """RTCPeerConnection の getStats() を JSON で返す診断エンドポイント。
+
+    PWA 側から数秒ごとに poll して overlay 表示する用途。
+    bitrate / fps の rate 値は frontend で時系列差分から計算する想定で、
+    backend は raw counter (bytesSent, packetsSent, packetsLost 等) を出す。
+    """
+    if _pc is None:
+        return {"connected": False}
+    try:
+        report = await _pc.getStats()
+    except Exception:
+        logger.exception("getStats failed")
+        return {"connected": False, "error": "stats failed"}
+
+    out = {
+        "connected": _pc.connectionState == "connected",
+        "state": _pc.connectionState,
+        "ts": _time.time(),
+        "abr_target_kbps": _abr_target_kbps,
+        "codec": _video_codec_label,
+        "video_out": {},
+        "audio_out": {},
+        "video_remote": {},
+        "audio_remote": {},
+        "network": {},
+    }
+    for s in report.values():
+        t = getattr(s, "type", None)
+        if t == "outbound-rtp":
+            kind = getattr(s, "kind", None)
+            slot = "video_out" if kind == "video" else ("audio_out" if kind == "audio" else None)
+            if slot is None:
+                continue
+            entry = {
+                "packetsSent": getattr(s, "packetsSent", 0),
+                "bytesSent": getattr(s, "bytesSent", 0),
+            }
+            # 動画: framesEncoded を取れれば実 fps 算出に使う (aiortc 1.14+)
+            if kind == "video":
+                fe = getattr(s, "framesEncoded", None)
+                if fe is not None:
+                    entry["framesEncoded"] = fe
+            out[slot] = entry
+        elif t == "remote-inbound-rtp":
+            kind = getattr(s, "kind", None)
+            slot = "video_remote" if kind == "video" else ("audio_remote" if kind == "audio" else None)
+            if slot is None:
+                continue
+            out[slot] = {
+                "packetsLost": getattr(s, "packetsLost", 0),
+                "jitter": float(getattr(s, "jitter", 0) or 0),
+                "roundTripTime": float(getattr(s, "roundTripTime", 0) or 0),
+            }
+        elif t == "transport":
+            out["network"]["bytesSent"] = getattr(s, "bytesSent", 0)
+            out["network"]["bytesReceived"] = getattr(s, "bytesReceived", 0)
+    return out

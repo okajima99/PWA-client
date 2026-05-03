@@ -17,6 +17,7 @@
     "video_device": "3",
     "audio_device": "BlackHole 2ch",
     "video_size": "1600x1000",
-    "framerate": 30
+    "framerate": 30,
+    "audio_output_active": "Multi-Output Device"
   }
 }

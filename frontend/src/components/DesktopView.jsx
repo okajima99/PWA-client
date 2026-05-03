@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { useDesktopShareStats } from '../hooks/useDesktopShareStats.js'
 
 // デスクトップ画面の WebRTC ストリームを `<video>` で再生する。
 // + ピンチズーム (1x〜4x) + 拡大時のドラッグパン + ダブルタップで 1x ⇄ 2x。
@@ -140,6 +141,10 @@ export default function DesktopView({ stream }) {
     }
   }, [clampPan])
 
+  // 診断 overlay (fps / RTT / bitrate / loss)。 タップで隠す/表示
+  const [showStats, setShowStats] = useState(true)
+  const stats = useDesktopShareStats(!!stream)
+
   return (
     <div ref={wrapperRef} className="desktop-view">
       <video
@@ -152,6 +157,31 @@ export default function DesktopView({ stream }) {
         }}
       />
       {!stream && <div className="desktop-view-placeholder">接続中…</div>}
+      {stream && stats && showStats && (
+        <button
+          className="desktop-stats"
+          onClick={(e) => { e.stopPropagation(); setShowStats(false) }}
+          aria-label="診断を隠す"
+        >
+          {stats.fps != null ? `${stats.fps}fps` : '—'}
+          {' · '}
+          {stats.bitrate_kbps != null ? `${stats.bitrate_kbps}` : '—'}
+          {stats.target_kbps != null ? `/${stats.target_kbps}kbps` : 'kbps'}
+          {' · '}
+          {stats.rtt_ms != null ? `${stats.rtt_ms}ms` : '—ms'}
+          {stats.packetsLostPct != null && stats.packetsLostPct > 0 && ` · ${stats.packetsLostPct}%`}
+          {stats.codec && ` · ${stats.codec}`}
+        </button>
+      )}
+      {stream && !showStats && (
+        <button
+          className="desktop-stats-toggle"
+          onClick={(e) => { e.stopPropagation(); setShowStats(true) }}
+          aria-label="診断を表示"
+        >
+          📊
+        </button>
+      )}
     </div>
   )
 }
