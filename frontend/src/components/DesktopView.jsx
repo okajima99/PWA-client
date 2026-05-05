@@ -11,8 +11,10 @@ import { useDesktopShareStats } from '../hooks/useDesktopShareStats.js'
 const MIN_SCALE = 1
 const MAX_SCALE = 4
 const DOUBLE_TAP_MS = 280
+// stream が来ない時の「長引いてる」 判定タイムアウト。 これを過ぎたら再試行 / キャンセルを出す。
+const CONNECT_TIMEOUT_MS = 10_000
 
-export default function DesktopView({ stream }) {
+export default function DesktopView({ stream, error, onRetry, onCancel }) {
   const videoRef = useRef(null)
   const wrapperRef = useRef(null)
   const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 })
@@ -145,6 +147,21 @@ export default function DesktopView({ stream }) {
   const [showStats, setShowStats] = useState(true)
   const stats = useDesktopShareStats(!!stream)
 
+  // stream が来ない状態が長引いた時のフォールバック UI。
+  // 再試行 / キャンセルボタンを出して、 ユーザに無限待機させない。
+  const [timedOut, setTimedOut] = useState(false)
+  useEffect(() => {
+    if (stream) { setTimedOut(false); return }
+    setTimedOut(false)
+    const id = setTimeout(() => setTimedOut(true), CONNECT_TIMEOUT_MS)
+    return () => clearTimeout(id)
+  }, [stream])
+
+  const showActions = !stream && (!!error || timedOut)
+  const placeholderText = !stream
+    ? (error ? error : (timedOut ? '接続が長引いています…' : '接続中…'))
+    : null
+
   return (
     <div ref={wrapperRef} className="desktop-view">
       <video
@@ -156,7 +173,21 @@ export default function DesktopView({ stream }) {
           transformOrigin: 'center center',
         }}
       />
-      {!stream && <div className="desktop-view-placeholder">接続中…</div>}
+      {!stream && (
+        <div className="desktop-view-placeholder">
+          <span>{placeholderText}</span>
+          {showActions && (
+            <div className="desktop-view-actions">
+              {onRetry && (
+                <button className="desktop-view-btn" onClick={onRetry}>再試行</button>
+              )}
+              {onCancel && (
+                <button className="desktop-view-btn cancel" onClick={onCancel}>キャンセル</button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {stream && stats && showStats && (
         <button
           className="desktop-stats"
@@ -171,6 +202,8 @@ export default function DesktopView({ stream }) {
           {stats.rtt_ms != null ? `${stats.rtt_ms}ms` : '—ms'}
           {stats.packetsLostPct != null && stats.packetsLostPct > 0 && ` · ${stats.packetsLostPct}%`}
           {stats.codec && ` · ${stats.codec}`}
+          {stats.ice_state && stats.ice_state !== 'connected' && ` · ice:${stats.ice_state}`}
+          {stats.candidate_type && ` · ${stats.candidate_type}`}
         </button>
       )}
       {stream && !showStats && (

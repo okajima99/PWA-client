@@ -70,6 +70,9 @@ export function useDesktopShareStats(active) {
           packetsLost,
           packetsLostPct,
           jitter_ms,
+          // ICE 状態 + 採択 candidate type (host / srflx / relay) を診断用に渡す
+          ice_state: cur.iceConnectionState || null,
+          candidate_type: cur.candidate_type || null,
         })
       } catch { /* ignore */ }
     }

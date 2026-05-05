@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 // - 上部: 「+ 新規会話」 → agent を選ぶ → createSession
 // - リスト: 会話項目をタップで activeSession 切替、 ⋯ メニューでリネーム / 削除
 // - badges: pending(?)、 processing(●青)、 new(●赤) を項目右に表示
+// - ヘッダの ⋯ : ドロワー総合メニュー (通知 ON/OFF、 リセット等の PWA レベル設定)
 //
 // props:
 //   open                : ドロワーが開いてるか
@@ -16,6 +17,11 @@ import { useEffect, useRef, useState } from 'react'
 //   onRename(sid, t)    : リネーム
 //   onDelete(sid)       : 削除 (確認ダイアログ表示は呼出側責任)
 //   sessionBadges       : {sid: {kind, label} | null}
+//   pushAvailable       : 通知が使える環境か (iOS PWA standalone 等)
+//   pushEnabled         : 通知 ON/OFF 状態
+//   pushBusy            : 通知切替処理中
+//   onTogglePush        : 通知 ON/OFF 切替 callback
+//   onReset             : キャッシュ・SW 削除 (確認ダイアログ後に reload) callback
 export default function SessionDrawer({
   open,
   onClose,
@@ -27,6 +33,11 @@ export default function SessionDrawer({
   onRename,
   onDelete,
   sessionBadges = {},
+  pushAvailable = false,
+  pushEnabled = false,
+  pushBusy = false,
+  onTogglePush,
+  onReset,
 }) {
   const [agentPicker, setAgentPicker] = useState(false) // + ボタン押下後の agent 選択メニュー
   const [menuFor, setMenuFor] = useState(null)          // ⋯ メニュー出してる session_id
@@ -34,6 +45,8 @@ export default function SessionDrawer({
   const [renameFor, setRenameFor] = useState(null)      // リネーム inline 編集中の session_id
   const [renameValue, setRenameValue] = useState('')
   const renameInputRef = useRef(null)
+  const [globalMenuOpen, setGlobalMenuOpen] = useState(false)  // ヘッダ ⋯ の総合メニュー
+  const globalMenuRef = useRef(null)
   const isLastSession = sessions.length <= 1
 
   useEffect(() => {
@@ -49,8 +62,21 @@ export default function SessionDrawer({
       setAgentPicker(false)
       setMenuFor(null)
       setRenameFor(null)
+      setGlobalMenuOpen(false)
     }
   }, [open])
+
+  // 総合メニュー外クリックで閉じる
+  useEffect(() => {
+    if (!globalMenuOpen) return
+    const handler = (e) => {
+      if (globalMenuRef.current && !globalMenuRef.current.contains(e.target)) {
+        setGlobalMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [globalMenuOpen])
 
   const handleCreate = (agentId) => {
     setAgentPicker(false)
@@ -84,7 +110,34 @@ export default function SessionDrawer({
       <aside className={`drawer ${open ? 'open' : ''}`}>
         <div className="drawer-header">
           <span className="drawer-title">会話</span>
-          <button className="drawer-close" onClick={onClose} aria-label="閉じる">×</button>
+          <div className="drawer-header-actions" ref={globalMenuRef}>
+            <button
+              className="drawer-global-menu"
+              onClick={() => setGlobalMenuOpen(prev => !prev)}
+              aria-label="設定"
+              title="設定"
+            >
+              ⋯
+            </button>
+            <button className="drawer-close" onClick={onClose} aria-label="閉じる">×</button>
+            {globalMenuOpen && (
+              <div className="drawer-global-popup" onClick={e => e.stopPropagation()}>
+                {pushAvailable && onTogglePush && (
+                  <button
+                    onClick={() => { setGlobalMenuOpen(false); onTogglePush() }}
+                    disabled={pushBusy}
+                  >
+                    {pushEnabled ? '通知を無効にする' : '通知を有効にする'}
+                  </button>
+                )}
+                {onReset && (
+                  <button onClick={() => { setGlobalMenuOpen(false); onReset() }}>
+                    リセット (キャッシュ・SW 削除)
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="drawer-create">

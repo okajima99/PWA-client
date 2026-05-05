@@ -279,11 +279,35 @@
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 12px;
   color: #888;
   font-size: 13px;
+  /* アクション無し時はジェスチャを下層に通す。 ボタン側で pointer-events: auto に戻す */
   pointer-events: none;
+  text-align: center;
+  padding: 0 16px;
+}
+.desktop-view-actions {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+.desktop-view-btn {
+  background: #2a2a2a;
+  color: #ddd;
+  border: 1px solid #555;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.desktop-view-btn.cancel {
+  background: #2a1a1a;
+  border-color: #553333;
+  color: #aaa;
 }
 .desktop-stats {
   position: absolute;
@@ -361,6 +385,12 @@
   font-weight: 700;
   color: var(--text);
 }
+.drawer-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+}
 .drawer-close {
   background: none;
   border: none;
@@ -373,6 +403,55 @@
 }
 .drawer-close:hover {
   color: var(--text);
+}
+.drawer-global-menu {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  letter-spacing: 1px;
+}
+.drawer-global-menu:hover {
+  color: var(--text);
+}
+.drawer-global-popup {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  z-index: 100;
+  min-width: 220px;
+  padding: 4px;
+}
+.drawer-global-popup button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  padding: 10px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.drawer-global-popup button:hover {
+  background: var(--bg3);
+}
+.drawer-global-popup button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.drawer-global-popup button:disabled:hover {
+  background: none;
 }
 .drawer-create {
   padding: 10px 12px;

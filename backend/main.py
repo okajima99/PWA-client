@@ -74,6 +74,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("prune_all_existing failed")
 
+    # 旧 backend インスタンスから孤児化した ffmpeg を掃除する。
+    # launchctl kickstart -k で SIGTERM 後に lifespan cleanup が間に合わなかった場合に
+    # ffmpeg が画面収録デバイスを掴んだまま残るのを救済する。 詳細は screen_routes.py。
+    try:
+        screen_routes.kill_orphan_ffmpegs()
+    except Exception:
+        logger.exception("kill_orphan_ffmpegs failed")
+
     yield
 
     # 終了: アイドル GC 停止 → SDK クライアントを全て切断 → httpx を閉じる

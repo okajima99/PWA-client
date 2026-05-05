@@ -7,7 +7,7 @@ import SessionDrawer from './components/SessionDrawer.jsx'
 import StorageWarning from './components/StorageWarning.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
 import DesktopView from './components/DesktopView.jsx'
-import { API_BASE } from './constants.js'
+import { API_BASE, LS_SESSION_ACTIVITY } from './constants.js'
 import { useStatus } from './hooks/useStatus.js'
 import { useAttachments } from './hooks/useAttachments.js'
 import { useChatStorage } from './hooks/useChatStorage.js'
@@ -62,6 +62,66 @@ export default function App() {
 
   const desktopShare = useDesktopShare()
   const storageInfo = useStorageQuota()
+
+  // ドロワー並び順用に「最後に何かメッセージが増えた時刻」 を session_id 別に持つ。
+  // localStorage に永続化、 reload 後も「最近更新があった会話」 が上に来る。
+  // 値: { length: 直近の messages 件数, ts: その時の Date.now() }
+  const [sessionActivity, setSessionActivity] = useState(() => {
+    try {
+      const raw = localStorage.getItem(LS_SESSION_ACTIVITY)
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object') return parsed
+      }
+    } catch { /* ignore */ }
+    return {}
+  })
+  // messages の length 増加を見て activity ts を更新する。
+  // 初回ロード時に既存件数 → ts を仮置きするのは avoid (= 永続値が無ければ created_at をそのまま使う)。
+  useEffect(() => {
+    setSessionActivity(prev => {
+      let changed = false
+      const next = { ...prev }
+      const now = Date.now()
+      for (const sid of Object.keys(messages)) {
+        const arr = messages[sid] || []
+        const cur = next[sid]
+        if (!cur) {
+          // 永続値なし: 既存件数だけ記録、 ts は据え置き (= created_at fallback で sort される)
+          if (arr.length > 0) {
+            next[sid] = { length: arr.length, ts: 0 }
+            changed = true
+          }
+          continue
+        }
+        if (arr.length > cur.length) {
+          // 増えた = 新着活動 → ts 更新
+          next[sid] = { length: arr.length, ts: now }
+          changed = true
+        } else if (arr.length < cur.length) {
+          // 減った (削除等) → length のみ追従、 ts はそのまま
+          next[sid] = { length: arr.length, ts: cur.ts }
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [messages])
+  // localStorage に永続化
+  useEffect(() => {
+    try { localStorage.setItem(LS_SESSION_ACTIVITY, JSON.stringify(sessionActivity)) } catch { /* ignore */ }
+  }, [sessionActivity])
+
+  // SessionDrawer に渡す前に「最終活動時刻」 降順でソート。
+  // 活動 ts が 0 (未活動) または無い場合は created_at を fallback に使う。
+  const sortedSessions = useMemo(() => {
+    return [...sessions].sort((a, b) => {
+      const ta = (sessionActivity[a.id]?.ts) || ((a.created_at || 0) * 1000)
+      const tb = (sessionActivity[b.id]?.ts) || ((b.created_at || 0) * 1000)
+      return tb - ta
+    })
+  }, [sessions, sessionActivity])
+
   const [storageWarnDismissed, setStorageWarnDismissed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -287,13 +347,21 @@ export default function App() {
       </header>
 
       {(desktopShare.connecting || desktopShare.connected) && (
-        <DesktopView stream={desktopShare.stream} />
+        <DesktopView
+          stream={desktopShare.stream}
+          error={desktopShare.error}
+          onRetry={async () => {
+            await desktopShare.disconnect()
+            desktopShare.connect()
+          }}
+          onCancel={() => desktopShare.disconnect()}
+        />
       )}
 
       <SessionDrawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
-        sessions={sessions}
+        sessions={sortedSessions}
         agents={agents}
         activeId={activeId}
         onSelect={setActiveId}
@@ -301,6 +369,11 @@ export default function App() {
         onRename={renameSession}
         onDelete={(sid) => setConfirmDelete(sid)}
         sessionBadges={sessionBadges}
+        pushAvailable={pushAvailable}
+        pushEnabled={pushEnabled}
+        pushBusy={pushBusy}
+        onTogglePush={handleTogglePush}
+        onReset={() => { setDrawerOpen(false); setConfirmReset(true) }}
       />
 
       {/* メッセージ一覧 */}
@@ -369,14 +442,6 @@ export default function App() {
               </button>
               <button onClick={() => { fetchLatest(); requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) }); setMenuOpen(false) }} className="menu-item">
                 最新を取得
-              </button>
-              {pushAvailable && (
-                <button onClick={handleTogglePush} className="menu-item" disabled={pushBusy}>
-                  {pushEnabled ? '通知を無効にする' : '通知を有効にする'}
-                </button>
-              )}
-              <button onClick={() => { setMenuOpen(false); setConfirmReset(true) }} className="menu-item">
-                リセット (キャッシュ・SW 削除)
               </button>
               <button
                 onClick={() => { setMenuOpen(false); setConfirmEnd(true) }}
