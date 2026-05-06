@@ -15,3 +15,9 @@ node_modules/
 .DS_Store
 logs/
 scripts/
+
+# Phase 3 build artifacts
+frontend/ios/build/
+frontend/ios/App/Frameworks/
+backend/notifications.json
+altstore/*.ipa

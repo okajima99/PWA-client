@@ -18,11 +18,23 @@ export function useAutoScroll({ messages, activeSession }) {
     programmaticScrollRef.current = true
     isAtBottomRef.current = true
     setHasNew(false)
+    // scrollHeight は async (画像 / Markdown render) で変わるので、 数フレーム + 遅延
+    // 設定で確実に最新まで飛ぶようにする
     el.scrollTo({ top: el.scrollHeight })
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!scrollerDomRef.current) return
+        scrollerDomRef.current.scrollTo({ top: scrollerDomRef.current.scrollHeight })
+        setTimeout(() => {
+          if (!scrollerDomRef.current) return
+          scrollerDomRef.current.scrollTo({ top: scrollerDomRef.current.scrollHeight })
+        }, 150)
+      })
+    })
     clearTimeout(scrollEndTimerRef.current)
     scrollEndTimerRef.current = setTimeout(() => {
       programmaticScrollRef.current = false
-    }, 600)
+    }, 800)
   }, [])
 
   // 新着メッセージ時の自動スクロール
@@ -56,7 +68,9 @@ export function useAutoScroll({ messages, activeSession }) {
     if (!el) return
     let cancelled = false
     let lastHeight = -1
-    const deadline = Date.now() + 500
+    // 起動時 / タブ切替時は async load (IndexedDB 読み + 画像 render) で
+    // scrollHeight が 5 秒以上遅れて確定するケースあり、 deadline を 5 秒に伸ばす
+    const deadline = Date.now() + 5000
     const tick = () => {
       if (cancelled) return
       const cur = el.scrollHeight

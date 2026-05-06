@@ -8,6 +8,7 @@
 #import <Capacitor/Capacitor.h>
 
 CAP_PLUGIN(MoonlightPlugin, "Moonlight",
+    CAP_PLUGIN_METHOD(pair, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(connect, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(disconnect, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(setVideoFrame, CAPPluginReturnPromise);

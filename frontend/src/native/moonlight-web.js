@@ -9,8 +9,12 @@
 // WebAssembly 版 + WebTransport 経由の実装を入れる選択肢もある (今は未対応)。
 
 export class MoonlightWeb {
+  async pair() {
+    return { paired: false, error: 'native_only' }
+  }
+
   async connect() {
-    return { paired: false, needsPin: false, error: 'native_only' }
+    return { connected: false, error: 'native_only' }
   }
 
   async disconnect() {

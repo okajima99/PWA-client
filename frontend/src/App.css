@@ -10,7 +10,9 @@
   display: flex;
   gap: 12px;
   align-items: center;
-  padding: 6px 12px;
+  /* native (Capacitor) では env(safe-area-inset-top) が notch / Dynamic Island の
+     高さを返す。 PWA Safari / 通常 web では 0 になるので、 PWA 側の見た目は不変。 */
+  padding: calc(6px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 6px calc(12px + env(safe-area-inset-left));
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
   font-size: 12px;
@@ -369,6 +371,10 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* native では notch / Dynamic Island、 ホームインジケータ分の safe area を確保 */
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
 }
 .drawer.open {
   transform: translateX(0);
@@ -761,7 +767,9 @@
 .inputarea {
   display: flex;
   gap: 8px;
-  padding: 10px 12px;
+  /* native (Capacitor) では env(safe-area-inset-bottom) でホームインジケータ分の
+     余白を確保。 PWA / web では 0 になり影響なし。 */
+  padding: 10px calc(12px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
   border-top: 1px solid var(--border);
   background: var(--bg2);
   flex-shrink: 0;

@@ -173,6 +173,7 @@ def make_permission_handler(session_id: str):
                     asyncio.create_task(broadcast_push(
                         f"❓ {question_text}",
                         notification_title_for(session_id),
+                        session_id,
                     ))
             except Exception:
                 logger.exception("ask_user_question push failed for session=%s", session_id)
@@ -481,7 +482,7 @@ async def run_sdk_background(session_id: str, content: list, user_request_id: st
                 turn_text = last_assistant_text.get(session_id, "").strip()
                 if turn_text and not flags["user_visible"]:
                     body = turn_text if len(turn_text) <= 140 else (turn_text[:140] + "…")
-                    asyncio.create_task(broadcast_push(body, notification_title_for(session_id)))
+                    asyncio.create_task(broadcast_push(body, notification_title_for(session_id), session_id))
 
             elif isinstance(msg, RateLimitEvent):
                 info = msg.rate_limit_info

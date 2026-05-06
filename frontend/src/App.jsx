@@ -18,6 +18,7 @@ import { useStorageQuota } from './hooks/useStorageQuota.js'
 import { useDesktopShare } from './hooks/useDesktopShare.js'
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
+import { syncBadgeFromServer } from './utils/badge.js'
 const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
 const FileTreePanel = lazy(() => import('./FileTreePanel.jsx'))
 
@@ -139,6 +140,93 @@ export default function App() {
     return () => clearInterval(id)
   }, [])
   const menuRef = useRef(null)
+
+  // 可視状態 + アクティブ session を backend に申告 (broadcast_push 抑制用)
+  // - 「App (native) / PWA (web) のいずれかが該当 session を見てる時は通知しない」
+  //   判定材料を backend に渡す
+  // - visibilitychange + activeSid 変化のたびに送る
+  useEffect(() => {
+    const sendState = () => {
+      const isNative = !!window.Capacitor?.isNativePlatform?.()
+      const body = JSON.stringify({
+        visible: !document.hidden,
+        session_id: activeSid,
+        client: isNative ? 'native' : 'web',
+      })
+      try {
+        fetch(`${API_BASE}/push/state`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+        }).catch(() => { /* ignore */ })
+      } catch { /* ignore */ }
+    }
+    sendState()
+    const onVis = () => sendState()
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [activeSid])
+
+  // session を開いた時、 そのセッションに紐づく通知を既読化 (通知センターで消える)
+  // 既読化後に backend から unread_count を取り直してバッジ同期
+  useEffect(() => {
+    if (!activeSid) return
+    ;(async () => {
+      try {
+        await fetch(`${API_BASE}/notifications/read-all`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: activeSid }),
+        })
+      } catch { /* ignore */ }
+      // バッジ再同期
+      try { await syncBadgeFromServer() } catch { /* ignore */ }
+    })()
+  }, [activeSid])
+
+  // 起動時 + フォアグラウンド復帰時にバッジを backend と同期 (差分埋める)
+  useEffect(() => {
+    syncBadgeFromServer().catch(() => {})
+    const onVis = () => { if (!document.hidden) syncBadgeFromServer().catch(() => {}) }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
+
+  // PWA 通知センターからの deep link を受けて該当セッションへ遷移
+  // - native (Capacitor): app://chat/<sid> を appUrlOpen イベントで受信
+  // - PWA: 起動時 URL の ?ses=<sid> を読む (SW から navigate されたケース)
+  useEffect(() => {
+    // PWA 側: ?ses=xxx がついてたら拾う
+    try {
+      const sp = new URLSearchParams(window.location.search)
+      const sid = sp.get('ses')
+      if (sid) {
+        setActiveId(sid)
+        // URL から ses パラメータを除去 (リロード時に同じ session に固定されないように)
+        const url = new URL(window.location.href)
+        url.searchParams.delete('ses')
+        window.history.replaceState({}, '', url.toString())
+      }
+    } catch { /* ignore */ }
+
+    // Native 側: appUrlOpen listener (app://chat/<sid>)
+    let cleanup = null
+    ;(async () => {
+      try {
+        if (!window.Capacitor?.isNativePlatform?.()) return
+        const { App: CapApp } = await import('@capacitor/app')
+        const handler = ({ url }) => {
+          try {
+            const m = String(url || '').match(/^app:\/\/chat\/([\w-]+)/)
+            if (m && m[1]) setActiveId(m[1])
+          } catch { /* ignore */ }
+        }
+        const sub = await CapApp.addListener('appUrlOpen', handler)
+        cleanup = () => { try { sub.remove() } catch { /* ignore */ } }
+      } catch { /* @capacitor/app 未インストール環境では noop */ }
+    })()
+    return () => { if (cleanup) cleanup() }
+  }, [setActiveId])
 
   const handleOpenPath = useCallback((path) => {
     if (path.endsWith('/')) {
@@ -296,26 +384,6 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
 
-  // PWA リセット
-  const [confirmReset, setConfirmReset] = useState(false)
-  const handleReset = async () => {
-    setConfirmReset(false)
-    setMenuOpen(false)
-    try {
-      if ('serviceWorker' in navigator) {
-        const regs = await navigator.serviceWorker.getRegistrations()
-        await Promise.all(regs.map(r => r.unregister().catch(() => {})))
-      }
-      if (typeof caches !== 'undefined') {
-        const keys = await caches.keys()
-        await Promise.all(keys.map(k => caches.delete(k).catch(() => {})))
-      }
-    } catch { /* ignore */ }
-    const u = new URL(window.location.href)
-    u.searchParams.set('_r', String(Date.now()))
-    window.location.replace(u.toString())
-  }
-
   const inputDisabled = !activeSid || !!loading[activeSid]
 
   return (
@@ -344,6 +412,87 @@ export default function App() {
         >
           🖥
         </button>
+        {/* Sunshine ペアリング: native (App) のみ表示。 PWA では PushManager 等
+            と同じく機能しないので window.Capacitor で判定。 */}
+        {window.Capacitor?.isNativePlatform?.() && (
+          <button
+            className="screen-toggle"
+            onClick={async () => {
+              // moonlight.js を先に import して registerPlugin を実行 (= Capacitor.Plugins.Moonlight を活性化)
+              const moonlightMod = await import('./native/moonlight.js')
+              window.alert(
+                'これからペアリングを開始します。\n\n' +
+                '【手順】\n' +
+                '1. このダイアログ OK 押す前に、 まず Mac の Sunshine Web UI で:\n' +
+                '   - PIN: 任意 4 桁 (例 1234) を入力\n' +
+                '   - Device Name: App (完全一致)\n' +
+                '   - Send クリック\n' +
+                '2. OK 押すと iPhone 側で host + PIN 入力 → 自動で handshake\n' +
+                '3. Sunshine の Send から 60 秒以内に完了する必要あり\n\n' +
+                'Mac 側で Send 済んだら OK を押してください。'
+              )
+              const host = window.prompt('Sunshine ホスト名 / IP', 'user.tailnet.ts.net')
+              if (!host) return
+              const pin = window.prompt('Sunshine で入力したのと同じ PIN (4 桁)', '')
+              if (!pin) return
+              try {
+                const res = await moonlightMod.pair({ host, pin })
+                window.alert(res.paired ? 'ペアリング成功 ✅' : ('失敗: ' + JSON.stringify(res)))
+              } catch (e) {
+                const msg = (e.message || String(e))
+                if (msg.includes('not implemented')) {
+                  window.alert(
+                    'Moonlight plugin が iOS で認識されてません。\n' +
+                    '通常は build を update + アプリ再起動で直ります。\n\n' +
+                    '【対処】\n' +
+                    '1. AltStore で App の UPDATE をタップ\n' +
+                    '2. App を完全終了 (上スワイプ kill) → 再起動\n' +
+                    '3. もう一度 🔗 タップ\n\n' +
+                    '詳細: ' + msg
+                  )
+                } else {
+                  window.alert(
+                    'ペアリング失敗: ' + msg + '\n\n' +
+                    '【ありがちな原因】\n' +
+                    '- Mac 側で Send してから 60 秒以上経過\n' +
+                    '- PIN が Mac と iPhone で違う\n' +
+                    '- Device Name が App と完全一致してない\n' +
+                    '- Tailscale 接続が切れてる\n' +
+                    '再度試すには Sunshine 側で Send からやり直してください'
+                  )
+                }
+              }
+            }}
+            aria-label="Sunshine ペアリング"
+            title="Sunshine とペアリング"
+          >
+            🔗
+          </button>
+        )}
+        {/* Moonlight 経路の Mac 画面ストリーム接続/切断 (pair 済前提) */}
+        {window.Capacitor?.isNativePlatform?.() && (
+          <button
+            className="screen-toggle"
+            onClick={async () => {
+              const m = await import('./native/moonlight.js')
+              if (window.__havenStreaming) {
+                try { await m.disconnect() } catch {}
+                window.__havenStreaming = false
+                return
+              }
+              try {
+                await m.connect({ host: 'user.tailnet.ts.net' })
+                window.__havenStreaming = true
+              } catch (e) {
+                window.alert('接続失敗: ' + (e.message || e))
+              }
+            }}
+            aria-label="Mac 画面ストリーム"
+            title="Sunshine と stream 接続/切断 (ペア済前提)"
+          >
+            🎬
+          </button>
+        )}
       </header>
 
       {(desktopShare.connecting || desktopShare.connected) && (
@@ -373,7 +522,6 @@ export default function App() {
         pushEnabled={pushEnabled}
         pushBusy={pushBusy}
         onTogglePush={handleTogglePush}
-        onReset={() => { setDrawerOpen(false); setConfirmReset(true) }}
       />
 
       {/* メッセージ一覧 */}
@@ -477,18 +625,6 @@ export default function App() {
         text="このセッションを終了しますか?"
         onCancel={() => setConfirmEnd(false)}
         onConfirm={handleEndSession}
-      />
-      <ConfirmDialog
-        open={confirmReset}
-        text={
-          <>
-            本当にリセットしますか？
-            <br />
-            <span className="dim">キャッシュと Service Worker を削除して再読み込みします。会話ログは消えません。</span>
-          </>
-        }
-        onCancel={() => setConfirmReset(false)}
-        onConfirm={handleReset}
       />
       <ConfirmDialog
         open={!!confirmDelete}

@@ -1,5 +1,8 @@
 {
   "appId": "com.local.claudepwaclient",
-  "appName": "claude-pwa-client",
-  "webDir": "dist"
+  "appName": "App",
+  "webDir": "dist",
+  "server": {
+    "url": "https://user.tailnet.ts.net"
+  }
 }

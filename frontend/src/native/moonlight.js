@@ -25,9 +25,19 @@ export function isNativeApp() {
 }
 
 /**
- * Sunshine ホストに接続。 初回は PIN ペアリング、 以降は保存済キーで自動接続。
- * @param {{host: string, pin?: string}} opts
- * @returns {Promise<{paired: boolean, needsPin: boolean}>}
+ * Sunshine ホストとペアリング (4 段 PIN handshake)。 初回 1 回だけ。
+ * Sunshine Web UI で「PIN」 タブから 4 桁を生成して、 入力。
+ * @param {{host: string, pin: string}} opts
+ * @returns {Promise<{paired: boolean}>}
+ */
+export async function pair(opts) {
+  return Moonlight.pair(opts)
+}
+
+/**
+ * Sunshine に stream 接続。 ペア済が前提。
+ * @param {{host: string}} opts
+ * @returns {Promise<{connected: boolean}>}
  */
 export async function connect(opts) {
   return Moonlight.connect(opts)

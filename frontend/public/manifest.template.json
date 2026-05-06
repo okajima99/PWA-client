@@ -2,7 +2,7 @@
   "name": "__APP_TITLE__",
   "short_name": "__APP_SHORT_NAME__",
   "display": "standalone",
-  "start_url": "/",
+  "start_url": "/?mode=notify",
   "background_color": "#111111",
   "theme_color": "#111111",
   "icons": [

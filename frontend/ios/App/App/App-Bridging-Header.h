@@ -14,7 +14,7 @@
 #ifndef App_Bridging_Header_h
 #define App_Bridging_Header_h
 
-// Phase 3 で有効化:
-// #import <Moonlight/Limelight.h>
+// Phase 3 完了: Moonlight.xcframework 統合済 (libmoonlight-common-c.a + Limelight.h)
+#import "Limelight.h"
 
 #endif /* App_Bridging_Header_h */

@@ -3,11 +3,14 @@
 - VAPID 鍵 / サブスクリプションの永続化
 - ターン完了時に呼ばれる broadcast_push()
 - /push/state, /push/vapid-public-key, /push/subscribe, /push/unsubscribe
+- 通知履歴 (notifications.json) + /notifications API
 """
 import asyncio
 import json
 import logging
 import re
+import time
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException
@@ -26,6 +29,56 @@ router = APIRouter()
 
 VAPID_PATH = Path(__file__).parent / "vapid.json"
 SUBSCRIPTIONS_PATH = Path(__file__).parent / "subscriptions.json"
+NOTIFICATIONS_PATH = Path(__file__).parent / "notifications.json"
+
+# 通知履歴: 全 push 送信を蓄積、 PWA 通知センターから取得 / 既読化される
+NOTIFICATIONS_MAX = 500  # 古いものから FIFO で切る上限
+notifications_history: list[dict] = []
+# SSE listener queue: 通知追加 / 既読化を購読中のクライアントに push する
+_sse_listeners: list[asyncio.Queue] = []
+
+# client 別 visible 状態: 「web」 / 「native」 各クライアントの可視状態 + アクティブ session
+# broadcast_push() で「該当 session を見てる client がいるなら抑制」 判定に使う
+client_states: dict[str, dict] = {}
+
+
+def _load_notifications() -> list[dict]:
+    if not NOTIFICATIONS_PATH.exists():
+        return []
+    try:
+        data = json.loads(NOTIFICATIONS_PATH.read_text())
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_notifications() -> None:
+    # 上限を超えたら古い順に切る
+    if len(notifications_history) > NOTIFICATIONS_MAX:
+        del notifications_history[: len(notifications_history) - NOTIFICATIONS_MAX]
+    atomic_write_text(NOTIFICATIONS_PATH, json.dumps(notifications_history, ensure_ascii=False, indent=2))
+
+
+def is_session_actively_viewed(session_id: str | None) -> bool:
+    """指定 session を visible で見てる client がいるか。
+    App (native) と PWA (web) のいずれかが該当 session で前面表示中なら True。
+    session_id が None なら 1 client でも visible なら True (legacy 互換)。
+    """
+    if not session_id:
+        return any(s.get("visible") for s in client_states.values())
+    for s in client_states.values():
+        if s.get("visible") and s.get("session_id") == session_id:
+            return True
+    return False
+
+
+def _broadcast_sse_event(event: dict) -> None:
+    """通知履歴の変化を全 SSE listener に push する (queue にいれるだけ、 失敗は無視)"""
+    for q in list(_sse_listeners):
+        try:
+            q.put_nowait(event)
+        except Exception:
+            pass
 
 
 def _load_vapid() -> dict | None:
@@ -63,6 +116,7 @@ def _save_subscriptions() -> None:
 
 vapid_config: dict | None = _load_vapid()
 subscriptions: list[dict] = _load_subscriptions()
+notifications_history = _load_notifications()
 
 _NOTIF_BODY_RE = re.compile(r"\s+")
 
@@ -143,10 +197,44 @@ def notification_title_for(session_id: str) -> str:
     return NOTIFICATION_TITLE_DEFAULT
 
 
-async def broadcast_push(message: str, title: str | None = None) -> None:
-    """登録済みの全 Web Push サブスクリプションに通知を送る。
-    アプリ閉じてる / 画面オフ時の OS 通知届け先。
+async def broadcast_push(
+    message: str,
+    title: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    """登録済みの全 Web Push サブスクリプションに通知を送る + 通知履歴に記録。
+
+    アクティブに該当セッションを見てる client がいる時は OS 通知も履歴も
+    スキップする (= 既に画面で読まれてる前提、 重複させない)。
+
+    session_id を渡すと payload に sid + URL を含める。 PWA (通知センター) で
+    通知タップ時に SW が `app://chat/<sid>` deep link で App (native) アプリへ
+    遷移できる。
     """
+    # 抑制判定: native or web のいずれかがこのセッションを active 表示中なら通知不要
+    if is_session_actively_viewed(session_id):
+        return
+
+    body_clean = sanitize_notif_body(message)
+    notif_title = title or NOTIFICATION_TITLE_DEFAULT
+
+    # 通知履歴に追記 (Web Push が無効でも履歴は残す = 通知センターで見える)
+    notif_id = uuid.uuid4().hex[:12]
+    notif_record = {
+        "id": notif_id,
+        "ts": time.time(),
+        "session_id": session_id,
+        "title": notif_title,
+        "body": body_clean,
+        "read": False,
+    }
+    notifications_history.append(notif_record)
+    try:
+        _save_notifications()
+    except Exception:
+        logger.exception("notification save failed")
+    _broadcast_sse_event({"type": "added", "notification": notif_record})
+
     if not _HAS_WEBPUSH or not vapid_config or not subscriptions:
         return
 
@@ -154,10 +242,19 @@ async def broadcast_push(message: str, title: str | None = None) -> None:
     if not private_b64:
         return
 
-    payload = json.dumps({
-        "title": title or NOTIFICATION_TITLE_DEFAULT,
-        "body": sanitize_notif_body(message),
-    }, ensure_ascii=False)
+    # 未読数を payload に載せて SW でバッジ更新できるようにする (= fetch 不要、 省電力)
+    unread_count = sum(1 for n in notifications_history if not n.get("read"))
+
+    payload_dict = {
+        "id": notif_id,
+        "title": notif_title,
+        "body": body_clean,
+        "unread_count": unread_count,
+    }
+    if session_id:
+        payload_dict["sid"] = session_id
+        payload_dict["url"] = f"/?ses={session_id}"
+    payload = json.dumps(payload_dict, ensure_ascii=False)
     dead: list[dict] = []
 
     def _send_one(sub: dict) -> None:
@@ -195,11 +292,135 @@ async def broadcast_push(message: str, title: str | None = None) -> None:
 # --- エンドポイント ---
 @router.post("/push/state")
 def push_state(payload: dict = Body(...)):
-    """visibilitychange イベントの瞬間に呼ばれる。フロントの可視状態を即時反映する。
-    visible=True の間は通知を抑止し、False になった瞬間からターン完了通知が届く。
+    """visibilitychange / activeSession 変化イベントで呼ばれる。
+
+    request body:
+      - visible: bool   フォアグラウンド (= 通知不要) かどうか
+      - session_id: str  現在見てるセッション id (可視時のみ意味あり)
+      - client: "web" | "native"   どのクライアントか (省略時 web)
+
+    App (native) と PWA (web) で別エントリを保持し、 broadcast_push 時に
+    「該当 session を見てる client がいるなら抑制」 判定に使う。
     """
-    flags["user_visible"] = bool(payload.get("visible"))
+    visible = bool(payload.get("visible"))
+    session_id = payload.get("session_id")
+    client = payload.get("client") or "web"
+    if client not in ("web", "native"):
+        client = "web"
+    client_states[client] = {
+        "visible": visible,
+        "session_id": session_id if visible else None,
+        "ts": time.time(),
+    }
+    # legacy 互換: いずれかの client が visible なら user_visible=True
+    flags["user_visible"] = any(s.get("visible") for s in client_states.values())
     return {"ok": True}
+
+
+# --- 通知センター API ---
+@router.get("/notifications")
+def list_notifications(limit: int = 50, unread_only: bool = False):
+    """通知履歴を新しい順で返す。 PWA 通知センターから取得される。
+    response に unread_count を含めるので app badge 同期に使える。"""
+    items = list(reversed(notifications_history))
+    if unread_only:
+        items = [n for n in items if not n.get("read")]
+    unread_count = sum(1 for n in notifications_history if not n.get("read"))
+    return {
+        "notifications": items[: max(1, min(limit, NOTIFICATIONS_MAX))],
+        "unread_count": unread_count,
+    }
+
+
+@router.get("/notifications/unread-count")
+def get_unread_count():
+    """未読数だけ返す軽量エンドポイント。 app badge 同期 / 起動時 fetch 用。"""
+    return {"unread_count": sum(1 for n in notifications_history if not n.get("read"))}
+
+
+@router.post("/notifications/{notif_id}/read")
+def mark_notification_read(notif_id: str):
+    """単一通知を既読化。 PWA で通知タップ時に呼ばれる。"""
+    changed = False
+    for n in notifications_history:
+        if n.get("id") == notif_id and not n.get("read"):
+            n["read"] = True
+            changed = True
+            break
+    if changed:
+        try:
+            _save_notifications()
+        except Exception:
+            logger.exception("notification save failed")
+        _broadcast_sse_event({"type": "read", "ids": [notif_id]})
+    return {"ok": True, "changed": changed}
+
+
+@router.post("/notifications/read-all")
+def mark_all_read(payload: dict = Body(default={})):
+    """まとめて既読化。 session_id 指定時はそのセッション分だけ。"""
+    target_sid = payload.get("session_id")
+    changed_ids: list[str] = []
+    for n in notifications_history:
+        if n.get("read"):
+            continue
+        if target_sid is not None and n.get("session_id") != target_sid:
+            continue
+        n["read"] = True
+        changed_ids.append(n.get("id"))
+    if changed_ids:
+        try:
+            _save_notifications()
+        except Exception:
+            logger.exception("notification save failed")
+        _broadcast_sse_event({"type": "read", "ids": changed_ids})
+    return {"ok": True, "count": len(changed_ids)}
+
+
+@router.delete("/notifications/{notif_id}")
+def delete_notification(notif_id: str):
+    """通知を削除 (履歴から消す)。"""
+    before = len(notifications_history)
+    notifications_history[:] = [n for n in notifications_history if n.get("id") != notif_id]
+    if len(notifications_history) != before:
+        try:
+            _save_notifications()
+        except Exception:
+            logger.exception("notification save failed")
+        _broadcast_sse_event({"type": "removed", "ids": [notif_id]})
+    return {"ok": True}
+
+
+@router.get("/notifications/stream")
+async def notifications_stream():
+    """SSE: 通知の追加 / 既読 / 削除を全 PWA タブにリアルタイム配信。"""
+    from fastapi.responses import StreamingResponse
+
+    queue: asyncio.Queue = asyncio.Queue()
+    _sse_listeners.append(queue)
+
+    async def gen():
+        try:
+            # 接続直後にハンドシェイク (= retry 設定 + 接続確認)
+            yield "retry: 3000\n\n"
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=25.0)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    # keep-alive ping (一部 proxy が idle connection を切るので 25 秒毎に)
+                    yield ": ping\n\n"
+        finally:
+            try:
+                _sse_listeners.remove(queue)
+            except ValueError:
+                pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/push/vapid-public-key")

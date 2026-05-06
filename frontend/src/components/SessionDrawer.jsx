@@ -21,7 +21,6 @@ import { useEffect, useRef, useState } from 'react'
 //   pushEnabled         : 通知 ON/OFF 状態
 //   pushBusy            : 通知切替処理中
 //   onTogglePush        : 通知 ON/OFF 切替 callback
-//   onReset             : キャッシュ・SW 削除 (確認ダイアログ後に reload) callback
 export default function SessionDrawer({
   open,
   onClose,
@@ -37,7 +36,6 @@ export default function SessionDrawer({
   pushEnabled = false,
   pushBusy = false,
   onTogglePush,
-  onReset,
 }) {
   const [agentPicker, setAgentPicker] = useState(false) // + ボタン押下後の agent 選択メニュー
   const [menuFor, setMenuFor] = useState(null)          // ⋯ メニュー出してる session_id
@@ -48,6 +46,8 @@ export default function SessionDrawer({
   const [globalMenuOpen, setGlobalMenuOpen] = useState(false)  // ヘッダ ⋯ の総合メニュー
   const globalMenuRef = useRef(null)
   const isLastSession = sessions.length <= 1
+  // global popup に出す項目があるか (= ⋯ ボタン自体の表示条件)
+  const hasGlobalMenuItems = !!(pushAvailable && onTogglePush)
 
   useEffect(() => {
     if (renameFor && renameInputRef.current) {
@@ -111,16 +111,18 @@ export default function SessionDrawer({
         <div className="drawer-header">
           <span className="drawer-title">会話</span>
           <div className="drawer-header-actions" ref={globalMenuRef}>
-            <button
-              className="drawer-global-menu"
-              onClick={() => setGlobalMenuOpen(prev => !prev)}
-              aria-label="設定"
-              title="設定"
-            >
-              ⋯
-            </button>
+            {hasGlobalMenuItems && (
+              <button
+                className="drawer-global-menu"
+                onClick={() => setGlobalMenuOpen(prev => !prev)}
+                aria-label="設定"
+                title="設定"
+              >
+                ⋯
+              </button>
+            )}
             <button className="drawer-close" onClick={onClose} aria-label="閉じる">×</button>
-            {globalMenuOpen && (
+            {globalMenuOpen && hasGlobalMenuItems && (
               <div className="drawer-global-popup" onClick={e => e.stopPropagation()}>
                 {pushAvailable && onTogglePush && (
                   <button
@@ -128,11 +130,6 @@ export default function SessionDrawer({
                     disabled={pushBusy}
                   >
                     {pushEnabled ? '通知を無効にする' : '通知を有効にする'}
-                  </button>
-                )}
-                {onReset && (
-                  <button onClick={() => { setGlobalMenuOpen(false); onReset() }}>
-                    リセット (キャッシュ・SW 削除)
                   </button>
                 )}
               </div>

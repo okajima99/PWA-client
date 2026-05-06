@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-        <string>claude-pwa-client</string>
+        <string>App</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -63,6 +63,45 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_nvstream._tcp</string>
+	</array>
+	<!--
+	  ATS 例外: Tailscale 経由の HTTP/HTTPS 通信 + Sunshine の self-signed cert を許可。
+	  NSExceptionDomains で user.tailnet.ts.net に対して TLS 検証を無効化、
+	  self-signed の HTTPS 接続も通る。
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>user.tailnet.ts.net</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<false/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.0</string>
+			</dict>
+		</dict>
+	</dict>
+	<!--
+	  カスタム URL scheme: PWA (通知センター) からの deep link を App app で開く。
+	  例: app://chat/ses_xxx → アプリ起動 + 該当セッションを開く
+	-->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.local.claudepwaclient</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>app</string>
+			</array>
+		</dict>
 	</array>
 </dict>
 </plist>

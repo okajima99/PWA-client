@@ -7,7 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		198183075A3C90942FC86E76 /* OpenSSL.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 444E2B840EC09BD04F182813 /* OpenSSL.xcframework */; };
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
+		4C84A1C5E52210957FF656FB /* HavenClient.pem in Resources */ = {isa = PBXBuildFile; fileRef = DC9A28513683A73B17D73CF4 /* HavenClient.pem */; };
 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
 		4D9391A62573F6F72AB8EEED /* MoonlightPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4F2DC69B76033025EA697A7 /* MoonlightPlugin.swift */; };
 		50379B232058CBB4000EE86E /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 50379B222058CBB4000EE86E /* capacitor.config.json */; };
@@ -16,15 +18,18 @@
 		504EC30F1FED79650016851F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30E1FED79650016851F /* Assets.xcassets */; };
 		504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC3101FED79650016851F /* LaunchScreen.storyboard */; };
 		50B271D11FEDC1A000F3C39B /* public in Resources */ = {isa = PBXBuildFile; fileRef = 50B271D01FEDC1A000F3C39B /* public */; };
+		53E307809D50EBD6E2C2BBFE /* Moonlight.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9BC66FE8CB3A297BDE6AEF54 /* Moonlight.xcframework */; };
 		5DCA68FC0FCC42CF8AC6BAB4 /* MoonlightPlugin.m in Sources */ = {isa = PBXBuildFile; fileRef = 7EE1F0374476FF3A00FE8606 /* MoonlightPlugin.m */; };
-		64888F952AE0091EB7B8504E /* MoonlightBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB10DA78E3B22B0BDE2D3DF1 /* MoonlightBridge.swift */; };
 		BDF66758F00A7E62ECA1A37C /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A295CDAEB87AAC718D3F5D95 /* AudioPlayer.swift */; };
 		C1E7E5282428296EA3D09CEB /* VideoRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A28E204C65373AA530C22EF1 /* VideoRenderer.swift */; };
+		F3C8F13D63DA2126E2F84353 /* AppViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10FAFA98742C9D260B795F36 /* AppViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		0E17BD832A00B7E62018F290 /* App-Bridging-Header.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = "App-Bridging-Header.h"; sourceTree = "<group>"; };
+		10FAFA98742C9D260B795F36 /* AppViewController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppViewController.swift; sourceTree = "<group>"; };
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
+		444E2B840EC09BD04F182813 /* OpenSSL.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; name = OpenSSL.xcframework; path = Frameworks/OpenSSL.xcframework; sourceTree = "<group>"; };
 		50379B222058CBB4000EE86E /* capacitor.config.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; path = capacitor.config.json; sourceTree = "<group>"; };
 		504EC3041FED79650016851F /* App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = App.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		504EC3071FED79650016851F /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -35,9 +40,10 @@
 		50B271D01FEDC1A000F3C39B /* public */ = {isa = PBXFileReference; lastKnownFileType = folder; path = public; sourceTree = "<group>"; };
 		7EE1F0374476FF3A00FE8606 /* MoonlightPlugin.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = MoonlightPlugin.m; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
+		9BC66FE8CB3A297BDE6AEF54 /* Moonlight.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; name = Moonlight.xcframework; path = Frameworks/Moonlight.xcframework; sourceTree = "<group>"; };
 		A28E204C65373AA530C22EF1 /* VideoRenderer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VideoRenderer.swift; sourceTree = "<group>"; };
 		A295CDAEB87AAC718D3F5D95 /* AudioPlayer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
-		CB10DA78E3B22B0BDE2D3DF1 /* MoonlightBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoonlightBridge.swift; sourceTree = "<group>"; };
+		DC9A28513683A73B17D73CF4 /* HavenClient.pem */ = {isa = PBXFileReference; includeInIndex = 1; path = HavenClient.pem; sourceTree = "<group>"; };
 		E4F2DC69B76033025EA697A7 /* MoonlightPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoonlightPlugin.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -47,18 +53,30 @@
 			buildActionMask = 2147483647;
 			files = (
 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
+				53E307809D50EBD6E2C2BBFE /* Moonlight.xcframework in Frameworks */,
+				198183075A3C90942FC86E76 /* OpenSSL.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		22A3502FF1D96A873B975425 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				9BC66FE8CB3A297BDE6AEF54 /* Moonlight.xcframework */,
+				444E2B840EC09BD04F182813 /* OpenSSL.xcframework */,
+			);
+			name = Frameworks;
+			sourceTree = SOURCE_ROOT;
+		};
 		504EC2FB1FED79650016851F = {
 			isa = PBXGroup;
 			children = (
 				958DCC722DB07C7200EA8C5F /* debug.xcconfig */,
 				504EC3061FED79650016851F /* App */,
 				504EC3051FED79650016851F /* Products */,
+				22A3502FF1D96A873B975425 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -83,10 +101,11 @@
 				50B271D01FEDC1A000F3C39B /* public */,
 				E4F2DC69B76033025EA697A7 /* MoonlightPlugin.swift */,
 				7EE1F0374476FF3A00FE8606 /* MoonlightPlugin.m */,
-				CB10DA78E3B22B0BDE2D3DF1 /* MoonlightBridge.swift */,
 				A28E204C65373AA530C22EF1 /* VideoRenderer.swift */,
 				A295CDAEB87AAC718D3F5D95 /* AudioPlayer.swift */,
 				0E17BD832A00B7E62018F290 /* App-Bridging-Header.h */,
+				DC9A28513683A73B17D73CF4 /* HavenClient.pem */,
+				10FAFA98742C9D260B795F36 /* AppViewController.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -162,6 +181,7 @@
 				50379B232058CBB4000EE86E /* capacitor.config.json in Resources */,
 				504EC30D1FED79650016851F /* Main.storyboard in Resources */,
 				2FAD9763203C412B000D30F8 /* config.xml in Resources */,
+				4C84A1C5E52210957FF656FB /* HavenClient.pem in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -175,9 +195,9 @@
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				4D9391A62573F6F72AB8EEED /* MoonlightPlugin.swift in Sources */,
 				5DCA68FC0FCC42CF8AC6BAB4 /* MoonlightPlugin.m in Sources */,
-				64888F952AE0091EB7B8504E /* MoonlightBridge.swift in Sources */,
 				C1E7E5282428296EA3D09CEB /* VideoRenderer.swift in Sources */,
 				BDF66758F00A7E62ECA1A37C /* AudioPlayer.swift in Sources */,
+				F3C8F13D63DA2126E2F84353 /* AppViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -318,7 +338,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 19;
+				DEVELOPMENT_TEAM = <TEAM_ID>;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Frameworks",
+				);
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -341,7 +366,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 19;
+				DEVELOPMENT_TEAM = <TEAM_ID>;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Frameworks",
+				);
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (

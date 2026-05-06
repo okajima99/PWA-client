@@ -92,4 +92,9 @@ public final class AudioPlayer: NSObject {
         //   4. samplesDecoded 加算
         samplesDecoded &+= UInt64(opusFrame.count)
     }
+
+    /// MoonlightStream から呼ばれる薄い entry point。
+    public func submitOpus(data: UnsafePointer<UInt8>, length: Int) {
+        submit(opusFrame: Data(bytes: data, count: length))
+    }
 }

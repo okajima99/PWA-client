@@ -117,6 +117,20 @@ app.include_router(push.router)
 app.include_router(screen_routes.router)
 
 
+# --- AltStore 配信用 static mount ---
+# `altstore/apps.json` と .ipa を `/altstore/` で配信する。
+# iPhone の AltStore に Custom Source として
+# `http://user.tailnet.ts.net:8000/altstore/apps.json` を登録すれば、
+# .ipa の install / アップデートが iPhone 側完結で回る。
+ALTSTORE_DIR = Path(__file__).parent.parent / "altstore"
+if ALTSTORE_DIR.exists():
+    app.mount(
+        "/altstore",
+        StaticFiles(directory=str(ALTSTORE_DIR)),
+        name="altstore",
+    )
+
+
 # --- 静的ファイル配信 (Vite ビルド成果物) ---
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 
