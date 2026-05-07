@@ -14,7 +14,23 @@
 #ifndef App_Bridging_Header_h
 #define App_Bridging_Header_h
 
-// Phase 3 完了: Moonlight.xcframework 統合済 (libmoonlight-common-c.a + Limelight.h)
+// moonlight-common-c (XCFramework 経由)
 #import "Limelight.h"
+
+// SDL2: AppDelegate で SDL_SetMainReady() を呼ぶため bridging。 SDL_MAIN_HANDLED は
+// SDL の main ハイジャックを無効化、 = アプリ自身が UIApplicationMain を呼ぶ前提。
+// 公式 moonlight-ios の main.m と同じパターン。
+#define SDL_MAIN_HANDLED
+#import <SDL.h>
+
+// Phase 3 (= 公式 moonlight-ios の品質コア統合):
+// Connection / VideoDecoderRenderer / StreamConfiguration / Utils / Logger を
+// Swift 側 (MoonlightPlugin / MoonlightBridge) から直接呼べるよう expose する。
+#import "Connection.h"
+#import "VideoDecoderRenderer.h"
+#import "StreamConfiguration.h"
+#import "ConnectionCallbacks.h"
+#import "Utils.h"
+#import "Logger.h"
 
 #endif /* App_Bridging_Header_h */

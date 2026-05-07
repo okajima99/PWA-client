@@ -13,6 +13,14 @@ export class MoonlightWeb {
     return { paired: false, error: 'native_only' }
   }
 
+  async request() {
+    throw new Error('moonlight.request() is native-only')
+  }
+
+  async startStream() {
+    throw new Error('moonlight.startStream() is native-only')
+  }
+
   async connect() {
     return { connected: false, error: 'native_only' }
   }

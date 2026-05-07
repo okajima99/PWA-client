@@ -7,11 +7,19 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1497FE2703709DEDFF5F285B /* Connection.m in Sources */ = {isa = PBXBuildFile; fileRef = 26F0CEB320C618B2E38D0026 /* Connection.m */; };
+		155F57E146503C33D58B2F9F /* CoreMedia.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3375FF2C8260D2B8EDFA84EA /* CoreMedia.framework */; };
 		198183075A3C90942FC86E76 /* OpenSSL.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 444E2B840EC09BD04F182813 /* OpenSSL.xcframework */; };
+		1EC241DBB6C60C85DF88DF7C /* AudioToolbox.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 566AC86127FDDE2D869200E9 /* AudioToolbox.framework */; };
+		231A9ED5D2DC71E529C52E1F /* Logger.m in Sources */ = {isa = PBXBuildFile; fileRef = 0B9F8D9749A5AE9051C84074 /* Logger.m */; };
+		2512A40FE32F737F434CBAEC /* CoreHaptics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C8537986573BA1122ABBD1BF /* CoreHaptics.framework */; };
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
+		3D72F396E9567E83CE2DC7D1 /* CoreMotion.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D80448E5F8906C13CB33F998 /* CoreMotion.framework */; };
+		4281073CD4C9406B6B77AF1B /* VideoDecoderRenderer.m in Sources */ = {isa = PBXBuildFile; fileRef = 214BA1FE9157B46614FC85E9 /* VideoDecoderRenderer.m */; };
 		4C84A1C5E52210957FF656FB /* HavenClient.pem in Resources */ = {isa = PBXBuildFile; fileRef = DC9A28513683A73B17D73CF4 /* HavenClient.pem */; };
 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
 		4D9391A62573F6F72AB8EEED /* MoonlightPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4F2DC69B76033025EA697A7 /* MoonlightPlugin.swift */; };
+		4E382DC4E968F7AFDA44F2DA /* CFNetwork.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 089D203357C65B0A1ACA82F8 /* CFNetwork.framework */; };
 		50379B232058CBB4000EE86E /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 50379B222058CBB4000EE86E /* capacitor.config.json */; };
 		504EC3081FED79650016851F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504EC3071FED79650016851F /* AppDelegate.swift */; };
 		504EC30D1FED79650016851F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30B1FED79650016851F /* Main.storyboard */; };
@@ -20,15 +28,31 @@
 		50B271D11FEDC1A000F3C39B /* public in Resources */ = {isa = PBXBuildFile; fileRef = 50B271D01FEDC1A000F3C39B /* public */; };
 		53E307809D50EBD6E2C2BBFE /* Moonlight.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9BC66FE8CB3A297BDE6AEF54 /* Moonlight.xcframework */; };
 		5DCA68FC0FCC42CF8AC6BAB4 /* MoonlightPlugin.m in Sources */ = {isa = PBXBuildFile; fileRef = 7EE1F0374476FF3A00FE8606 /* MoonlightPlugin.m */; };
-		BDF66758F00A7E62ECA1A37C /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A295CDAEB87AAC718D3F5D95 /* AudioPlayer.swift */; };
-		C1E7E5282428296EA3D09CEB /* VideoRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A28E204C65373AA530C22EF1 /* VideoRenderer.swift */; };
+		681F608C3C8CDC4580D4B2A8 /* GameController.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C5C068BEFF8AE7C63D06AB43 /* GameController.framework */; };
+		85C682006D0BA31E90144573 /* DebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B2CEBC7C43CAF3CC824D692 /* DebugLog.swift */; };
+		866AB0CA31538B4C701F8704 /* VideoToolbox.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5E7F751904AE8B276607EDB6 /* VideoToolbox.framework */; };
+		8BAE3504BD6FD25D89696810 /* StreamConfiguration.m in Sources */ = {isa = PBXBuildFile; fileRef = DCA8AD7AF786F7DE09C00531 /* StreamConfiguration.m */; };
+		A7021B4FBCA56F66D8612544 /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B7F7741F6FD5495CE340A19C /* SystemConfiguration.framework */; };
+		B949B3548B33D3D1F7550A83 /* NvHTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD8525D3DC597F624B620A8 /* NvHTTPClient.swift */; };
+		D4D74CF0BCAE26DCF7CDA887 /* PairingManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7191B7C4C0386ACB25C1FF /* PairingManager.swift */; };
+		EA92685F176F2B1AC5310F4D /* Utils.m in Sources */ = {isa = PBXBuildFile; fileRef = 2A5F990594BB83BCBADF6775 /* Utils.m */; };
 		F3C8F13D63DA2126E2F84353 /* AppViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10FAFA98742C9D260B795F36 /* AppViewController.swift */; };
+		F74FFED672626A07F15FB7C9 /* MoonlightBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A65FA7ED315393DFC8BFF94 /* MoonlightBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		089D203357C65B0A1ACA82F8 /* CFNetwork.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CFNetwork.framework; path = System/Library/Frameworks/CFNetwork.framework; sourceTree = SDKROOT; };
+		0A65FA7ED315393DFC8BFF94 /* MoonlightBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoonlightBridge.swift; sourceTree = "<group>"; };
+		0B9F8D9749A5AE9051C84074 /* Logger.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = Logger.m; sourceTree = "<group>"; };
 		0E17BD832A00B7E62018F290 /* App-Bridging-Header.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = "App-Bridging-Header.h"; sourceTree = "<group>"; };
 		10FAFA98742C9D260B795F36 /* AppViewController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppViewController.swift; sourceTree = "<group>"; };
+		1D9D2E199611F96937DD3279 /* Logger.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = Logger.h; sourceTree = "<group>"; };
+		214BA1FE9157B46614FC85E9 /* VideoDecoderRenderer.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = VideoDecoderRenderer.m; sourceTree = "<group>"; };
+		26F0CEB320C618B2E38D0026 /* Connection.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = Connection.m; sourceTree = "<group>"; };
+		2A5F990594BB83BCBADF6775 /* Utils.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = Utils.m; sourceTree = "<group>"; };
+		2DD8525D3DC597F624B620A8 /* NvHTTPClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NvHTTPClient.swift; sourceTree = "<group>"; };
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
+		3375FF2C8260D2B8EDFA84EA /* CoreMedia.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
 		444E2B840EC09BD04F182813 /* OpenSSL.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; name = OpenSSL.xcframework; path = Frameworks/OpenSSL.xcframework; sourceTree = "<group>"; };
 		50379B222058CBB4000EE86E /* capacitor.config.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; path = capacitor.config.json; sourceTree = "<group>"; };
 		504EC3041FED79650016851F /* App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = App.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -38,13 +62,25 @@
 		504EC3111FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		504EC3131FED79650016851F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		50B271D01FEDC1A000F3C39B /* public */ = {isa = PBXFileReference; lastKnownFileType = folder; path = public; sourceTree = "<group>"; };
+		555CE0D0714DFDCA6919C467 /* ConnectionCallbacks.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = ConnectionCallbacks.h; sourceTree = "<group>"; };
+		566AC86127FDDE2D869200E9 /* AudioToolbox.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AudioToolbox.framework; path = System/Library/Frameworks/AudioToolbox.framework; sourceTree = SDKROOT; };
+		5E7F751904AE8B276607EDB6 /* VideoToolbox.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = VideoToolbox.framework; path = System/Library/Frameworks/VideoToolbox.framework; sourceTree = SDKROOT; };
+		6B2CEBC7C43CAF3CC824D692 /* DebugLog.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DebugLog.swift; sourceTree = "<group>"; };
 		7EE1F0374476FF3A00FE8606 /* MoonlightPlugin.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = MoonlightPlugin.m; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
+		959A5FFD0B34D89C2E00E6AC /* Connection.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = Connection.h; sourceTree = "<group>"; };
 		9BC66FE8CB3A297BDE6AEF54 /* Moonlight.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; name = Moonlight.xcframework; path = Frameworks/Moonlight.xcframework; sourceTree = "<group>"; };
-		A28E204C65373AA530C22EF1 /* VideoRenderer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VideoRenderer.swift; sourceTree = "<group>"; };
-		A295CDAEB87AAC718D3F5D95 /* AudioPlayer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
+		AB7191B7C4C0386ACB25C1FF /* PairingManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PairingManager.swift; sourceTree = "<group>"; };
+		B7F7741F6FD5495CE340A19C /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
+		C5C068BEFF8AE7C63D06AB43 /* GameController.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = GameController.framework; path = System/Library/Frameworks/GameController.framework; sourceTree = SDKROOT; };
+		C8537986573BA1122ABBD1BF /* CoreHaptics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreHaptics.framework; path = System/Library/Frameworks/CoreHaptics.framework; sourceTree = SDKROOT; };
+		D80448E5F8906C13CB33F998 /* CoreMotion.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMotion.framework; path = System/Library/Frameworks/CoreMotion.framework; sourceTree = SDKROOT; };
 		DC9A28513683A73B17D73CF4 /* HavenClient.pem */ = {isa = PBXFileReference; includeInIndex = 1; path = HavenClient.pem; sourceTree = "<group>"; };
+		DCA8AD7AF786F7DE09C00531 /* StreamConfiguration.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = StreamConfiguration.m; sourceTree = "<group>"; };
 		E4F2DC69B76033025EA697A7 /* MoonlightPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoonlightPlugin.swift; sourceTree = "<group>"; };
+		ECABE51C340ED89B530D7BAD /* StreamConfiguration.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = StreamConfiguration.h; sourceTree = "<group>"; };
+		F26E8756ACFF9D00604D5C28 /* Utils.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = Utils.h; sourceTree = "<group>"; };
+		FDEBC3A6310AB0E3799CE03D /* VideoDecoderRenderer.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = VideoDecoderRenderer.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -55,17 +91,45 @@
 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
 				53E307809D50EBD6E2C2BBFE /* Moonlight.xcframework in Frameworks */,
 				198183075A3C90942FC86E76 /* OpenSSL.xcframework in Frameworks */,
+				A7021B4FBCA56F66D8612544 /* SystemConfiguration.framework in Frameworks */,
+				4E382DC4E968F7AFDA44F2DA /* CFNetwork.framework in Frameworks */,
+				866AB0CA31538B4C701F8704 /* VideoToolbox.framework in Frameworks */,
+				1EC241DBB6C60C85DF88DF7C /* AudioToolbox.framework in Frameworks */,
+				155F57E146503C33D58B2F9F /* CoreMedia.framework in Frameworks */,
+				681F608C3C8CDC4580D4B2A8 /* GameController.framework in Frameworks */,
+				2512A40FE32F737F434CBAEC /* CoreHaptics.framework in Frameworks */,
+				3D72F396E9567E83CE2DC7D1 /* CoreMotion.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		075277A3E50D68A7A641DE9C /* Utils */ = {
+			isa = PBXGroup;
+			children = (
+				F26E8756ACFF9D00604D5C28 /* Utils.h */,
+				2A5F990594BB83BCBADF6775 /* Utils.m */,
+				1D9D2E199611F96937DD3279 /* Logger.h */,
+				0B9F8D9749A5AE9051C84074 /* Logger.m */,
+			);
+			name = Utils;
+			path = Utils;
+			sourceTree = "<group>";
+		};
 		22A3502FF1D96A873B975425 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
 				9BC66FE8CB3A297BDE6AEF54 /* Moonlight.xcframework */,
 				444E2B840EC09BD04F182813 /* OpenSSL.xcframework */,
+				B7F7741F6FD5495CE340A19C /* SystemConfiguration.framework */,
+				089D203357C65B0A1ACA82F8 /* CFNetwork.framework */,
+				5E7F751904AE8B276607EDB6 /* VideoToolbox.framework */,
+				566AC86127FDDE2D869200E9 /* AudioToolbox.framework */,
+				3375FF2C8260D2B8EDFA84EA /* CoreMedia.framework */,
+				C5C068BEFF8AE7C63D06AB43 /* GameController.framework */,
+				C8537986573BA1122ABBD1BF /* CoreHaptics.framework */,
+				D80448E5F8906C13CB33F998 /* CoreMotion.framework */,
 			);
 			name = Frameworks;
 			sourceTree = SOURCE_ROOT;
@@ -101,13 +165,32 @@
 				50B271D01FEDC1A000F3C39B /* public */,
 				E4F2DC69B76033025EA697A7 /* MoonlightPlugin.swift */,
 				7EE1F0374476FF3A00FE8606 /* MoonlightPlugin.m */,
-				A28E204C65373AA530C22EF1 /* VideoRenderer.swift */,
-				A295CDAEB87AAC718D3F5D95 /* AudioPlayer.swift */,
 				0E17BD832A00B7E62018F290 /* App-Bridging-Header.h */,
 				DC9A28513683A73B17D73CF4 /* HavenClient.pem */,
 				10FAFA98742C9D260B795F36 /* AppViewController.swift */,
+				0A65FA7ED315393DFC8BFF94 /* MoonlightBridge.swift */,
+				2DD8525D3DC597F624B620A8 /* NvHTTPClient.swift */,
+				AB7191B7C4C0386ACB25C1FF /* PairingManager.swift */,
+				761FDD652BE9657D3D0B1655 /* Stream */,
+				075277A3E50D68A7A641DE9C /* Utils */,
+				6B2CEBC7C43CAF3CC824D692 /* DebugLog.swift */,
 			);
 			path = App;
+			sourceTree = "<group>";
+		};
+		761FDD652BE9657D3D0B1655 /* Stream */ = {
+			isa = PBXGroup;
+			children = (
+				959A5FFD0B34D89C2E00E6AC /* Connection.h */,
+				26F0CEB320C618B2E38D0026 /* Connection.m */,
+				FDEBC3A6310AB0E3799CE03D /* VideoDecoderRenderer.h */,
+				214BA1FE9157B46614FC85E9 /* VideoDecoderRenderer.m */,
+				ECABE51C340ED89B530D7BAD /* StreamConfiguration.h */,
+				DCA8AD7AF786F7DE09C00531 /* StreamConfiguration.m */,
+				555CE0D0714DFDCA6919C467 /* ConnectionCallbacks.h */,
+			);
+			name = Stream;
+			path = Stream;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -195,9 +278,16 @@
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				4D9391A62573F6F72AB8EEED /* MoonlightPlugin.swift in Sources */,
 				5DCA68FC0FCC42CF8AC6BAB4 /* MoonlightPlugin.m in Sources */,
-				C1E7E5282428296EA3D09CEB /* VideoRenderer.swift in Sources */,
-				BDF66758F00A7E62ECA1A37C /* AudioPlayer.swift in Sources */,
 				F3C8F13D63DA2126E2F84353 /* AppViewController.swift in Sources */,
+				F74FFED672626A07F15FB7C9 /* MoonlightBridge.swift in Sources */,
+				B949B3548B33D3D1F7550A83 /* NvHTTPClient.swift in Sources */,
+				D4D74CF0BCAE26DCF7CDA887 /* PairingManager.swift in Sources */,
+				1497FE2703709DEDFF5F285B /* Connection.m in Sources */,
+				4281073CD4C9406B6B77AF1B /* VideoDecoderRenderer.m in Sources */,
+				8BAE3504BD6FD25D89696810 /* StreamConfiguration.m in Sources */,
+				EA92685F176F2B1AC5310F4D /* Utils.m in Sources */,
+				231A9ED5D2DC71E529C52E1F /* Logger.m in Sources */,
+				85C682006D0BA31E90144573 /* DebugLog.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -344,13 +434,42 @@
 					"$(inherited)",
 					"$(SRCROOT)/Frameworks",
 				);
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/App/libs/SDL2/include",
+					"$(SRCROOT)/App/libs/opus/include",
+					"$(SRCROOT)/App/libs/opus/include/opus",
+					"$(SRCROOT)/App/libs/FFmpeg/include",
+					"$(SRCROOT)/App/Stream",
+					"$(SRCROOT)/App/Utils",
+				);
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/App/libs/SDL2/lib/iOS",
+					"$(SRCROOT)/App/libs/opus/lib/iOS",
+					"$(SRCROOT)/App/libs/FFmpeg/lib/iOS",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+					"$(SRCROOT)/App/libs/SDL2/lib/iOS-Sim",
+					"$(SRCROOT)/App/libs/opus/lib/iOS-Sim",
+					"$(SRCROOT)/App/libs/FFmpeg/lib/iOS-Sim",
+					"$(inherited)",
+				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lSDL2",
+					"-lopus",
+					"-lavcodec",
+					"-lavformat",
+					"-lavutil",
+				);
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
 				PRODUCT_BUNDLE_IDENTIFIER = com.local.claudepwaclient;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -372,13 +491,42 @@
 					"$(inherited)",
 					"$(SRCROOT)/Frameworks",
 				);
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/App/libs/SDL2/include",
+					"$(SRCROOT)/App/libs/opus/include",
+					"$(SRCROOT)/App/libs/opus/include/opus",
+					"$(SRCROOT)/App/libs/FFmpeg/include",
+					"$(SRCROOT)/App/Stream",
+					"$(SRCROOT)/App/Utils",
+				);
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/App/libs/SDL2/lib/iOS",
+					"$(SRCROOT)/App/libs/opus/lib/iOS",
+					"$(SRCROOT)/App/libs/FFmpeg/lib/iOS",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+					"$(SRCROOT)/App/libs/SDL2/lib/iOS-Sim",
+					"$(SRCROOT)/App/libs/opus/lib/iOS-Sim",
+					"$(SRCROOT)/App/libs/FFmpeg/lib/iOS-Sim",
+					"$(inherited)",
+				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lSDL2",
+					"-lopus",
+					"-lavcodec",
+					"-lavformat",
+					"-lavutil",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.local.claudepwaclient;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";

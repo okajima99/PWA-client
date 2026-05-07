@@ -6,7 +6,7 @@ import StatusBar from './components/StatusBar.jsx'
 import SessionDrawer from './components/SessionDrawer.jsx'
 import StorageWarning from './components/StorageWarning.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
-import DesktopView from './components/DesktopView.jsx'
+// DesktopView (旧 WebRTC 画面共有) は削除済。 Moonlight 経路の native 描画に統合。
 import { API_BASE, LS_SESSION_ACTIVITY } from './constants.js'
 import { useStatus } from './hooks/useStatus.js'
 import { useAttachments } from './hooks/useAttachments.js'
@@ -15,7 +15,7 @@ import { useAutoScroll } from './hooks/useAutoScroll.js'
 import { useChatStream } from './hooks/useChatStream.js'
 import { useSessions } from './hooks/useSessions.js'
 import { useStorageQuota } from './hooks/useStorageQuota.js'
-import { useDesktopShare } from './hooks/useDesktopShare.js'
+// useDesktopShare (旧 WebRTC 画面共有) は削除済。 Moonlight stream に統合。
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
 import { syncBadgeFromServer } from './utils/badge.js'
@@ -61,7 +61,7 @@ export default function App() {
     scrollToBottom, isAtBottomRef,
   })
 
-  const desktopShare = useDesktopShare()
+  // const desktopShare = useDesktopShare()  // 削除: 旧 WebRTC 経路、 Moonlight stream に置換
   const storageInfo = useStorageQuota()
 
   // ドロワー並び順用に「最後に何かメッセージが増えた時刻」 を session_id 別に持つ。
@@ -236,6 +236,122 @@ export default function App() {
     }
   }, [])
 
+  // 物理キーボード → Mac へ転送 (= stream 接続中のみ)。 chat 側 textarea / input にフォーカス
+  // してる時は除外 (= chat に typing 優先)。 build 27 plugin の sendKeyEvent を呼ぶ。
+  useEffect(() => {
+    if (!window.Capacitor?.isNativePlatform?.()) return
+    let mod = null
+    let mappers = null
+    ;(async () => {
+      mod = await import('./native/moonlight.js')
+      mappers = await import('./native/keyboard-map.js')
+    })()
+
+    const isInputFocused = () => {
+      const a = document.activeElement
+      if (!a) return false
+      const tag = a.tagName
+      return tag === 'TEXTAREA' || tag === 'INPUT' || a.isContentEditable
+    }
+
+    const send = (action) => (ev) => {
+      if (!window.__havenStreaming) return
+      if (isInputFocused()) return
+      if (!mod || !mappers) return
+      const m = mappers.mapKeyEventToVK(ev)
+      if (!m) return
+      mod.sendKeyEvent(m.keyCode, m.modifiers, action).catch(() => {})
+      ev.preventDefault()
+    }
+
+    const onDown = send('down')
+    const onUp = send('up')
+    document.addEventListener('keydown', onDown, { capture: true })
+    document.addEventListener('keyup', onUp, { capture: true })
+    return () => {
+      document.removeEventListener('keydown', onDown, { capture: true })
+      document.removeEventListener('keyup', onUp, { capture: true })
+    }
+  }, [])
+
+  // stream の表示位置を「<div className="video-slot">」 の位置に追従させる。
+  // 接続後 + ResizeObserver で位置・サイズを native view に伝える。
+  const videoSlotRef = useRef(null)
+  useEffect(() => {
+    if (!window.Capacitor?.isNativePlatform?.()) return
+    const el = videoSlotRef.current
+    if (!el) return
+    let cancelled = false
+    let ro = null
+    let onResize = null
+    ;(async () => {
+      const { Capacitor } = await import('@capacitor/core')
+      const Moonlight = Capacitor.Plugins?.Moonlight
+      if (!Moonlight || cancelled) return
+      const update = () => {
+        const r = el.getBoundingClientRect()
+        if (r.width > 0 && r.height > 0) {
+          Moonlight.setVideoFrame({ x: r.left, y: r.top, width: r.width, height: r.height }).catch(() => {})
+        }
+      }
+      update()
+      ro = new ResizeObserver(update)
+      ro.observe(el)
+      onResize = update
+      window.addEventListener('resize', onResize)
+      window.addEventListener('orientationchange', onResize)
+    })()
+    return () => {
+      cancelled = true
+      if (ro) ro.disconnect()
+      if (onResize) {
+        window.removeEventListener('resize', onResize)
+        window.removeEventListener('orientationchange', onResize)
+      }
+    }
+  }, [])
+
+  // stream の stage / status を購読 (= build 27 native plugin の statusChange イベント)。
+  // 接続シーケンス進行中は薄い line で「control stream establishment...」 等を表示、
+  // videoContentShown で「表示中」 → しばらくして自動非表示、 失敗時は error chip。
+  const [streamStatus, setStreamStatus] = useState(null)
+  useEffect(() => {
+    if (!window.Capacitor?.isNativePlatform?.()) return
+    let unsubscribe = null
+    let hideTimer = null
+    ;(async () => {
+      const m = await import('./native/moonlight.js')
+      unsubscribe = m.onStatus((data) => {
+        const event = data?.event
+        if (event === 'stageStarting') {
+          setStreamStatus({ kind: 'progress', text: data.name + ' …' })
+        } else if (event === 'stageComplete') {
+          // 進行中なら更新、 final stage は次の stageStarting で上書きされるので noop でも OK
+          setStreamStatus({ kind: 'progress', text: data.name + ' ✓' })
+        } else if (event === 'stageFailed') {
+          setStreamStatus({ kind: 'error', text: `${data.name} 失敗 (code=${data.code})` })
+        } else if (event === 'connectionStarted') {
+          setStreamStatus({ kind: 'progress', text: '接続確立、 frame 待機…' })
+        } else if (event === 'videoContentShown') {
+          setStreamStatus({ kind: 'ok', text: '表示中' })
+          clearTimeout(hideTimer)
+          hideTimer = setTimeout(() => setStreamStatus(null), 1500)
+        } else if (event === 'connectionTerminated') {
+          setStreamStatus({ kind: 'error', text: `切断 (code=${data.code})` })
+          clearTimeout(hideTimer)
+          hideTimer = setTimeout(() => setStreamStatus(null), 3000)
+        } else if (event === 'userClosed') {
+          setStreamStatus(null)
+          clearTimeout(hideTimer)
+        }
+      })
+    })()
+    return () => {
+      if (unsubscribe) unsubscribe()
+      clearTimeout(hideTimer)
+    }
+  }, [])
+
   const handleAnswer = useCallback((tool_use_id, answer) => {
     if (!activeSid) return
     sendAnswer(activeSid, tool_use_id, answer)
@@ -401,17 +517,7 @@ export default function App() {
           ☰
         </button>
         <span className="topbar-title">{activeSession?.title || '会話なし'}</span>
-        <button
-          className={`screen-toggle ${desktopShare.connected ? 'active' : ''} ${desktopShare.connecting ? 'connecting' : ''}`}
-          onClick={() => {
-            if (desktopShare.connected || desktopShare.connecting) desktopShare.disconnect()
-            else desktopShare.connect()
-          }}
-          aria-label="デスクトップ画面共有"
-          title={desktopShare.error || (desktopShare.connected ? '切断' : '接続')}
-        >
-          🖥
-        </button>
+        {/* 旧 WebRTC 画面共有 (🖥 旧版) は削除済。 Moonlight stream の 🖥 ボタンに統合。 */}
         {/* Sunshine ペアリング: native (App) のみ表示。 PWA では PushManager 等
             と同じく機能しないので window.Capacitor で判定。 */}
         {window.Capacitor?.isNativePlatform?.() && (
@@ -475,35 +581,49 @@ export default function App() {
             className="screen-toggle"
             onClick={async () => {
               const m = await import('./native/moonlight.js')
+              // 既に接続中 / 接続処理中なら disconnect 経路 (= 二重 tap 防止、 build 26 ログ反省)
               if (window.__havenStreaming) {
                 try { await m.disconnect() } catch {}
                 window.__havenStreaming = false
                 return
               }
+              // tap 直後に true 立てる: connect が完了する前に user が再 tap しても、
+              // ここに入って disconnect 経路に分岐するので並行 startStream を防げる。
+              window.__havenStreaming = true
               try {
                 await m.connect({ host: 'user.tailnet.ts.net' })
-                window.__havenStreaming = true
               } catch (e) {
+                // 接続失敗時は false に戻す (= 次回 tap で再接続可能に)
+                window.__havenStreaming = false
                 window.alert('接続失敗: ' + (e.message || e))
               }
             }}
-            aria-label="Mac 画面ストリーム"
-            title="Sunshine と stream 接続/切断 (ペア済前提)"
+            aria-label="デスクトップに繋ぐ"
+            title="Mac のデスクトップに接続 / 切断 (Sunshine 経由、 ペア済前提)"
           >
-            🎬
+            🖥
           </button>
         )}
       </header>
 
-      {(desktopShare.connecting || desktopShare.connected) && (
-        <DesktopView
-          stream={desktopShare.stream}
-          error={desktopShare.error}
-          onRetry={async () => {
-            await desktopShare.disconnect()
-            desktopShare.connect()
-          }}
-          onCancel={() => desktopShare.disconnect()}
+      {/* 旧 DesktopView (WebRTC) は削除済。 Moonlight stream は native AVSampleBufferDisplayLayer で描画 */}
+      {streamStatus && (
+        <div className={`stream-status-line ${streamStatus.kind}`}>
+          {streamStatus.kind === 'progress' && '⏳ '}
+          {streamStatus.kind === 'ok' && '✓ '}
+          {streamStatus.kind === 'error' && '⚠ '}
+          {streamStatus.text}
+        </div>
+      )}
+      {/* stream の native view を React の <div> 位置にフィットさせる用の placeholder。
+        topbar の下、 messages-container の上、 横幅いっぱい、 高さ = width * 9/16 (= 16:9 Mac画面)。
+        接続中は ref から getBoundingClientRect を取って Moonlight.setVideoFrame に渡す
+        → native streamView がここの位置・サイズに移動する。 */}
+      {window.Capacitor?.isNativePlatform?.() && (
+        <div
+          ref={videoSlotRef}
+          className="video-slot"
+          style={{ display: window.__havenStreaming ? 'block' : 'none' }}
         />
       )}
 
@@ -524,10 +644,12 @@ export default function App() {
         onTogglePush={handleTogglePush}
       />
 
-      {/* メッセージ一覧 */}
+      {/* メッセージ一覧。 .messages は flex-direction: column-reverse (App.css)、
+        起動時に scroll 操作なしで最新メッセージが下に見える構造。 displayMessages を
+        逆順 render することで column-reverse と相殺し「古い→新しい (上→下)」 配置になる。 */}
       <div className="messages-container">
         <div ref={scrollerDomRef} className="messages" onScroll={onScroll}>
-          {displayMessages.map((msg) => (
+          {[...displayMessages].reverse().map((msg) => (
             <MessageItem
               key={msg.id}
               msg={msg}

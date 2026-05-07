@@ -1,5 +1,11 @@
 import UIKit
 import Capacitor
+import AVFoundation
+
+// 画面回転 lock 管理 (= web から MoonlightPlugin.setOrientationLock で切替)
+@objc class HavenOrientation: NSObject {
+    @objc static var locked: String = "auto"  // "auto" / "portrait" / "landscape" / "landscapeLeft" / "landscapeRight"
+}
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -7,7 +13,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        // build 29 から維持: SDL2 は main を SDL_main にハイジャックする仕組みだが
+        // SDL_MAIN_HANDLED 定義済なので明示で SDL_SetMainReady() を呼ぶ。 これがないと
+        // SDL_InitSubSystem が「not initialized」 で失敗する。
+        SDL_SetMainReady()
+
+        // build 33: AVAudioSession の設定は AppDelegate ではなく Connection.m::ArInit で行う
+        // (= 公式 moonlight-ios と一致、 SDL_InitSubSystem 直前で setCategory するパターン)。
+        // AppDelegate で先に取ると WKWebView 起動で奪われ + WKWebView がデバイスを Ambient 系で
+        // 開いた状態に固定されて、 SDL の preferred sample rate が無視される (SDL #9635) → 機械音。
+        // ArInit に集約することで SDL audio device 開く直前のタイミング保証する。
         return true
     }
 
@@ -44,6 +59,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Feel free to add additional processing here, but if you want the App API to support
         // tracking app url opens, make sure to keep this call
         return ApplicationDelegateProxy.shared.application(application, continue: userActivity, restorationHandler: restorationHandler)
+    }
+
+    // 画面回転 lock 制御 (HavenOrientation.locked を読んで supported orientation を返す)
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        switch HavenOrientation.locked {
+        case "portrait": return .portrait
+        case "landscape": return .landscape
+        case "landscapeLeft": return [.landscapeLeft]
+        case "landscapeRight": return [.landscapeRight]
+        default: return .all
+        }
     }
 
 }

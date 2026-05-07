@@ -38,6 +38,7 @@ from session_logging import close_all as close_all_session_logs, prune_all_exist
 from state import sessions_meta, stream_states  # noqa: E402
 
 import chat_routes  # noqa: E402
+import debug_routes  # noqa: E402
 import files_routes  # noqa: E402
 import proxy_routes  # noqa: E402
 import push  # noqa: E402
@@ -111,6 +112,7 @@ app.add_middleware(
 )
 
 app.include_router(chat_routes.router)
+app.include_router(debug_routes.router)
 app.include_router(files_routes.router)
 app.include_router(proxy_routes.router)
 app.include_router(push.router)

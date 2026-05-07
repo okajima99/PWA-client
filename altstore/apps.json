@@ -23,6 +23,186 @@
             "versions": [
                 {
                     "version": "1.0",
+                    "buildVersion": "39",
+                    "date": "2026-05-07T13:30:00+09:00",
+                    "localizedDescription": "ブチ切れ音 (= jitter で audio packet underrun) 対策 (web 調査 2 本確証): (1) LiGetPendingAudioDuration の閾値を 30ms → 100ms に上げて jitter 吸収余裕を持たせる。 公式 SDL2 は内部 ring buffer + SDL_Delay で待機 (block) するが私の AVAudioEngine 実装は drop only、 100ms に上げて Tailscale jitter (max 340ms 観測) で 1-2 packet 遅延を吸収可能に。 (2) ArInit で [g_audioPlayer play] を再度呼ぶ (= build 36 状態、 build 37 で「empty queue で play は問題」 と思った判断を撤回 = 公式 docs では問題なし)。 latency が 30ms → 100ms に増えるが体感差微小、 機械音より遥かにマシ。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b39.ipa",
+                    "size": 1896672,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "38",
+                    "date": "2026-05-07T13:10:00+09:00",
+                    "localizedDescription": "audio packet drop 真因絞り込み用 verbose log: ClLogMessage (= moonlight-common-c の internal log callback) を stderr → HavenDebugLog にリダイレクト。 これで AudioReceiveThread / AudioDecoderThread の内部状態 (= packet 受信・decryption・queue・decode の各段階) が /tmp/app-debug.log に出る。 Sunshine は audio packet 連発送信中、 iPhone の moonlight-common-c はそれを受信して何かで drop してる状態、 真因確定狙い。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b38.ipa",
+                    "size": 1896658,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "37",
+                    "date": "2026-05-07T12:50:00+09:00",
+                    "localizedDescription": "AVAudioEngine 実装の bug fix (= 公式 Moonlight で音出る、 App のみ無音 → 自作アプリ側の問題確定)。 (1) ArInit から [g_audioPlayer play] 削除、 ArDecodeAndPlaySample の最初の schedule 後に play (= empty queue で play すると以降の scheduleBuffer 無視される pattern 回避)。 (2) buffer 書き込みを int16ChannelData[0] 経由に変更 (= Apple 推奨 API)。 (3) ArDecodeAndPlaySample の呼び出し counter log 追加 (= 真因切り分け、 呼ばれてれば AVAudioEngine 出力経路の問題、 呼ばれてなければ moonlight-common-c の audio thread が動いてない)。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b37.ipa",
+                    "size": 1896464,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "36",
+                    "date": "2026-05-07T08:30:00+09:00",
+                    "localizedDescription": "audio path を SDL2 → AVAudioEngine 直接実装に切替 (Capacitor + WKWebView 環境で SDL の iOS audio backend が壊れる問題の根本対策)。 Connection.m の ArInit / ArDecodeAndPlaySample / ArCleanup を AVAudioEngine + AVAudioPlayerNode + AVAudioPCMBuffer ベースに書き換え。 libopus decode は維持 (= 公式と同じ)、 decode 後の PCM 出力経路だけ iOS native に変更。 公式 Apple Music / Spotify と同じ audio 経路、 音質は同等以上 (= 余計な mixer 層なし)。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b36.ipa",
+                    "size": 1896037,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "35",
+                    "date": "2026-05-06T23:55:00+09:00",
+                    "localizedDescription": "機械音真因対策 (web 調査 3 本で確証): SDL_AudioSpec.samples を 240 (= 5ms@48kHz) → 1024 (= 約 21ms) に増やす。 公式 moonlight-ios は 240 で動くが Capacitor + WebView 介在の App では audio thread の余裕が薄く buffer underrun → クリック/機械音、 と判明。 buffer 拡張で underrun 解消狙い。 他の改変は無し (= build 34 ベース、 公式 100% 一致 + samples のみ変更)。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b35.ipa",
+                    "size": 2061122,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "34",
+                    "date": "2026-05-06T23:38:00+09:00",
+                    "localizedDescription": "build 33 で音が出なくなった原因の絞り込み: ArInit を公式 moonlight-ios::Connection.m と 100% 一致に戻した。 削除した余計な改変: (a) SDL_HINT_AUDIO_CATEGORY = playback、 (b) setActive(YES) を ArInit で呼ぶ (= 公式は呼ばない、 これが他 audio session を deactivate して output 抑制してた最有力)、 (c) SDL_OpenAudioDevice の ALLOW_*_CHANGE flags、 (d) setCategory を SDL_OpenAudioDevice の前に置く配置。 公式の順序 = SDL_InitSubSystem → SDL_OpenAudioDevice (allowed=0) → opus init → SDL_PauseAudioDevice → setCategory(Playback, MixWithOthers) を最後。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b34.ipa",
+                    "size": 2061160,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "33",
+                    "date": "2026-05-06T23:30:00+09:00",
+                    "localizedDescription": "audio 機械音 + 常時ノイズ 真因対策 (web 調査 3 本で確証): (1) AVAudioSession 設定を AppDelegate から削除 → Connection.m::ArInit に集約 (= 公式 moonlight-ios と同一スレッド連続実行、 WKWebView の Ambient 上書きを排除)。 (2) setCategory(Playback, MixWithOthers) で WebView との共存可能。 (3) SDL_HINT_AUDIO_CATEGORY=playback を SDL_Init 前に設定。 (4) SDL_OpenAudioDevice に SDL_AUDIO_ALLOW_FREQUENCY_CHANGE 渡す (SDL #9635 = iOS で preferred sample rate 無視、 実 HW rate と差を SDL がリサンプリングで吸収)。 (5) have の実値を log 出力して mismatch 検出可能に。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b33.ipa",
+                    "size": 2062519,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "32",
+                    "date": "2026-05-06T23:05:00+09:00",
+                    "localizedDescription": "audio 公式同等化 + キーボード位置 fix: (1) AppDelegate から setPreferredSampleRate / setPreferredIOBufferDuration を削除 (= SDL の RemoteIO unit と競合してたノイズ + 常時無音中ノイズの仮説)、 公式 moonlight-ios と完全一致の setCategory + setActive のみに。 (2) setVideoFrame で WebView origin を加算して画面絶対座標 → キーボード退避で WebView が上シフトしても streamView は画面上端に固定 (= 入力欄が見える、 video が下に降りない)。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b32.ipa",
+                    "size": 2062939,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "31",
+                    "date": "2026-05-06T22:58:00+09:00",
+                    "localizedDescription": "音崩れ修正: AVAudioSession の mode を .moviePlayback → .default (= 公式 moonlight-ios と一致、 iOS 18 の spatial audio 干渉回避) + setPreferredSampleRate(48000) + setPreferredIOBufferDuration(5ms) で resample 防止。 ArInit 内の setActive 重複も削除 (= SDL audio device との競合回避)。 stream view 位置は web 側 video-slot div の getBoundingClientRect を setVideoFrame で追従 (= topbar 下に配置可能)。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b31.ipa",
+                    "size": 2063007,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "30",
+                    "date": "2026-05-06T22:50:00+09:00",
+                    "localizedDescription": "stream view を 16:9 アスペクト比に修正 (= 黒余白なくして Mac 画面フィット表示) + setVideoFrame method 実装 (= web から streamView の frame を動的変更可能、 以降サイズ調整は web 更新だけで反映)。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b30.ipa",
+                    "size": 2062680,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "29",
+                    "date": "2026-05-06T22:46:00+09:00",
+                    "localizedDescription": "audio establishment 真の真因 fix: AppDelegate で SDL_SetMainReady() 追加。 公式 moonlight-ios は main.m で UIApplicationMain 前に呼んでるが、 Capacitor の Swift template には main.m が無く、 SDL2 が「not initialized」 で SDL_InitSubSystem が失敗してた。 これで audio device 取得 → audio establishment 通る → video 描画開始の連鎖が動くはず。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b29.ipa",
+                    "size": 2060967,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "28",
+                    "date": "2026-05-06T22:42:00+09:00",
+                    "localizedDescription": "audio establishment 真因対策: Connection.m::ArInit の冒頭に AVAudioSession.setCategory(.playback) + setActive(true) を強制実行 (= AppDelegate での設定が Capacitor WebView 起動で上書きされる仮説への対処)。 公式 moonlight-ios の StreamFrameViewController と同じパターン。 SDL_OpenAudioDevice が成功すれば audio establishment が通り、 video も連動して描画開始。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b28.ipa",
+                    "size": 2060912,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "27",
+                    "date": "2026-05-06T17:30:00+09:00",
+                    "localizedDescription": "真の最終 archive 完成版: Phase 3 audio fix + Phase 5 PiP + Phase 5.5 全パソコン操作 + 観測 (getStats) + IME (sendUtf8Text) + 高解像度スクロール + IDR 再要求 + 接続 interrupt + 画面回転 lock + Haptic。 Face ID 起動ロックは iOS 16+ 標準機能 (= ホーム画面 App 長押し → 「Face ID でロック」) で代替。 以降の Phase 4/5/5.5/6 一部/7 は全部 web 更新だけで進められる (= AltStore Update 不要)。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b27.ipa",
+                    "size": 2060610,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "26",
+                    "date": "2026-05-06T16:30:00+09:00",
+                    "localizedDescription": "Phase 3 build 26 (= 最後の archive を目標、 web 主導アーキテクチャ): native plugin を generic API (request / startStream / pair / disconnect) のみに縮小、 接続フロー (serverinfo → cancel → applist → launch) と値計算は frontend/src/native/moonlight-flow.js に移動。 audio bypass 込み (SDL2 が device 開けなくても video 続行)。 以降の修正は npm run build + cap sync ios で iPhone 側に即反映、 archive 不要。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b26.ipa",
+                    "size": 2051036,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "25",
+                    "date": "2026-05-06T16:18:00+09:00",
+                    "localizedDescription": "Phase 3 build 25: audioConfiguration を 196610 → 0x302CA (197322) に修正。 MAKE_AUDIO_CONFIGURATION マクロの 0xCA suffix を見落としてた誤値で LiStartConnection が rc=-1 即 reject していた真因対策 (build 24 観測で確定)。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b25.ipa",
+                    "size": 2046683,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "24",
+                    "date": "2026-05-06T16:14:00+09:00",
+                    "localizedDescription": "Phase 3 build 24: 観測点強化。 Connection 起動経路の各段階に DebugLog 仕込み (startConnection 開始 / renderer 初期化 / Connection init / queue 投入 / Connection.m::main 進入 / LiStartConnection 戻り値)。 sessionUrl0 取得後の沈黙箇所を特定する用。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b24.ipa",
+                    "size": 2046666,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "23",
+                    "date": "2026-05-06T16:09:00+09:00",
+                    "localizedDescription": "Phase 3 build 23: connect 直前に /cancel を投げて Sunshine の currentgame をクリア (= sessionUrl0 missing 真因対策、 過去 launch の running app が残ってると 400 で sessionUrl0 が返らない問題)。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b23.ipa",
+                    "size": 2046280,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "22",
+                    "date": "2026-05-06T16:06:00+09:00",
+                    "localizedDescription": "Phase 3 build 22: NSLog → backend POST /debug/log 経由ログ集約 (iOS 18 で idevicesyslog が NSLog を relay しない問題の回避策)。 これでログが /tmp/app-debug.log に出るので sessionUrl0 missing の原因を観測できる。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b22.ipa",
+                    "size": 2045640,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "21",
+                    "date": "2026-05-06T15:55:00+09:00",
+                    "localizedDescription": "Phase 3 build 21: (1) /applist で app id を動的取得 (= sessionUrl0 missing 真因対策、 ハードコード 881448767 廃止)、 (2) streamView を上半分配置 + 右上 ✕ ボタン (画面真っ黒 fix、 build 17 layout 復活)、 (3) NvHTTP の URL + レスポンス全文を NSLog に流す (沼回避の観測ベース)。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b21.ipa",
+                    "size": 2044432,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
+                    "buildVersion": "20",
+                    "date": "2026-05-06T15:42:00+09:00",
+                    "localizedDescription": "Phase 3 ハイブリッド: 公式 moonlight-ios の Connection / VideoDecoderRenderer / SDL+opus audio 統合 (品質コア = 公式の枯れた実装)。 自前 stream / decode は廃棄、 pairing は B 側を流用。",
+                    "downloadURL": "https://user.tailnet.ts.net/altstore/claude-pwa-client-1.0-b20.ipa",
+                    "size": 2037818,
+                    "minOSVersion": "13.0"
+                },
+                {
+                    "version": "1.0",
                     "buildVersion": "19",
                     "date": "2026-05-06T14:35:00+09:00",
                     "localizedDescription": "Phase 3: VideoRenderer の H.264 decode 実装 (Annex B → AVCC → CMSampleBuffer → AVSampleBufferDisplayLayer)。 これで Mac 画面が iPhone 上半分に映るはず。",
