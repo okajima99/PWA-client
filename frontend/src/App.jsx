@@ -3,10 +3,8 @@ import './App.css'
 import MessageItem from './components/MessageItem.jsx'
 import ActivityBar from './components/ActivityBar.jsx'
 import StatusBar from './components/StatusBar.jsx'
-import SessionDrawer from './components/SessionDrawer.jsx'
 import StorageWarning from './components/StorageWarning.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
-// DesktopView (旧 WebRTC 画面共有) は削除済。 Moonlight 経路の native 描画に統合。
 import { API_BASE, LS_SESSION_ACTIVITY } from './constants.js'
 import { useStatus } from './hooks/useStatus.js'
 import { useAttachments } from './hooks/useAttachments.js'
@@ -15,12 +13,27 @@ import { useAutoScroll } from './hooks/useAutoScroll.js'
 import { useChatStream } from './hooks/useChatStream.js'
 import { useSessions } from './hooks/useSessions.js'
 import { useStorageQuota } from './hooks/useStorageQuota.js'
-// useDesktopShare (旧 WebRTC 画面共有) は削除済。 Moonlight stream に統合。
+import {
+  usePushState,
+  useReadOnSessionOpen,
+  useBadgeSync,
+  useDeepLink,
+  useSessionActivity,
+  useSessionBadges,
+  useImeBridge,
+  usePhysicalKeyboardForward,
+} from './hooks/useNativeBridges.js'
+import {
+  useMoonlightStreamPosition,
+  useStreamGestures,
+  useStreamStatusListener,
+} from './hooks/useStreamControl.js'
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
-import { syncBadgeFromServer } from './utils/badge.js'
 const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
 const FileTreePanel = lazy(() => import('./FileTreePanel.jsx'))
+// SessionDrawer は drawerOpen=true の時のみ render = 遅延 load 妥当 (= 初回 paint 早く)
+const SessionDrawer = lazy(() => import('./components/SessionDrawer.jsx'))
 
 export default function App() {
   // セッション (= UI 上のタブ = 1 議題) 管理
@@ -61,67 +74,10 @@ export default function App() {
     scrollToBottom, isAtBottomRef,
   })
 
-  // const desktopShare = useDesktopShare()  // 削除: 旧 WebRTC 経路、 Moonlight stream に置換
   const storageInfo = useStorageQuota()
 
-  // ドロワー並び順用に「最後に何かメッセージが増えた時刻」 を session_id 別に持つ。
-  // localStorage に永続化、 reload 後も「最近更新があった会話」 が上に来る。
-  // 値: { length: 直近の messages 件数, ts: その時の Date.now() }
-  const [sessionActivity, setSessionActivity] = useState(() => {
-    try {
-      const raw = localStorage.getItem(LS_SESSION_ACTIVITY)
-      if (raw) {
-        const parsed = JSON.parse(raw)
-        if (parsed && typeof parsed === 'object') return parsed
-      }
-    } catch { /* ignore */ }
-    return {}
-  })
-  // messages の length 増加を見て activity ts を更新する。
-  // 初回ロード時に既存件数 → ts を仮置きするのは avoid (= 永続値が無ければ created_at をそのまま使う)。
-  useEffect(() => {
-    setSessionActivity(prev => {
-      let changed = false
-      const next = { ...prev }
-      const now = Date.now()
-      for (const sid of Object.keys(messages)) {
-        const arr = messages[sid] || []
-        const cur = next[sid]
-        if (!cur) {
-          // 永続値なし: 既存件数だけ記録、 ts は据え置き (= created_at fallback で sort される)
-          if (arr.length > 0) {
-            next[sid] = { length: arr.length, ts: 0 }
-            changed = true
-          }
-          continue
-        }
-        if (arr.length > cur.length) {
-          // 増えた = 新着活動 → ts 更新
-          next[sid] = { length: arr.length, ts: now }
-          changed = true
-        } else if (arr.length < cur.length) {
-          // 減った (削除等) → length のみ追従、 ts はそのまま
-          next[sid] = { length: arr.length, ts: cur.ts }
-          changed = true
-        }
-      }
-      return changed ? next : prev
-    })
-  }, [messages])
-  // localStorage に永続化
-  useEffect(() => {
-    try { localStorage.setItem(LS_SESSION_ACTIVITY, JSON.stringify(sessionActivity)) } catch { /* ignore */ }
-  }, [sessionActivity])
-
-  // SessionDrawer に渡す前に「最終活動時刻」 降順でソート。
-  // 活動 ts が 0 (未活動) または無い場合は created_at を fallback に使う。
-  const sortedSessions = useMemo(() => {
-    return [...sessions].sort((a, b) => {
-      const ta = (sessionActivity[a.id]?.ts) || ((a.created_at || 0) * 1000)
-      const tb = (sessionActivity[b.id]?.ts) || ((b.created_at || 0) * 1000)
-      return tb - ta
-    })
-  }, [sessions, sessionActivity])
+  // ドロワー並び順 / session 活動時刻
+  const { sortedSessions } = useSessionActivity(messages, sessions)
 
   const [storageWarnDismissed, setStorageWarnDismissed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -130,10 +86,13 @@ export default function App() {
   const [treeOpen, setTreeOpen] = useState(null)
   const [confirmEnd, setConfirmEnd] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(null) // 削除確認中の session_id
-  // 「最後に見た時点の messages.length」 を session_id 別に保持。 active な会話は
-  // 常にこの ref を最新化し、 sessionBadges 計算で `arr.length > lastSeen` を新着判定とする。
-  // tabHasNew の state 同期で取りこぼすケースを潰すため ref ベースに統一。
-  const lastSeenLenRef = useRef({})
+  // stream 関連 state (= App body 上から下に流れる中で line 360 付近の useEffect 等で
+  // 参照する。 const 宣言が後ろにあると TDZ で ReferenceError になり ErrorBoundary が
+  // 「リロード / データ消去して再起動」 を出してしまう。 必ずここに置く)
+  // eslint-disable-next-line no-unused-vars -- streamStatus は将来 web 側 overlay で再利用予定、 setter は useStreamStatusListener に渡す
+  const [streamStatus, setStreamStatus] = useState(null)
+  const [pipActive, setPipActive] = useState(false)
+  const [streaming, setStreaming] = useState(false)
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
   useEffect(() => {
     const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 30000)
@@ -141,92 +100,11 @@ export default function App() {
   }, [])
   const menuRef = useRef(null)
 
-  // 可視状態 + アクティブ session を backend に申告 (broadcast_push 抑制用)
-  // - 「App (native) / PWA (web) のいずれかが該当 session を見てる時は通知しない」
-  //   判定材料を backend に渡す
-  // - visibilitychange + activeSid 変化のたびに送る
-  useEffect(() => {
-    const sendState = () => {
-      const isNative = !!window.Capacitor?.isNativePlatform?.()
-      const body = JSON.stringify({
-        visible: !document.hidden,
-        session_id: activeSid,
-        client: isNative ? 'native' : 'web',
-      })
-      try {
-        fetch(`${API_BASE}/push/state`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body,
-        }).catch(() => { /* ignore */ })
-      } catch { /* ignore */ }
-    }
-    sendState()
-    const onVis = () => sendState()
-    document.addEventListener('visibilitychange', onVis)
-    return () => document.removeEventListener('visibilitychange', onVis)
-  }, [activeSid])
-
-  // session を開いた時、 そのセッションに紐づく通知を既読化 (通知センターで消える)
-  // 既読化後に backend から unread_count を取り直してバッジ同期
-  useEffect(() => {
-    if (!activeSid) return
-    ;(async () => {
-      try {
-        await fetch(`${API_BASE}/notifications/read-all`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: activeSid }),
-        })
-      } catch { /* ignore */ }
-      // バッジ再同期
-      try { await syncBadgeFromServer() } catch { /* ignore */ }
-    })()
-  }, [activeSid])
-
-  // 起動時 + フォアグラウンド復帰時にバッジを backend と同期 (差分埋める)
-  useEffect(() => {
-    syncBadgeFromServer().catch(() => {})
-    const onVis = () => { if (!document.hidden) syncBadgeFromServer().catch(() => {}) }
-    document.addEventListener('visibilitychange', onVis)
-    return () => document.removeEventListener('visibilitychange', onVis)
-  }, [])
-
-  // PWA 通知センターからの deep link を受けて該当セッションへ遷移
-  // - native (Capacitor): app://chat/<sid> を appUrlOpen イベントで受信
-  // - PWA: 起動時 URL の ?ses=<sid> を読む (SW から navigate されたケース)
-  useEffect(() => {
-    // PWA 側: ?ses=xxx がついてたら拾う
-    try {
-      const sp = new URLSearchParams(window.location.search)
-      const sid = sp.get('ses')
-      if (sid) {
-        setActiveId(sid)
-        // URL から ses パラメータを除去 (リロード時に同じ session に固定されないように)
-        const url = new URL(window.location.href)
-        url.searchParams.delete('ses')
-        window.history.replaceState({}, '', url.toString())
-      }
-    } catch { /* ignore */ }
-
-    // Native 側: appUrlOpen listener (app://chat/<sid>)
-    let cleanup = null
-    ;(async () => {
-      try {
-        if (!window.Capacitor?.isNativePlatform?.()) return
-        const { App: CapApp } = await import('@capacitor/app')
-        const handler = ({ url }) => {
-          try {
-            const m = String(url || '').match(/^app:\/\/chat\/([\w-]+)/)
-            if (m && m[1]) setActiveId(m[1])
-          } catch { /* ignore */ }
-        }
-        const sub = await CapApp.addListener('appUrlOpen', handler)
-        cleanup = () => { try { sub.remove() } catch { /* ignore */ } }
-      } catch { /* @capacitor/app 未インストール環境では noop */ }
-    })()
-    return () => { if (cleanup) cleanup() }
-  }, [setActiveId])
+  // backend / 通知 / deep link 系の effect を hook に集約 (= useNativeBridges.js)
+  usePushState(activeSid)
+  useReadOnSessionOpen(activeSid)
+  useBadgeSync()
+  useDeepLink(setActiveId)
 
   const handleOpenPath = useCallback((path) => {
     if (path.endsWith('/')) {
@@ -236,119 +114,62 @@ export default function App() {
     }
   }, [])
 
-  // 物理キーボード → Mac へ転送 (= stream 接続中のみ)。 chat 側 textarea / input にフォーカス
-  // してる時は除外 (= chat に typing 優先)。 build 27 plugin の sendKeyEvent を呼ぶ。
-  useEffect(() => {
-    if (!window.Capacitor?.isNativePlatform?.()) return
-    let mod = null
-    let mappers = null
-    ;(async () => {
-      mod = await import('./native/moonlight.js')
-      mappers = await import('./native/keyboard-map.js')
-    })()
+  // 物理キーボード → Mac へ転送 (stream 接続中のみ、 chat 入力 focus 時は除外)
+  usePhysicalKeyboardForward(streaming)
 
-    const isInputFocused = () => {
-      const a = document.activeElement
-      if (!a) return false
-      const tag = a.tagName
-      return tag === 'TEXTAREA' || tag === 'INPUT' || a.isContentEditable
-    }
+  // streamView 位置追従 (= キーボード on で画面上端固定) + touch ジェスチャ + status / PiP / 回転 lock
+  const { streamOverlayRef } = useMoonlightStreamPosition(streaming)
+  useStreamGestures(streamOverlayRef, streaming)
+  useStreamStatusListener(setStreamStatus, setPipActive)
 
-    const send = (action) => (ev) => {
-      if (!window.__havenStreaming) return
-      if (isInputFocused()) return
-      if (!mod || !mappers) return
-      const m = mappers.mapKeyEventToVK(ev)
-      if (!m) return
-      mod.sendKeyEvent(m.keyCode, m.modifiers, action).catch(() => {})
-      ev.preventDefault()
-    }
+  // IME 入力 → Mac へ送信 (= 「あ」 ボタンで focus、 compositionend で sendUtf8Text)
+  const { imeInputRef, handleImeFocus, handleImeCompositionEnd } = useImeBridge()
 
-    const onDown = send('down')
-    const onUp = send('up')
-    document.addEventListener('keydown', onDown, { capture: true })
-    document.addEventListener('keyup', onUp, { capture: true })
-    return () => {
-      document.removeEventListener('keydown', onDown, { capture: true })
-      document.removeEventListener('keyup', onUp, { capture: true })
-    }
-  }, [])
-
-  // stream の表示位置を「<div className="video-slot">」 の位置に追従させる。
-  // 接続後 + ResizeObserver で位置・サイズを native view に伝える。
-  const videoSlotRef = useRef(null)
-  useEffect(() => {
-    if (!window.Capacitor?.isNativePlatform?.()) return
-    const el = videoSlotRef.current
-    if (!el) return
-    let cancelled = false
-    let ro = null
-    let onResize = null
-    ;(async () => {
-      const { Capacitor } = await import('@capacitor/core')
-      const Moonlight = Capacitor.Plugins?.Moonlight
-      if (!Moonlight || cancelled) return
-      const update = () => {
-        const r = el.getBoundingClientRect()
-        if (r.width > 0 && r.height > 0) {
-          Moonlight.setVideoFrame({ x: r.left, y: r.top, width: r.width, height: r.height }).catch(() => {})
-        }
+  // Sunshine ペアリング: SessionDrawer の総合 ⋯ メニューから呼ばれる。
+  // alert / prompt で手順を案内 → moonlight.pair で 4-stage handshake。
+  const handlePairSunshine = useCallback(async () => {
+    const moonlightMod = await import('./native/moonlight-flow.js')
+    window.alert(
+      'これからペアリングを開始します。\n\n' +
+      '【手順】\n' +
+      '1. このダイアログ OK 押す前に、 まず Mac の Sunshine Web UI で:\n' +
+      '   - PIN: 任意 4 桁 (例 1234) を入力\n' +
+      '   - Device Name: App (完全一致)\n' +
+      '   - Send クリック\n' +
+      '2. OK 押すと iPhone 側で host + PIN 入力 → 自動で handshake\n' +
+      '3. Sunshine の Send から 60 秒以内に完了する必要あり\n\n' +
+      'Mac 側で Send 済んだら OK を押してください。'
+    )
+    const host = window.prompt('Sunshine ホスト名 / IP', 'user.tailnet.ts.net')
+    if (!host) return
+    const pin = window.prompt('Sunshine で入力したのと同じ PIN (4 桁)', '')
+    if (!pin) return
+    try {
+      const res = await moonlightMod.pair({ host, pin })
+      window.alert(res.paired ? 'ペアリング成功 ✅' : ('失敗: ' + JSON.stringify(res)))
+    } catch (e) {
+      const msg = (e.message || String(e))
+      if (msg.includes('not implemented')) {
+        window.alert(
+          'Moonlight plugin が iOS で認識されてません。\n' +
+          '通常は build を update + アプリ再起動で直ります。\n\n' +
+          '【対処】\n' +
+          '1. AltStore で App の UPDATE をタップ\n' +
+          '2. App を完全終了 (上スワイプ kill) → 再起動\n' +
+          '3. もう一度メニューから Sunshine ペアリング\n\n' +
+          '詳細: ' + msg
+        )
+      } else {
+        window.alert(
+          'ペアリング失敗: ' + msg + '\n\n' +
+          '【ありがちな原因】\n' +
+          '- Mac 側で Send してから 60 秒以上経過\n' +
+          '- PIN が Mac と iPhone で違う\n' +
+          '- Device Name が App と完全一致してない\n' +
+          '- Tailscale 接続が切れてる\n' +
+          '再度試すには Sunshine 側で Send からやり直してください'
+        )
       }
-      update()
-      ro = new ResizeObserver(update)
-      ro.observe(el)
-      onResize = update
-      window.addEventListener('resize', onResize)
-      window.addEventListener('orientationchange', onResize)
-    })()
-    return () => {
-      cancelled = true
-      if (ro) ro.disconnect()
-      if (onResize) {
-        window.removeEventListener('resize', onResize)
-        window.removeEventListener('orientationchange', onResize)
-      }
-    }
-  }, [])
-
-  // stream の stage / status を購読 (= build 27 native plugin の statusChange イベント)。
-  // 接続シーケンス進行中は薄い line で「control stream establishment...」 等を表示、
-  // videoContentShown で「表示中」 → しばらくして自動非表示、 失敗時は error chip。
-  const [streamStatus, setStreamStatus] = useState(null)
-  useEffect(() => {
-    if (!window.Capacitor?.isNativePlatform?.()) return
-    let unsubscribe = null
-    let hideTimer = null
-    ;(async () => {
-      const m = await import('./native/moonlight.js')
-      unsubscribe = m.onStatus((data) => {
-        const event = data?.event
-        if (event === 'stageStarting') {
-          setStreamStatus({ kind: 'progress', text: data.name + ' …' })
-        } else if (event === 'stageComplete') {
-          // 進行中なら更新、 final stage は次の stageStarting で上書きされるので noop でも OK
-          setStreamStatus({ kind: 'progress', text: data.name + ' ✓' })
-        } else if (event === 'stageFailed') {
-          setStreamStatus({ kind: 'error', text: `${data.name} 失敗 (code=${data.code})` })
-        } else if (event === 'connectionStarted') {
-          setStreamStatus({ kind: 'progress', text: '接続確立、 frame 待機…' })
-        } else if (event === 'videoContentShown') {
-          setStreamStatus({ kind: 'ok', text: '表示中' })
-          clearTimeout(hideTimer)
-          hideTimer = setTimeout(() => setStreamStatus(null), 1500)
-        } else if (event === 'connectionTerminated') {
-          setStreamStatus({ kind: 'error', text: `切断 (code=${data.code})` })
-          clearTimeout(hideTimer)
-          hideTimer = setTimeout(() => setStreamStatus(null), 3000)
-        } else if (event === 'userClosed') {
-          setStreamStatus(null)
-          clearTimeout(hideTimer)
-        }
-      })
-    })()
-    return () => {
-      if (unsubscribe) unsubscribe()
-      clearTimeout(hideTimer)
     }
   }, [])
 
@@ -370,42 +191,8 @@ export default function App() {
   const sids = useMemo(() => sessions.map(s => s.id), [sessions])
   const currentAttachments = (activeSid && attachments[activeSid]) || []
 
-  // active な会話は「見ている」 とみなし、 messages 変化のたびに lastSeen を最新化する。
-  // 非アクティブ会話の lastSeen は更新しないので、 そのタブの messages が増えれば
-  // sessionBadges 計算で arr.length > lastSeen として新着判定される。
-  useEffect(() => {
-    if (!activeSid) return
-    lastSeenLenRef.current[activeSid] = (messages[activeSid] || []).length
-  }, [activeSid, messages])
-
-  // 削除された会話の lastSeen キーは掃除 + 新規 / 未初期化 sid は現在 length で seed する
-  // (起動時に既存 messages を「もう見た扱い」 にしないと全部赤丸になってしまう)
-  useEffect(() => {
-    const sidSet = new Set(sids)
-    for (const k of Object.keys(lastSeenLenRef.current)) {
-      if (!sidSet.has(k)) delete lastSeenLenRef.current[k]
-    }
-    for (const sid of sids) {
-      if (lastSeenLenRef.current[sid] == null) {
-        lastSeenLenRef.current[sid] = (messages[sid] || []).length
-      }
-    }
-  }, [sids, messages])
-
-  const sessionBadges = useMemo(() => {
-    const out = {}
-    for (const sid of sids) {
-      if (sid === activeSid) { out[sid] = null; continue }
-      const arr = messages[sid] || []
-      const pending = arr.some(m => m.askUserQuestion && !m.askUserQuestion.answered)
-      if (pending) { out[sid] = { kind: 'pending', label: '?' }; continue }
-      if (loading[sid]) { out[sid] = { kind: 'processing', label: '●' }; continue }
-      const lastSeen = lastSeenLenRef.current[sid] ?? arr.length
-      if (arr.length > lastSeen) { out[sid] = { kind: 'new', label: '●' }; continue }
-      out[sid] = null
-    }
-    return out
-  }, [messages, loading, activeSid, sids])
+  // session ごとの新着 / 処理中 / 質問待ちバッジ計算 (= active session は常に既読)
+  const sessionBadges = useSessionBadges({ sids, activeSid, messages, loading })
 
   const displayMessages = useMemo(() => {
     if (!activeSid) return []
@@ -484,21 +271,9 @@ export default function App() {
     return () => clearTimeout(id)
   }, [messages])
 
-  // PWA フォア視聴状態を backend に通知
-  useEffect(() => {
-    const sendState = (visible) => {
-      fetch(`${API_BASE}/push/state`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ visible }),
-        keepalive: true,
-      }).catch(() => {})
-    }
-    sendState(!document.hidden)
-    const onVis = () => sendState(!document.hidden)
-    document.addEventListener('visibilitychange', onVis)
-    return () => document.removeEventListener('visibilitychange', onVis)
-  }, [])
+  // (A1 fix) /push/state は line 148-171 の useEffect で session_id + visible + client を
+  // 1 本の経路で送るよう統合。 ここの旧 visibility listener は重複で session_id 落ち
+  // race を起こしてたため削除済。
 
   const inputDisabled = !activeSid || !!loading[activeSid]
 
@@ -517,62 +292,16 @@ export default function App() {
           ☰
         </button>
         <span className="topbar-title">{activeSession?.title || '会話なし'}</span>
-        {/* 旧 WebRTC 画面共有 (🖥 旧版) は削除済。 Moonlight stream の 🖥 ボタンに統合。 */}
-        {/* Sunshine ペアリング: native (App) のみ表示。 PWA では PushManager 等
-            と同じく機能しないので window.Capacitor で判定。 */}
-        {window.Capacitor?.isNativePlatform?.() && (
+        {/* IME 入力モード切替 (= stream 接続中のみ意味あり)。 タップで隠れた input を focus、
+            iOS 標準キーボードで日本語入力 → 確定文字を Mac へ sendUtf8Text。 */}
+        {window.Capacitor?.isNativePlatform?.() && streaming && (
           <button
             className="screen-toggle"
-            onClick={async () => {
-              // moonlight.js を先に import して registerPlugin を実行 (= Capacitor.Plugins.Moonlight を活性化)
-              const moonlightMod = await import('./native/moonlight.js')
-              window.alert(
-                'これからペアリングを開始します。\n\n' +
-                '【手順】\n' +
-                '1. このダイアログ OK 押す前に、 まず Mac の Sunshine Web UI で:\n' +
-                '   - PIN: 任意 4 桁 (例 1234) を入力\n' +
-                '   - Device Name: App (完全一致)\n' +
-                '   - Send クリック\n' +
-                '2. OK 押すと iPhone 側で host + PIN 入力 → 自動で handshake\n' +
-                '3. Sunshine の Send から 60 秒以内に完了する必要あり\n\n' +
-                'Mac 側で Send 済んだら OK を押してください。'
-              )
-              const host = window.prompt('Sunshine ホスト名 / IP', 'user.tailnet.ts.net')
-              if (!host) return
-              const pin = window.prompt('Sunshine で入力したのと同じ PIN (4 桁)', '')
-              if (!pin) return
-              try {
-                const res = await moonlightMod.pair({ host, pin })
-                window.alert(res.paired ? 'ペアリング成功 ✅' : ('失敗: ' + JSON.stringify(res)))
-              } catch (e) {
-                const msg = (e.message || String(e))
-                if (msg.includes('not implemented')) {
-                  window.alert(
-                    'Moonlight plugin が iOS で認識されてません。\n' +
-                    '通常は build を update + アプリ再起動で直ります。\n\n' +
-                    '【対処】\n' +
-                    '1. AltStore で App の UPDATE をタップ\n' +
-                    '2. App を完全終了 (上スワイプ kill) → 再起動\n' +
-                    '3. もう一度 🔗 タップ\n\n' +
-                    '詳細: ' + msg
-                  )
-                } else {
-                  window.alert(
-                    'ペアリング失敗: ' + msg + '\n\n' +
-                    '【ありがちな原因】\n' +
-                    '- Mac 側で Send してから 60 秒以上経過\n' +
-                    '- PIN が Mac と iPhone で違う\n' +
-                    '- Device Name が App と完全一致してない\n' +
-                    '- Tailscale 接続が切れてる\n' +
-                    '再度試すには Sunshine 側で Send からやり直してください'
-                  )
-                }
-              }
-            }}
-            aria-label="Sunshine ペアリング"
-            title="Sunshine とペアリング"
+            onClick={handleImeFocus}
+            aria-label="Mac へ日本語入力"
+            title="Mac 側に日本語等を入力 (IME)"
           >
-            🔗
+            あ
           </button>
         )}
         {/* Moonlight 経路の Mac 画面ストリーム接続/切断 (pair 済前提) */}
@@ -580,21 +309,18 @@ export default function App() {
           <button
             className="screen-toggle"
             onClick={async () => {
-              const m = await import('./native/moonlight.js')
-              // 既に接続中 / 接続処理中なら disconnect 経路 (= 二重 tap 防止、 build 26 ログ反省)
-              if (window.__havenStreaming) {
-                try { await m.disconnect() } catch {}
-                window.__havenStreaming = false
+              const m = await import('./native/moonlight-flow.js')
+              // 既に接続中 / 接続処理中なら disconnect 経路 (= 二重 tap 防止)
+              if (streaming) {
+                try { await m.disconnect() } catch { /* ignore */ }
+                setStreaming(false)
                 return
               }
-              // tap 直後に true 立てる: connect が完了する前に user が再 tap しても、
-              // ここに入って disconnect 経路に分岐するので並行 startStream を防げる。
-              window.__havenStreaming = true
+              setStreaming(true)
               try {
-                await m.connect({ host: 'user.tailnet.ts.net' })
+                await m.startSession({ host: 'user.tailnet.ts.net' })
               } catch (e) {
-                // 接続失敗時は false に戻す (= 次回 tap で再接続可能に)
-                window.__havenStreaming = false
+                setStreaming(false)
                 window.alert('接続失敗: ' + (e.message || e))
               }
             }}
@@ -606,43 +332,70 @@ export default function App() {
         )}
       </header>
 
-      {/* 旧 DesktopView (WebRTC) は削除済。 Moonlight stream は native AVSampleBufferDisplayLayer で描画 */}
-      {streamStatus && (
-        <div className={`stream-status-line ${streamStatus.kind}`}>
-          {streamStatus.kind === 'progress' && '⏳ '}
-          {streamStatus.kind === 'ok' && '✓ '}
-          {streamStatus.kind === 'error' && '⚠ '}
-          {streamStatus.text}
-        </div>
-      )}
-      {/* stream の native view を React の <div> 位置にフィットさせる用の placeholder。
-        topbar の下、 messages-container の上、 横幅いっぱい、 高さ = width * 9/16 (= 16:9 Mac画面)。
-        接続中は ref から getBoundingClientRect を取って Moonlight.setVideoFrame に渡す
-        → native streamView がここの位置・サイズに移動する。 */}
+            {/* streamOverlay: native streamView と同位置の透明 div、 touch event を受けて
+        plugin の sendMouseMove 等で Mac に転送する layer。 native streamView は
+        isUserInteractionEnabled=false で touch を pass-through、 web 側の overlay にジェスチャ
+        がそのまま届く。 stream の進捗表示は native 側 (MoonlightPlugin::updateStatusOverlay) で
+        streamView 上端に被せ表示。 */}
       {window.Capacitor?.isNativePlatform?.() && (
         <div
-          ref={videoSlotRef}
-          className="video-slot"
-          style={{ display: window.__havenStreaming ? 'block' : 'none' }}
-        />
+          ref={streamOverlayRef}
+          className="stream-overlay"
+          style={{ display: streaming ? 'block' : 'none' }}
+        >
+          {/* 右下に IDR 再要求 + PiP トグルの control row */}
+          <div className="stream-overlay-controls">
+            <button
+              className="stream-ctrl-btn"
+              onClick={async (e) => {
+                e.stopPropagation()
+                const m = await import('./native/moonlight-flow.js')
+                m.requestIdrFrame().catch(() => {})
+              }}
+              aria-label="IDR frame 再要求"
+              title="画面崩れ復旧"
+            >⟳</button>
+            <button
+              className="stream-ctrl-btn"
+              onClick={async (e) => {
+                e.stopPropagation()
+                const m = await import('./native/moonlight-flow.js')
+                if (pipActive) {
+                  m.disablePiP().catch(() => {})
+                  setPipActive(false)
+                } else {
+                  m.enablePiP().catch(() => {})
+                  setPipActive(true)
+                }
+              }}
+              aria-label="PiP 切替"
+              title="ピクチャ・イン・ピクチャ切替"
+            >🪟</button>
+          </div>
+        </div>
       )}
 
-      <SessionDrawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        sessions={sortedSessions}
-        agents={agents}
-        activeId={activeId}
-        onSelect={setActiveId}
-        onCreate={(agentId) => createSession(agentId)}
-        onRename={renameSession}
-        onDelete={(sid) => setConfirmDelete(sid)}
-        sessionBadges={sessionBadges}
-        pushAvailable={pushAvailable}
-        pushEnabled={pushEnabled}
-        pushBusy={pushBusy}
-        onTogglePush={handleTogglePush}
-      />
+      {drawerOpen && (
+        <Suspense fallback={null}>
+          <SessionDrawer
+            open={drawerOpen}
+            onClose={() => setDrawerOpen(false)}
+            sessions={sortedSessions}
+            agents={agents}
+            activeId={activeId}
+            onSelect={setActiveId}
+            onCreate={(agentId) => createSession(agentId)}
+            onRename={renameSession}
+            onDelete={(sid) => setConfirmDelete(sid)}
+            sessionBadges={sessionBadges}
+            pushAvailable={pushAvailable}
+            pushEnabled={pushEnabled}
+            pushBusy={pushBusy}
+            onTogglePush={handleTogglePush}
+            onPairSunshine={window.Capacitor?.isNativePlatform?.() ? handlePairSunshine : undefined}
+          />
+        </Suspense>
+      )}
 
       {/* メッセージ一覧。 .messages は flex-direction: column-reverse (App.css)、
         起動時に scroll 操作なしで最新メッセージが下に見える構造。 displayMessages を
@@ -760,6 +513,23 @@ export default function App() {
         onCancel={() => setConfirmDelete(null)}
         onConfirm={handleDeleteSession}
       />
+
+      {/* Mac 側 IME 入力用の隠れ input。 stream 中に「あ」 ボタン押すと focus、
+        iOS キーボード出る → 日本語入力 → 確定 (compositionend) で Mac へ sendUtf8Text。
+        position: absolute + opacity: 0 で見えない、 タップ判定にも当たらない。 */}
+      {window.Capacitor?.isNativePlatform?.() && (
+        <input
+          ref={imeInputRef}
+          className="ime-hidden-input"
+          type="text"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          onCompositionEnd={handleImeCompositionEnd}
+          aria-hidden="true"
+        />
+      )}
 
       <Suspense fallback={null}>
         {previewPath && (

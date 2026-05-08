@@ -6,8 +6,8 @@
 // - SSE で他クライアント (App) からの既読化をリアルタイム反映
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { API_BASE } from './constants.js'
-import { setBadge, syncBadgeFromServer } from './utils/badge.js'
-import { enablePush, isPushEnabledLocally, isPushSupported, isStandalone } from './utils/push.js'
+import { setBadge } from './utils/badge.js'
+import { enablePush, isPushEnabledLocally } from './utils/push.js'
 import './NotificationCenter.css'
 
 function formatTime(ts) {

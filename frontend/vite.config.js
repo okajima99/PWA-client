@@ -22,5 +22,32 @@ export default defineConfig(({ mode }) => {
   generateManifest(env)
   return {
     plugins: [react()],
+    build: {
+      // 初回 download を縮める chunk 分割。 react / @capacitor は安定で再利用可、
+      // markdown 系は遅延 load 候補なので別 chunk に逃がして main を軽くする。
+      rollupOptions: {
+        output: {
+          // vite 8 (rolldown) は manualChunks を function only でしか受け付けない。
+          // node_modules の path から chunk 名を決める。
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return undefined
+            if (id.includes('react-syntax-highlighter') ||
+                id.includes('react-markdown') ||
+                id.includes('remark-gfm') ||
+                id.includes('mdast') ||
+                id.includes('micromark') ||
+                id.includes('hast') ||
+                id.includes('refractor') ||
+                id.includes('prismjs')) return 'markdown'
+            if (id.includes('@capacitor')) return 'capacitor'
+            if (id.includes('lz-string')) return 'lz'
+            if (id.includes('react-dom') || id.includes('/react/')) return 'react-vendor'
+            return undefined
+          },
+        },
+      },
+      // chunk 警告を 600KB → 800KB (= markdown chunk が ~700KB あるため、 警告 spam 抑止)
+      chunkSizeWarningLimit: 800,
+    },
   }
 })

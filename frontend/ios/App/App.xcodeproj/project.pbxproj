@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		1497FE2703709DEDFF5F285B /* Connection.m in Sources */ = {isa = PBXBuildFile; fileRef = 26F0CEB320C618B2E38D0026 /* Connection.m */; };
 		155F57E146503C33D58B2F9F /* CoreMedia.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3375FF2C8260D2B8EDFA84EA /* CoreMedia.framework */; };
+		1663015584A6AF3652A837E6 /* MoonlightInputBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A208DA19420AC0A1AC5AB19E /* MoonlightInputBridge.swift */; };
 		198183075A3C90942FC86E76 /* OpenSSL.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 444E2B840EC09BD04F182813 /* OpenSSL.xcframework */; };
 		1EC241DBB6C60C85DF88DF7C /* AudioToolbox.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 566AC86127FDDE2D869200E9 /* AudioToolbox.framework */; };
 		231A9ED5D2DC71E529C52E1F /* Logger.m in Sources */ = {isa = PBXBuildFile; fileRef = 0B9F8D9749A5AE9051C84074 /* Logger.m */; };
@@ -38,6 +39,7 @@
 		EA92685F176F2B1AC5310F4D /* Utils.m in Sources */ = {isa = PBXBuildFile; fileRef = 2A5F990594BB83BCBADF6775 /* Utils.m */; };
 		F3C8F13D63DA2126E2F84353 /* AppViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10FAFA98742C9D260B795F36 /* AppViewController.swift */; };
 		F74FFED672626A07F15FB7C9 /* MoonlightBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A65FA7ED315393DFC8BFF94 /* MoonlightBridge.swift */; };
+		FAF302850C7BD9F67F865F88 /* StreamHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D75F94A8368511EC901E304B /* StreamHostView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -70,10 +72,12 @@
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		959A5FFD0B34D89C2E00E6AC /* Connection.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = Connection.h; sourceTree = "<group>"; };
 		9BC66FE8CB3A297BDE6AEF54 /* Moonlight.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; name = Moonlight.xcframework; path = Frameworks/Moonlight.xcframework; sourceTree = "<group>"; };
+		A208DA19420AC0A1AC5AB19E /* MoonlightInputBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoonlightInputBridge.swift; sourceTree = "<group>"; };
 		AB7191B7C4C0386ACB25C1FF /* PairingManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PairingManager.swift; sourceTree = "<group>"; };
 		B7F7741F6FD5495CE340A19C /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
 		C5C068BEFF8AE7C63D06AB43 /* GameController.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = GameController.framework; path = System/Library/Frameworks/GameController.framework; sourceTree = SDKROOT; };
 		C8537986573BA1122ABBD1BF /* CoreHaptics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreHaptics.framework; path = System/Library/Frameworks/CoreHaptics.framework; sourceTree = SDKROOT; };
+		D75F94A8368511EC901E304B /* StreamHostView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StreamHostView.swift; sourceTree = "<group>"; };
 		D80448E5F8906C13CB33F998 /* CoreMotion.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMotion.framework; path = System/Library/Frameworks/CoreMotion.framework; sourceTree = SDKROOT; };
 		DC9A28513683A73B17D73CF4 /* HavenClient.pem */ = {isa = PBXFileReference; includeInIndex = 1; path = HavenClient.pem; sourceTree = "<group>"; };
 		DCA8AD7AF786F7DE09C00531 /* StreamConfiguration.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = StreamConfiguration.m; sourceTree = "<group>"; };
@@ -174,6 +178,8 @@
 				761FDD652BE9657D3D0B1655 /* Stream */,
 				075277A3E50D68A7A641DE9C /* Utils */,
 				6B2CEBC7C43CAF3CC824D692 /* DebugLog.swift */,
+				A208DA19420AC0A1AC5AB19E /* MoonlightInputBridge.swift */,
+				D75F94A8368511EC901E304B /* StreamHostView.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -288,6 +294,8 @@
 				EA92685F176F2B1AC5310F4D /* Utils.m in Sources */,
 				231A9ED5D2DC71E529C52E1F /* Logger.m in Sources */,
 				85C682006D0BA31E90144573 /* DebugLog.swift in Sources */,
+				1663015584A6AF3652A837E6 /* MoonlightInputBridge.swift in Sources */,
+				FAF302850C7BD9F67F865F88 /* StreamHostView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -428,7 +436,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 58;
 				DEVELOPMENT_TEAM = <TEAM_ID>;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -485,7 +493,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 58;
 				DEVELOPMENT_TEAM = <TEAM_ID>;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",

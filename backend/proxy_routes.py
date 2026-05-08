@@ -1,14 +1,21 @@
 """Anthropic API のリバースプロキシ。
-rate-limit ヘッダを観測したいので、SDK を直結せず自プロセスを経由させる。
+rate-limit ヘッダを観測したいので、 SDK を直結せず自プロセスを経由させる。
+
+旧: response 全 buffer → return Response(content=resp.content) の単一往復。
+   SSE / 大レスポンスで全部読み終わるまで client に何も流れず latency 悪化。
+新: httpx.AsyncClient.send(req, stream=True) で chunk を素通し → StreamingResponse。
+   rate-limit ヘッダは応答開始時の resp.headers で確定するので変化なし。
 """
 from fastapi import APIRouter, Request
-from fastapi.responses import Response
+from fastapi.responses import StreamingResponse
 
 import http_client
 from config import ANTHROPIC_API_BASE
 from state import update_shared_from_headers
 
 router = APIRouter()
+
+_SKIP_HEADERS = {"transfer-encoding", "connection", "keep-alive", "content-encoding"}
 
 
 @router.api_route(
@@ -27,23 +34,29 @@ async def anthropic_proxy(path: str, request: Request):
     }
 
     client = http_client.get()
-    resp = await client.request(
+    req = client.build_request(
         method=request.method,
         url=target_url,
         headers=headers,
         content=body,
     )
-
+    resp = await client.send(req, stream=True)
     update_shared_from_headers(resp.headers)
 
-    skip_headers = {"transfer-encoding", "connection", "keep-alive", "content-encoding"}
     response_headers = {
         k: v for k, v in resp.headers.items()
-        if k.lower() not in skip_headers
+        if k.lower() not in _SKIP_HEADERS
     }
 
-    return Response(
-        content=resp.content,
+    async def passthrough():
+        try:
+            async for chunk in resp.aiter_raw():
+                yield chunk
+        finally:
+            await resp.aclose()
+
+    return StreamingResponse(
+        passthrough(),
         status_code=resp.status_code,
         headers=response_headers,
     )

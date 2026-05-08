@@ -52,11 +52,41 @@ def _load_notifications() -> list[dict]:
         return []
 
 
-def _save_notifications() -> None:
-    # 上限を超えたら古い順に切る
+_save_notifications_task: asyncio.Task | None = None
+_NOTIF_FLUSH_DELAY = 5.0  # 秒、 高頻度時の I/O 圧縮
+
+
+def _save_notifications_now() -> None:
+    """同期的に notifications.json を atomic write する内部実装。"""
     if len(notifications_history) > NOTIFICATIONS_MAX:
         del notifications_history[: len(notifications_history) - NOTIFICATIONS_MAX]
     atomic_write_text(NOTIFICATIONS_PATH, json.dumps(notifications_history, ensure_ascii=False, indent=2))
+
+
+async def _save_notifications_debounced() -> None:
+    """N 秒後に flush。 既存の予約があれば cancel して再 schedule。"""
+    try:
+        await asyncio.sleep(_NOTIF_FLUSH_DELAY)
+        _save_notifications_now()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("notifications debounce flush failed")
+
+
+def _save_notifications() -> None:
+    """notification 追加 / 既読化のたびに呼ばれる。 5 秒 debounce で I/O 圧縮。
+    最終確実性のため lifespan 終了時にも flush 想定 (= 終了 hook で _save_notifications_now)。"""
+    global _save_notifications_task
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # ループ外 (= startup 前等) なら同期 flush で fallback
+        _save_notifications_now()
+        return
+    if _save_notifications_task and not _save_notifications_task.done():
+        _save_notifications_task.cancel()
+    _save_notifications_task = loop.create_task(_save_notifications_debounced())
 
 
 def is_session_actively_viewed(session_id: str | None) -> bool:

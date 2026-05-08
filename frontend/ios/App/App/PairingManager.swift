@@ -299,6 +299,13 @@ import CommonCrypto
                     completion(.failure(PairingError.responseMissingField("plaincert decode")))
                     return
                 }
+                // TOFU で server cert SHA256 fingerprint を pin (= ペアリング時の cert を信頼の起点に)。
+                // UserDefaults キー: "app.moonlight.serverPin.<host>"。 NvHTTPClient.urlSession は
+                // 接続時に loadPinnedFingerprint で取り出して exception 検証する。
+                let fingerprint = Self.sha256(plainCertData)
+                let pinKey = "app.moonlight.serverPin.\(self.http.host)"
+                UserDefaults.standard.set(fingerprint, forKey: pinKey)
+                self.http.pinnedServerCertSHA256 = fingerprint
                 // Phase 2 へ進む
                 self.phase2(pin: pin, aesKey: Data(aesKey), serverCertPEM: serverCertPEM, completion: completion)
             }

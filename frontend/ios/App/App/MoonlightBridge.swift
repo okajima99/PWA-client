@@ -1,6 +1,6 @@
 // MoonlightBridge.swift
 //
-// build 26 で「web 主導アーキテクチャ」 化。 native は generic API のみ提供:
+// 「web 主導アーキテクチャ」: native は generic API のみ提供:
 //   - request(path, params, useTLS) → 生 HTTP に client cert 付与して XML を返す
 //   - startStream(config) → JS から渡された設定値で LiStartConnection を起動
 //   - pair(host, pin) → SecIdentity 周りは native でしかできないのでここに残す
@@ -221,7 +221,7 @@ import CoreMedia
     /// 接続中断 (= LiInterruptConnection、 disconnect の強い版)
     public func interrupt() { LiInterruptConnection() }
 
-    // MARK: - Phase 5 PiP (build 27 で追加)
+    // MARK: - Phase 5 PiP
 
     private var pipController: AVPictureInPictureController?
     private var pipDelegate: PiPDelegate?
@@ -241,6 +241,10 @@ import CoreMedia
             ctrl.canStartPictureInPictureAutomaticallyFromInline = true
             let delegate = PiPDelegate { [weak self] event in
                 self?.notifyStatus(event: "pip", payload: ["state": event])
+                if event == "didStop" {
+                    // delegate コールバック発火後に強参照を解放、 stop 中の race を回避
+                    self?.teardownPiPFinal()
+                }
             }
             ctrl.delegate = delegate
             self.pipController = ctrl
@@ -259,12 +263,18 @@ import CoreMedia
     }
 
     private func teardownPiP() {
+        // controller / delegate の nil 化は didStop コールバック後に行う (下の PiPDelegate
+        // 内 onEvent("didStop") から呼ぶ teardownPiPFinal で)。 stop 中に強参照を解くと
+        // delegate コールバック発火前に解放され crash 可能。
         pipController?.stopPictureInPicture()
+    }
+
+    fileprivate func teardownPiPFinal() {
         pipController = nil
         pipDelegate = nil
     }
 
-    // MARK: - Phase 5.5 入力 (build 27 で追加: moonlight-common-c の LiSend* 全部 expose)
+    // MARK: - Phase 5.5 入力 (moonlight-common-c の LiSend* 全部 expose)
 
     /// 相対マウス移動 (= trackpad 風)
     public func sendMouseMove(dx: Int16, dy: Int16) {
@@ -306,7 +316,7 @@ import CoreMedia
         LiSendTouchEvent(eventType, pointerId, x, y, pressure, 0, 0, UInt16(LI_ROT_UNKNOWN))
     }
 
-    // MARK: - Phase 6 一部 (build 27 で先回り)
+    // MARK: - Phase 6 一部 (Haptic)
 
     /// Haptic feedback (= 操作のフィードバック)
     /// pattern: "light" / "medium" / "heavy" / "selection" / "success" / "warning" / "error"

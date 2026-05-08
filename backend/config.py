@@ -27,9 +27,3 @@ CLAUDE_PATH = config.get("claude_path")
 VAPID_SUB = config.get("vapid_sub", "mailto:admin@example.com")
 # OS 通知のタイトル既定値。エージェント別は agents.<name>.notification_title で上書き。
 NOTIFICATION_TITLE_DEFAULT = config.get("notification_title", "Notification")
-
-# --- 画面共有 (WebRTC) 関連 ---
-# screen_routes.py で参照される。 enabled=false なら /screen/* は 503 を返す。
-# video_device / audio_device は ffmpeg avfoundation の device index または名前。
-# 例: video_device="3" (= Capture screen 0) / audio_device="BlackHole 2ch"
-SCREEN_SHARE: dict = config.get("screen_share", {}) or {}

@@ -13,16 +13,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // build 29 から維持: SDL2 は main を SDL_main にハイジャックする仕組みだが
-        // SDL_MAIN_HANDLED 定義済なので明示で SDL_SetMainReady() を呼ぶ。 これがないと
-        // SDL_InitSubSystem が「not initialized」 で失敗する。
+        // SDL2 は main を SDL_main にハイジャックする仕組みだが、 SDL_MAIN_HANDLED 定義済
+        // なので明示で SDL_SetMainReady() を呼ぶ (= これが無いと SDL_InitSubSystem が
+        // 「not initialized」 で失敗)。
         SDL_SetMainReady()
 
-        // build 33: AVAudioSession の設定は AppDelegate ではなく Connection.m::ArInit で行う
-        // (= 公式 moonlight-ios と一致、 SDL_InitSubSystem 直前で setCategory するパターン)。
-        // AppDelegate で先に取ると WKWebView 起動で奪われ + WKWebView がデバイスを Ambient 系で
-        // 開いた状態に固定されて、 SDL の preferred sample rate が無視される (SDL #9635) → 機械音。
-        // ArInit に集約することで SDL audio device 開く直前のタイミング保証する。
+        // AVAudioSession の設定は AppDelegate ではなく Connection.m::ArInit で行う
+        // (= SDL_OpenAudioDevice 直前のタイミングで setCategory + setPreferredSampleRate、
+        // AppDelegate で先に呼ぶと WKWebView 起動で session を奪われて Ambient で開かれ、
+        // SDL #9635 (preferred sample rate 無視) で機械音になる)。
         return true
     }
 

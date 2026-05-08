@@ -1,6 +1,6 @@
 // moonlight-flow.js
 //
-// build 26 で導入した「web 主導アーキテクチャ」 の本体。
+// 「web 主導アーキテクチャ」 の本体。
 // Sunshine への接続フロー (serverinfo → cancel → applist → launch → startStream)
 // と値計算をここで完結させる。 native plugin は generic API として:
 //   - Moonlight.request({path, params, useTLS})
@@ -29,6 +29,16 @@ export const VIDEO_FORMAT_AV1_MAIN8 = 0x1000
 
 function makeAudioConfiguration(channelCount, channelMask) {
   return ((channelMask & 0xFFFF) << 16) | ((channelCount & 0xFF) << 8) | 0xCA
+}
+
+// Limelight.h の SURROUNDAUDIOINFO_FROM_AUDIO_CONFIGURATION macro 相当。
+// audioConfiguration (= 内部値、 0x302CA suffix 込み) と launch URL の surroundAudioInfo
+// (= channelMask << 16 | channelCount、 suffix 抜き) は別物。 公式 moonlight-ios は
+// HttpManager.m で この macro を経由して URL に組み込む。
+function surroundAudioInfoFromAudioConfig(audioCfg) {
+  const channelMask = (audioCfg >>> 16) & 0xFFFF
+  const channelCount = (audioCfg >>> 8) & 0xFF
+  return (channelMask << 16) | channelCount
 }
 
 // --- backend へ debug log を投げる (= /tmp/app-debug.log に集約) ---
@@ -80,7 +90,7 @@ function randomU32() {
 // --- Public API ---
 
 // 並行 startSession ガード: 1 回目の LiStartConnection が control stream で hang 中に
-// 2 回目が来ると native の static state が壊れて両方失敗する (build 26 で実観測)。
+// 2 回目が来ると native の static state が壊れて両方失敗する (= 実観測あり)。
 let _sessionActive = false
 
 /**
@@ -151,6 +161,10 @@ export async function startSession(opts) {
   const riKeyHex = randomHex(16)
   const riKeyId = randomU32()
   const riKeyIdHex = riKeyId.toString(16).padStart(8, '0')
+  // launch URL params: surroundAudioInfo は audioConfig 生値ではなく macro 変換後
+  // (= 196610 / 0x30002、 channelMask + count のみ) を渡す必要がある。
+  // corever は付けない (= ENCFLG_VIDEO で audio plain 受信運用、 v1 audio encryption は
+  // Sunshine macOS で未実装の疑い、 corever=1 を立てると OPUS_INVALID_PACKET 症状が出る)。
   const launchBody = await rawRequest({
     host,
     path: '/launch',
@@ -163,9 +177,10 @@ export async function startSession(opts) {
       rikey: riKeyHex,
       rikeyid: riKeyIdHex,
       localAudioPlayMode: '0',
-      surroundAudioInfo: String(audioConfig),
+      surroundAudioInfo: String(surroundAudioInfoFromAudioConfig(audioConfig)),
       remoteControllersBitmap: '0',
       gcmap: '0',
+      // corever は意図的に未指定 (= 上記コメント参照)。
     },
   })
   const rtspSessionUrl = extractXMLValue(launchBody, 'sessionUrl0')
@@ -202,28 +217,20 @@ export async function disconnect() {
   return Moonlight.disconnect()
 }
 
-// --- build 27 追加: Phase 5 PiP ---
+// --- Phase 5: PiP ---
 
 export async function enablePiP() { return Moonlight.enablePiP() }
 export async function disablePiP() { return Moonlight.disablePiP() }
 
-// --- build 27 追加: Phase 5.5 全パソコン操作 ---
+// --- Phase 5.5: 全パソコン操作 ---
 
 /** 相対 mouse 移動 (= trackpad 風) */
 export async function sendMouseMove(dx, dy) {
   return Moonlight.sendMouseMove({ dx: Math.round(dx), dy: Math.round(dy) })
 }
-/** 絶対 mouse 位置 (refW, refH の plane 上の座標として送る) */
-export async function sendMousePosition(x, y, refW = 1920, refH = 1080) {
-  return Moonlight.sendMousePosition({ x: Math.round(x), y: Math.round(y), refW, refH })
-}
 /** mouse ボタン: button = 'left'|'middle'|'right'|'x1'|'x2', action = 'press'|'release' */
 export async function sendMouseButton(button, action) {
   return Moonlight.sendMouseButton({ button, action })
-}
-/** スクロール: delta は「1 click ≒ 120」 単位、 horizontal=true で横スクロール */
-export async function sendScroll(delta, horizontal = false) {
-  return Moonlight.sendScroll({ delta: Math.round(delta), horizontal })
 }
 /** キーボードイベント: keyCode は HID scancode (Windows VK 互換)
  *  modifiers bitmask: 0x01 Shift, 0x02 Ctrl, 0x04 Alt, 0x08 Meta(Cmd/Win)
@@ -232,11 +239,6 @@ export async function sendScroll(delta, horizontal = false) {
 export async function sendKeyEvent(keyCode, modifiers, action) {
   return Moonlight.sendKeyEvent({ keyCode, modifiers, action })
 }
-/** マルチタッチ: eventType = 'down'|'up'|'move'|'cancel' */
-export async function sendTouch({ eventType, pointerId, x, y, pressure = 0 }) {
-  return Moonlight.sendTouch({ eventType, pointerId, x, y, pressure })
-}
-
 /** ボタンを press → release で 1 回 click。 ms は press 持続時間 */
 export async function clickMouse(button = 'left', ms = 30) {
   await sendMouseButton(button, 'press')
@@ -244,23 +246,8 @@ export async function clickMouse(button = 'left', ms = 30) {
   await sendMouseButton(button, 'release')
 }
 
-// --- build 27 追加: Phase 6 一部 (Haptic + Face ID) ---
+// --- 追加入力 / 画面回転 ---
 
-/** Haptic feedback: pattern = 'light'|'medium'|'heavy'|'selection'|'success'|'warning'|'error' */
-export async function haptic(pattern = 'light') {
-  if (!isNativeApp()) return
-  return Moonlight.haptic({ pattern })
-}
-
-// authenticate は削除: iOS 16+ の標準「アプリを Face ID でロック」 で代替
-
-// --- 観測 / 追加入力 / 画面回転 (= build 27 完成版で追加) ---
-
-/** リアルタイム RTT/fps/kbps/codec を取得 (= 遅延 overlay 用) */
-export async function getStats() {
-  if (!isNativeApp()) return { connected: false }
-  return Moonlight.getStats()
-}
 /** UTF-8 テキスト送信 (= IME 経由の日本語入力等を Mac へ) */
 export async function sendUtf8Text(text) {
   return Moonlight.sendUtf8Text({ text })
@@ -272,10 +259,6 @@ export async function sendHighResScroll(delta, horizontal = false) {
 /** IDR frame 再要求 (= PiP 復帰 / network glitch 後に画像復活) */
 export async function requestIdrFrame() {
   return Moonlight.requestIdrFrame()
-}
-/** 接続中断 (= disconnect の強い版) */
-export async function interrupt() {
-  return Moonlight.interrupt()
 }
 /** 画面回転 lock: orientation = 'auto' | 'portrait' | 'landscape' | 'landscapeLeft' | 'landscapeRight' */
 export async function setOrientationLock(orientation) {

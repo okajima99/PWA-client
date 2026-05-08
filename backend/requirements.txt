@@ -4,4 +4,3 @@ python-multipart
 httpx
 claude-agent-sdk>=0.1.63
 pywebpush>=2.0.0
-aiortc>=1.9.0

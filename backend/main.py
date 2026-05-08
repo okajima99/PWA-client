@@ -10,7 +10,6 @@
 - files_routes.py  ファイル系エンドポイント
 - proxy_routes.py  Anthropic プロキシ
 - push.py          Web Push 配信 + エンドポイント
-- screen_routes.py デスクトップ画面 + 音声の WebRTC 配信
 """
 import logging
 import time
@@ -25,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 ERROR_LOG_PATH = Path(__file__).parent.parent / "logs" / "backend.error.log"
 logging.basicConfig(
     filename=str(ERROR_LOG_PATH),
-    level=logging.ERROR,
+    level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -42,7 +41,6 @@ import debug_routes  # noqa: E402
 import files_routes  # noqa: E402
 import proxy_routes  # noqa: E402
 import push  # noqa: E402
-import screen_routes  # noqa: E402
 
 
 @asynccontextmanager
@@ -61,12 +59,12 @@ async def lifespan(app: FastAPI):
                 try:
                     f.unlink(missing_ok=True)
                 except Exception:
-                    pass
+                    logger.debug("upload tmp unlink failed: %s", f, exc_info=True)
     if ERROR_LOG_PATH.exists() and ERROR_LOG_PATH.stat().st_size > 10 * 1024 * 1024:
         try:
             ERROR_LOG_PATH.write_text("")
         except Exception:
-            pass
+            logger.debug("error log truncate failed", exc_info=True)
 
     # per-tab ログ: 既存セッションぶんの掃除を起動時に 1 回走らせる
     # (セッション終了で都度 prune する設計だが、 取りこぼし対策として保険で実行)
@@ -74,14 +72,6 @@ async def lifespan(app: FastAPI):
         prune_all_existing(list(sessions_meta.keys()))
     except Exception:
         logger.exception("prune_all_existing failed")
-
-    # 旧 backend インスタンスから孤児化した ffmpeg を掃除する。
-    # launchctl kickstart -k で SIGTERM 後に lifespan cleanup が間に合わなかった場合に
-    # ffmpeg が画面収録デバイスを掴んだまま残るのを救済する。 詳細は screen_routes.py。
-    try:
-        screen_routes.kill_orphan_ffmpegs()
-    except Exception:
-        logger.exception("kill_orphan_ffmpegs failed")
 
     yield
 
@@ -94,11 +84,6 @@ async def lifespan(app: FastAPI):
     for session_id in list(stream_states.keys()):
         await disconnect_client(session_id)
     close_all_session_logs()
-    # screen share の peer / capture が残ってたら確実に止める
-    try:
-        await screen_routes.shutdown()
-    except Exception:
-        logger.exception("screen_routes.shutdown failed")
     await http_client.aclose()
 
 
@@ -116,7 +101,6 @@ app.include_router(debug_routes.router)
 app.include_router(files_routes.router)
 app.include_router(proxy_routes.router)
 app.include_router(push.router)
-app.include_router(screen_routes.router)
 
 
 # --- AltStore 配信用 static mount ---

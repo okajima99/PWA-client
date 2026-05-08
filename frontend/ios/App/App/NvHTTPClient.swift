@@ -57,12 +57,19 @@ import Security
         self.httpsPort = httpsPort
         self.httpPort = httpPort
         super.init()
+        // TOFU で保存済 server cert pin を読み出す (= PairingManager phase 1 で
+        // UserDefaults に書いた SHA256 fingerprint)。 無い場合は nil で TOFU 未確立、
+        // 接続時の delegate で「初回信頼」 を許可する。
+        let pinKey = "app.moonlight.serverPin.\(host)"
+        if let pinned = UserDefaults.standard.data(forKey: pinKey) {
+            self.pinnedServerCertSHA256 = pinned
+        }
     }
 
     // MARK: - Public API
 
     /// HTTPS GET、 query 引数を URL に組み込む。
-    /// build 21 で URL + レスポンス body 全文を NSLog に流すよう変更 (= 沼回避の観測ベース)。
+    /// URL + レスポンス body 全文を log に流す (= 観測ベース debug 用)。
     public func get(
         path: String,
         params: [String: String] = [:],
@@ -157,7 +164,7 @@ import Security
     }
 
     /// /cancel (HTTPS) で Sunshine 側の現状 stream / app をクリア。
-    /// build 23 で導入: 過去 /launch で起動した app が running 状態で残ると
+    /// 過去 /launch で起動した app が running 状態で残ると
     /// `An app is already running on this host` (400) で sessionUrl0 missing になる。
     /// connect 前に常に呼んで「currentgame をクリア → 新規 /launch」 を成立させる。
     public func cancel(completion: @escaping (Result<Void, Error>) -> Void) {
@@ -171,7 +178,7 @@ import Security
 
     /// /applist (HTTPS) で Sunshine が公開してる app 一覧を取得。
     /// 公式 Moonlight が AppCollectionView で動的取得してる方式。
-    /// build 21 で導入: app id をハードコードしない (Sunshine 側で id が変わる)。
+    /// app id をハードコードしない (= Sunshine 側で id が動的に変わる)。
     public func listApps(completion: @escaping (Result<[(name: String, id: String)], Error>) -> Void) {
         get(path: "/applist", useTLS: true) { result in
             switch result {

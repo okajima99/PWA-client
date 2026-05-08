@@ -10,6 +10,10 @@
   display: flex;
   gap: 12px;
   align-items: center;
+  /* JS から取り出して setVideoFrame の y に加算するため CSS 変数で safe-area top を expose。
+     getBoundingClientRect は WebView 内座標、 native streamView は viewController.view の
+     subview (= status bar 含む全画面) なので safe-area-top の差分を web 側で補う必要がある。 */
+  --sat: env(safe-area-inset-top, 0);
   /* native (Capacitor) では env(safe-area-inset-top) が notch / Dynamic Island の
      高さを返す。 PWA Safari / 通常 web では 0 になるので、 PWA 側の見た目は不変。 */
   padding: calc(6px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 6px calc(12px + env(safe-area-inset-left));
@@ -253,98 +257,6 @@
   border-color: #4abf8a;
   color: #4abf8a;
 }
-.screen-toggle.connecting {
-  border-color: #d4a64a;
-  color: #d4a64a;
-}
-
-/* デスクトップ画面共有エリア (topbar と messages の間に挟む) */
-.desktop-view {
-  width: 100%;
-  height: 40dvh;
-  background: #000;
-  overflow: hidden;
-  touch-action: none;
-  position: relative;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--border);
-}
-.desktop-view video {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  display: block;
-  pointer-events: none;
-  background: #000;
-}
-.desktop-view-placeholder {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  color: #888;
-  font-size: 13px;
-  /* アクション無し時はジェスチャを下層に通す。 ボタン側で pointer-events: auto に戻す */
-  pointer-events: none;
-  text-align: center;
-  padding: 0 16px;
-}
-.desktop-view-actions {
-  display: flex;
-  gap: 8px;
-  pointer-events: auto;
-}
-.desktop-view-btn {
-  background: #2a2a2a;
-  color: #ddd;
-  border: 1px solid #555;
-  border-radius: 6px;
-  padding: 6px 14px;
-  font-size: 13px;
-  cursor: pointer;
-}
-.desktop-view-btn.cancel {
-  background: #2a1a1a;
-  border-color: #553333;
-  color: #aaa;
-}
-.desktop-stats {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  background: rgba(0, 0, 0, 0.55);
-  color: #ddd;
-  font-size: 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  padding: 4px 8px;
-  border-radius: 4px;
-  border: none;
-  cursor: pointer;
-  z-index: 2;
-  letter-spacing: -0.2px;
-}
-.desktop-stats-toggle {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  background: rgba(0, 0, 0, 0.4);
-  color: #ddd;
-  border: none;
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-size: 12px;
-  cursor: pointer;
-  z-index: 2;
-}
-@media (orientation: landscape) {
-  .desktop-view {
-    height: 60dvh;
-  }
-}
-
 /* サイドドロワー */
 .drawer-overlay {
   position: fixed;
@@ -648,32 +560,57 @@
   50% { opacity: 0.4; }
 }
 
-/* stream の表示領域。 native の AVSampleBufferDisplayLayer はこの div の位置・サイズに
-   合わせて配置される (= setVideoFrame で同期)。 ここ自体は透明な placeholder。
-   sticky / fixed 配置にせず、 通常の flex item として扱う (= キーボード退避で WebView が
-   shift されても、 setVideoFrame に画面絶対座標 (= visualViewport 補正済) を渡すので
-   native streamView は画面上端固定のまま動かない)。 */
-.video-slot {
+/* stream-overlay: flex item として topbar 下に配置。 native streamView は setVideoFrame で
+   同位置に追従、 キーボード on の間は引数を画面上端固定に切替。 この div 自体は touch を
+   受ける layer、 native streamView は isUserInteractionEnabled=false で touch を pass-through、
+   だから overlay の touch handler にジェスチャが届く。 */
+.stream-overlay {
+  position: relative;
   width: 100%;
   aspect-ratio: 16 / 9;
   background: #000;
   flex-shrink: 0;
+  /* デフォルトの iOS gesture (= スクロール / ズーム) を全部抑止 */
+  touch-action: none;
 }
 
-/* stream の stage status を topbar 下に薄く表示 (接続中の進行確認) */
-.stream-status-line {
-  font-size: 11px;
-  padding: 4px 12px;
-  border-bottom: 1px solid #2a2a2a;
-  background: #1a1a1a;
-  color: #aaa;
+.stream-overlay-controls {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  gap: 8px;
+}
+.stream-ctrl-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 16px;
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-family: ui-monospace, monospace;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
-.stream-status-line.error { color: #ff8a8a; background: #2a1414; }
-.stream-status-line.ok { color: #8aff8a; background: #142a14; }
+.stream-ctrl-btn:active {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+/* IME 入力用の隠れ input。 タップに当たらないが focus は受けて iOS キーボード出る。 */
+.ime-hidden-input {
+  position: absolute;
+  top: -100px;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  /* font-size 16px 未満だと iOS が auto-zoom する → 16px 固定で防ぐ */
+  font-size: 16px;
+}
 
 /* メッセージ */
 .messages-container {

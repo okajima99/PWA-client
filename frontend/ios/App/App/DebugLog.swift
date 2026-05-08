@@ -22,7 +22,7 @@ import Foundation
     }()
 
     /// backend の HTTPS endpoint。 Tailscale Let's Encrypt cert なので self-signed exception 不要。
-    /// VITE_NATIVE_API_BASE と同じ値。 build 22 時点では固定値。
+    /// VITE_NATIVE_API_BASE と同じ値 (= 現状ハードコード、 必要なら設定化)。
     private static let endpoint = URL(string: "https://user.tailnet.ts.net/debug/log")!
 
     @objc public static func send(_ tag: String, _ message: String) {
@@ -38,7 +38,7 @@ import Foundation
 }
 
 // Obj-C / C から呼べる C 関数 wrapper (= 公式 Connection.m に observer 行を入れるため)。
-// build 24 で導入: LiStartConnection の前後で main() 進行を観測する。
+// Obj-C / C から呼べる C 関数 wrapper: LiStartConnection の前後で観測 log を入れる用。
 @_cdecl("HavenDebugLog")
 public func HavenDebugLog(_ tag: NSString, _ message: NSString) {
     DebugLog.send(tag as String, message as String)

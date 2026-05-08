@@ -25,7 +25,7 @@ export default function FileTreePanel({ onOpenFile, onClose, initialPath }) {
 
   useEffect(() => {
     // initialPath プロップ変更時の history リセットは意図的
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     setHistory([])
     loadDir(initialPath || HOME)
   }, [initialPath, loadDir])

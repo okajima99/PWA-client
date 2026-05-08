@@ -16,17 +16,15 @@
 - GET  /agents                        agent 種別一覧 (作成時の選択肢)
 """
 import asyncio
-import base64
 import logging
-import mimetypes
 import uuid
-from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
-from config import AGENTS, SUPPORTED_IMAGE_TYPES, UPLOADS_TMP
+from chat_content import build_content, save_to_tmp
+from config import AGENTS
 from sdk_runner import disconnect_client, run_sdk_background
 from session_logging import (
     delete_session_log,
@@ -53,50 +51,50 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# --- ファイル一時保存 / コンテンツ組み立て ---
-async def save_to_tmp(files: List[UploadFile], session_id: str) -> List[dict]:
-    UPLOADS_TMP.mkdir(parents=True, exist_ok=True)
-    saved = []
-    for f in files:
-        if not f.size:
-            continue
-        ext = Path(f.filename or "file").suffix or ""
-        dest = UPLOADS_TMP / f"{uuid.uuid4().hex}{ext}"
-        data = await f.read()
-        dest.write_bytes(data)
-        session_tmp_files.setdefault(session_id, []).append(dest)
-        saved.append({
-            "name": f.filename or dest.name,
-            "path": str(dest),
-            "mime": f.content_type or mimetypes.guess_type(f.filename or "")[0] or "",
-        })
-    return saved
+# --- 共通 helper (chat_stream の new-turn 開始 / chat_stop で重複してた処理) ---
+async def _interrupt_and_mark_orphan(state, session_id: str, log_context: str):
+    """SDK client が走ってれば interrupt、 実行中の tool_use を orphan として記録。
+    次ターン先頭で synthetic tool_result を差し込んで Anthropic API の
+    「tool_use ids without tool_result」 400 を回避する用。"""
+    if state.client is not None:
+        try:
+            await state.client.interrupt()
+        except Exception:
+            logger.exception("interrupt failed %s for session=%s", log_context, session_id)
+    cur = agent_status[session_id].get("current_tool")
+    if cur and cur.get("id"):
+        state.orphaned_tool_use_id = cur["id"]
 
 
-def build_content(message: str, saved_files: List[dict]) -> list:
-    content = []
-    for sf in saved_files:
-        mime = sf["mime"]
-        path_obj = Path(sf["path"])
-        if mime in SUPPORTED_IMAGE_TYPES:
-            b64 = base64.b64encode(path_obj.read_bytes()).decode()
-            content.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": mime, "data": b64},
-            })
-            content.append({"type": "text", "text": f"[添付画像のパス: {sf['path']}]"})
-        else:
-            try:
-                text_content = path_obj.read_text(errors="replace")
-                content.append({
-                    "type": "text",
-                    "text": f"[添付ファイル: {sf['path']} ({sf['name']})]\n```\n{text_content}\n```",
-                })
-            except Exception:
-                pass
-    if message:
-        content.append({"type": "text", "text": message})
-    return content
+async def _await_task_cancellation(state):
+    """state.task をキャンセルして完全終了を待つ。 Python 3.8+ の CancelledError は
+    BaseException 直系なので明示で握り潰す。"""
+    if state.task and not state.task.done():
+        state.task.cancel()
+        try:
+            await state.task
+        except (Exception, asyncio.CancelledError):
+            pass
+
+
+# --- SSE replay generator (chat_stream / reconnect_stream で共有) ---
+async def _sse_replay(state, from_pos: int = 0):
+    """state.buffer を from_pos から再生 + 15 秒間隔で keep-alive ping。
+    state.complete + sent が buffer 末尾に追いついたら終了。"""
+    sent = max(0, from_pos)
+    last_heartbeat = asyncio.get_event_loop().time()
+    while True:
+        while sent < len(state.buffer):
+            yield state.buffer[sent]
+            sent += 1
+            last_heartbeat = asyncio.get_event_loop().time()
+        if state.complete and sent >= len(state.buffer):
+            break
+        now = asyncio.get_event_loop().time()
+        if now - last_heartbeat >= 15:
+            yield ": ping\n\n"
+            last_heartbeat = now
+        await asyncio.sleep(0.05)
 
 
 # --- セッション CRUD ---
@@ -147,7 +145,7 @@ async def delete_session(session_id: str):
         try:
             p.unlink(missing_ok=True)
         except Exception:
-            pass
+            logger.debug("tmp file unlink failed: %s", p, exc_info=True)
     # per-tab ログを丸ごと削除
     delete_session_log(session_id)
     unregister_session(session_id)
@@ -169,22 +167,9 @@ async def chat_stream(
     # 新ターン開始: 直前のタスクが残っていれば完全にキャンセル・待機する
     # （割り込まれた tool_use は orphan として記録し、下で tool_result を合成して閉じる）
     if not state.complete and state.task and not state.task.done():
-        try:
-            if state.client is not None:
-                await state.client.interrupt()
-        except Exception:
-            logger.exception("interrupt failed during new-stream for session=%s", session_id)
-        cur = agent_status[session_id].get("current_tool")
-        if cur and cur.get("id"):
-            state.orphaned_tool_use_id = cur["id"]
+        await _interrupt_and_mark_orphan(state, session_id, "during new-stream")
         agent_status[session_id]["current_tool"] = None
-        state.task.cancel()
-        try:
-            await state.task
-        except (Exception, asyncio.CancelledError):
-            # CancelledError は Python 3.8+ で BaseException 直系なので Exception では取れない。
-            # 並行 cleanup を継続するため明示的に握り潰す。
-            pass
+        await _await_task_cancellation(state)
 
     if state.complete or state.task is None or state.task.done():
         saved_files = await save_to_tmp(files, session_id)
@@ -226,24 +211,8 @@ async def chat_stream(
         state.complete = False
         state.task = asyncio.create_task(run_sdk_background(session_id, content, user_request_id))
 
-    async def generate():
-        sent = 0
-        last_heartbeat = asyncio.get_event_loop().time()
-        while True:
-            while sent < len(state.buffer):
-                yield state.buffer[sent]
-                sent += 1
-                last_heartbeat = asyncio.get_event_loop().time()
-            if state.complete and sent >= len(state.buffer):
-                break
-            now = asyncio.get_event_loop().time()
-            if now - last_heartbeat >= 15:
-                yield ": ping\n\n"
-                last_heartbeat = now
-            await asyncio.sleep(0.05)
-
     return StreamingResponse(
-        generate(),
+        _sse_replay(state, 0),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -272,11 +241,7 @@ async def chat_stop(session_id: str):
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
 
     state = stream_states[session_id]
-    if state.client is not None:
-        try:
-            await state.client.interrupt()
-        except Exception:
-            logger.exception("interrupt failed for session=%s", session_id)
+    await _interrupt_and_mark_orphan(state, session_id, "from /stop")
 
     if state.task and not state.task.done():
         # SDK の interrupt で receive_response が終了するはずだが、念のためキャンセルもトリガー
@@ -285,20 +250,9 @@ async def chat_stop(session_id: str):
     if state.pending_question is not None and not state.pending_question.done():
         state.pending_question.cancel()
 
-    # 実行中だった tool_use を孤児として記録（次ターン先頭で tool_result を合成して閉じる）
-    cur = agent_status[session_id].get("current_tool")
-    if cur and cur.get("id"):
-        state.orphaned_tool_use_id = cur["id"]
-
-    # ここでタスクが完全に終わるまで await する。await しないと、stop のすぐ後に
+    # ここでタスクが完全に終わるまで await する。 await しないと、 stop のすぐ後に
     # 次ターンが来た際に古いタスクの finally と新ターンの初期化が race する。
-    if state.task and not state.task.done():
-        try:
-            await state.task
-        except (Exception, asyncio.CancelledError):
-            # CancelledError は Python 3.8+ で BaseException 直系なので Exception では取れない。
-            # 並行 cleanup を継続するため明示的に握り潰す。
-            pass
+    await _await_task_cancellation(state)
 
     # interrupt 後の SDK client は内部状態が壊れている可能性があり、再利用すると
     # 次ターンの ResultMessage が is_error=true で帰ってきて「⚠ エラーで停止」
@@ -330,7 +284,7 @@ async def end_session(session_id: str):
         try:
             p.unlink(missing_ok=True)
         except Exception:
-            pass
+            logger.debug("tmp file unlink failed: %s", p, exc_info=True)
     # per-tab ログにセッション終了マーカーを書いて、 古いセッション分を prune
     mark_session_end(session_id)
     prune_session_log(session_id)
@@ -370,24 +324,8 @@ async def reconnect_stream(session_id: str, from_pos: int = Query(default=0, ali
     if state.complete and from_pos >= len(state.buffer):
         return Response(status_code=204)
 
-    async def generate():
-        sent = max(0, from_pos)
-        last_heartbeat = asyncio.get_event_loop().time()
-        while True:
-            while sent < len(state.buffer):
-                yield state.buffer[sent]
-                sent += 1
-                last_heartbeat = asyncio.get_event_loop().time()
-            if state.complete and sent >= len(state.buffer):
-                break
-            now = asyncio.get_event_loop().time()
-            if now - last_heartbeat >= 15:
-                yield ": ping\n\n"
-                last_heartbeat = now
-            await asyncio.sleep(0.05)
-
     return StreamingResponse(
-        generate(),
+        _sse_replay(state, from_pos),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

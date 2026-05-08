@@ -7,10 +7,9 @@
 #import <Foundation/Foundation.h>
 #import <Capacitor/Capacitor.h>
 
-// build 26 で web 主導アーキテクチャに変更:
-// - connect は廃止、 startStream で JS から flow を制御
-// - request を新設、 client cert 付き HTTP を JS から実行
-// build 27: Phase 5 PiP + Phase 5.5 全操作 + Phase 6 一部 (haptic / Face ID) を一括追加
+// 「web 主導アーキテクチャ」: connect は廃止、 startStream で JS から flow を制御。
+// request method で client cert 付き HTTP を JS から実行可能。
+// PiP / 全パソコン操作 / haptic 等は plugin method 経由で JS から呼ぶ。
 CAP_PLUGIN(MoonlightPlugin, "Moonlight",
     CAP_PLUGIN_METHOD(pair, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(request, CAPPluginReturnPromise);
@@ -18,7 +17,6 @@ CAP_PLUGIN(MoonlightPlugin, "Moonlight",
     CAP_PLUGIN_METHOD(disconnect, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(setVideoFrame, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(getStatus, CAPPluginReturnPromise);
-    CAP_PLUGIN_METHOD(togglePiP, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(enablePiP, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(disablePiP, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(sendMouseMove, CAPPluginReturnPromise);

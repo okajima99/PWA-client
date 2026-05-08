@@ -13,7 +13,7 @@ function ActivityBar({ status }) {
   useEffect(() => {
     if (!allDone) {
       // allDone が false に戻った時に hideDone を解除するための意図的なリセット
-      // eslint-disable-next-line react-hooks/set-state-in-effect
+       
       setHideDone(prev => (prev ? false : prev))
       return
     }

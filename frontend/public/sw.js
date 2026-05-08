@@ -59,16 +59,9 @@ self.addEventListener('notificationclick', (event) => {
         await fetch(`/notifications/${encodeURIComponent(notifId)}/read`, { method: 'POST' })
       } catch { /* ignore */ }
     }
-    // バッジ更新
-    if (self.navigator && self.navigator.setAppBadge) {
-      try {
-        const res = await fetch('/notifications/unread-count')
-        if (res.ok) {
-          const j = await res.json()
-          if (typeof j.unread_count === 'number') self.navigator.setAppBadge(j.unread_count)
-        }
-      } catch { /* ignore */ }
-    }
+    // バッジは PWA 起動直後に App.jsx の syncBadgeFromServer で再同期される。
+    // ここで unread-count を再 fetch するのは冗長 (= 既読化 POST と GET の 2 往復、
+    // 直後の sync で結局上書きされる) ので削除済。
     // iOS は SW から app:// を openWindow で直接呼んでも動かない仕様。
     // 代わりに PWA を bridgeUrl で開く → PWA 側 (NotificationCenter.jsx) が
     // ?deep=1 を見て location.href = app://chat/<sid> を実行 → App 起動。

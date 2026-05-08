@@ -13,8 +13,8 @@
 #import <VideoToolbox/VideoToolbox.h>
 #import <AVFoundation/AVFoundation.h>
 
-// App build 24 で観測点として追加。 DebugLog.swift の @_cdecl 経由で
-// backend の /debug/log に流して /tmp/app-debug.log で読む用。
+// 観測点: DebugLog.swift の @_cdecl 経由で backend の /debug/log に流して
+// /tmp/app-debug.log で読む用 (= iOS 18+ で NSLog が idevicesyslog に届かない回避策)。
 extern void HavenDebugLog(NSString* tag, NSString* message);
 
 #define SDL_MAIN_HANDLED
@@ -44,14 +44,25 @@ static video_stats_t currentVideoStats;
 static video_stats_t lastVideoStats;
 static NSLock* videoStatsLock;
 
-// build 36: SDL2 audio path 撤去 → AVAudioEngine 直接実装に切替。
-// Capacitor + WKWebView 環境で SDL の iOS audio backend が壊れる (機械音問題) ため、
-// iOS native API (= AVAudioEngine + AVAudioPlayerNode) で代替。 libopus decode は維持。
-static AVAudioEngine* g_audioEngine;
-static AVAudioPlayerNode* g_audioPlayer;
-static AVAudioFormat* g_audioFormat;
+// initLock / videoStatsLock を起動時 1 回だけ確実に初期化 (= initWithConfig 内の
+// defensive init は thread race で nil チェック → alloc が同時並行する可能性ある)。
++ (void)initialize {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        initLock = [[NSLock alloc] init];
+        videoStatsLock = [[NSLock alloc] init];
+    });
+}
+
+// audio path: 公式 moonlight-ios と数値レベルで一致した SDL2 経路に
+// `setPreferredSampleRate(48000)` を SDL_OpenAudioDevice の直前で呼ぶ追加だけ加えてある。
+// これは SDL #9635 (preferred sample rate 無視) を AVAudioSession 経由で hardware rate を
+// 48k に固定して回避するための処置。 AppDelegate で呼ぶと SDL の RemoteIO unit と競合する
+// ので、 必ず ArInit 内のこの位置で呼ぶこと。
+static SDL_AudioDeviceID audioDevice;
+static void* audioBuffer;
+static int audioFrameSize;
 static OPUS_MULTISTREAM_CONFIGURATION audioConfig;
-static int g_audioFramesPerBuffer;
 
 static VideoDecoderRenderer* renderer;
 
@@ -197,62 +208,52 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit)
                              decodeUnit:decodeUnit];
 }
 
+
+// === SDL2 audio path (= 公式 moonlight-ios + setPreferredSampleRate(48k) 追加) ===
+
 int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, void* context, int flags)
 {
     int err;
+    SDL_AudioSpec want, have;
 
-    // build 36: SDL2 audio path 撤去 → AVAudioEngine 直接実装。
-    // SDL の iOS audio backend が Capacitor + WKWebView 環境で壊れる (= 機械音問題、
-    // 公式と同コードでも再現)。 iOS native API で代替して環境差を回避する。
-
-    // AVAudioSession を Playback + MixWithOthers で確保 (公式 Connection.m と同じ設定)
+    // 上記コメント参照: SDL_OpenAudioDevice の直前で hardware rate を 48k に固定。
     NSError* sessionErr = nil;
-    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback
-                                     withOptions:AVAudioSessionCategoryOptionMixWithOthers
-                                           error:&sessionErr];
+    [[AVAudioSession sharedInstance] setPreferredSampleRate:(double)opusConfig->sampleRate
+                                                       error:&sessionErr];
     if (sessionErr) {
         HavenDebugLog(@"Connection.m::ArInit",
-                      [NSString stringWithFormat:@"setCategory failed: %@", sessionErr.localizedDescription]);
+                      [NSString stringWithFormat:@"setPreferredSampleRate failed: %@", sessionErr.localizedDescription]);
         sessionErr = nil;
     }
-    [[AVAudioSession sharedInstance] setActive:YES error:&sessionErr];
-    if (sessionErr) {
-        HavenDebugLog(@"Connection.m::ArInit",
-                      [NSString stringWithFormat:@"setActive failed: %@", sessionErr.localizedDescription]);
-    }
 
-    // AVAudioFormat: signed 16-bit interleaved (opus_multistream_decode の出力と一致)
-    g_audioFormat = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16
-                                                     sampleRate:opusConfig->sampleRate
-                                                       channels:opusConfig->channelCount
-                                                    interleaved:YES];
-    if (!g_audioFormat) {
-        HavenDebugLog(@"Connection.m::ArInit", @"AVAudioFormat init failed");
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
+        HavenDebugLog(@"Connection.m::ArInit",
+                      [NSString stringWithFormat:@"SDL_InitSubSystem failed: %s", SDL_GetError()]);
         return -1;
     }
 
-    // AVAudioEngine + AVAudioPlayerNode セットアップ
-    g_audioEngine = [[AVAudioEngine alloc] init];
-    g_audioPlayer = [[AVAudioPlayerNode alloc] init];
-    [g_audioEngine attachNode:g_audioPlayer];
-    [g_audioEngine connect:g_audioPlayer to:g_audioEngine.mainMixerNode format:g_audioFormat];
+    SDL_zero(want);
+    want.freq = opusConfig->sampleRate;
+    want.format = AUDIO_S16;
+    want.channels = opusConfig->channelCount;
+    want.samples = opusConfig->samplesPerFrame;
 
-    NSError* engineErr = nil;
-    [g_audioEngine startAndReturnError:&engineErr];
-    if (engineErr) {
+    audioDevice = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (audioDevice == 0) {
         HavenDebugLog(@"Connection.m::ArInit",
-                      [NSString stringWithFormat:@"AVAudioEngine start failed: %@", engineErr.localizedDescription]);
+                      [NSString stringWithFormat:@"SDL_OpenAudioDevice failed: %s", SDL_GetError()]);
+        ArCleanup();
         return -1;
     }
-    // build 39: [g_audioPlayer play] を ArInit で呼ぶ (= build 36 状態に戻す)。
-    // build 37 で「empty queue で play は scheduleBuffer 無視される」 と私が判断したが、
-    // Apple 公式 docs + 公式 moonlight-ios の SDL_PauseAudioDevice(0) を ArInit 末尾で呼ぶ
-    // pattern と整合 → 公式 docs では問題なし、 build 37 の判断は誤り。 戻す。
-    [g_audioPlayer play];
 
-    // Opus decoder
     audioConfig = *opusConfig;
-    g_audioFramesPerBuffer = opusConfig->samplesPerFrame;
+    audioFrameSize = opusConfig->samplesPerFrame * sizeof(short) * opusConfig->channelCount;
+    audioBuffer = SDL_malloc(audioFrameSize);
+    if (audioBuffer == NULL) {
+        HavenDebugLog(@"Connection.m::ArInit", @"SDL_malloc failed");
+        ArCleanup();
+        return -1;
+    }
 
     opusDecoder = opus_multistream_decoder_create(opusConfig->sampleRate,
                                                   opusConfig->channelCount,
@@ -267,83 +268,78 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
         return -1;
     }
 
+    // 再生開始 (= SDL queue から audio device に流し込む thread が動き始める)
+    SDL_PauseAudioDevice(audioDevice, 0);
+
+    // 公式 moonlight-ios::Connection.m の最終行と同じ: SDL がデフォで DuckOthers を立てる
+    // のを MixWithOthers で打ち消す (= 他 app の音を下げない)
+    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback
+                                     withOptions:AVAudioSessionCategoryOptionMixWithOthers
+                                           error:nil];
+
     HavenDebugLog(@"Connection.m::ArInit",
-                  [NSString stringWithFormat:@"AVAudioEngine ready: sampleRate=%.0f channels=%d framesPerBuffer=%d session=%@ active=%d",
-                   g_audioFormat.sampleRate, (int)g_audioFormat.channelCount, g_audioFramesPerBuffer,
-                   [AVAudioSession sharedInstance].category,
-                   [AVAudioSession sharedInstance].isOtherAudioPlaying ? 0 : 1]);
+                  [NSString stringWithFormat:@"SDL2 ready: opusRate=%d hwRate=%.0f wantFreq=%d haveFreq=%d wantCh=%d haveCh=%d wantSamples=%d haveSamples=%d",
+                   opusConfig->sampleRate,
+                   [AVAudioSession sharedInstance].sampleRate,
+                   want.freq, have.freq, want.channels, have.channels,
+                   want.samples, have.samples]);
     return 0;
 }
 
 void ArCleanup(void)
 {
-    if (g_audioPlayer != nil) {
-        @try { [g_audioPlayer stop]; } @catch (NSException* e) {}
-        g_audioPlayer = nil;
-    }
-    if (g_audioEngine != nil) {
-        @try { [g_audioEngine stop]; } @catch (NSException* e) {}
-        g_audioEngine = nil;
-    }
-    g_audioFormat = nil;
-
     if (opusDecoder != NULL) {
         opus_multistream_decoder_destroy(opusDecoder);
         opusDecoder = NULL;
     }
+
+    if (audioDevice != 0) {
+        SDL_CloseAudioDevice(audioDevice);
+        audioDevice = 0;
+    }
+
+    if (audioBuffer != NULL) {
+        SDL_free(audioBuffer);
+        audioBuffer = NULL;
+    }
+
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
 void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
 {
-    if (opusDecoder == NULL || g_audioPlayer == nil || g_audioFormat == nil) {
-        return;
-    }
+    int decodeLen;
 
-    // build 39: 閾値を 30ms → 100ms に上げて jitter 吸収余裕を持たせる。
-    // 公式 SDL2 は内部 ring buffer + SDL_Delay で待機 (= block で jitter 吸収) するが、
-    // 私の AVAudioEngine 実装は drop only。 30ms だと Tailscale jitter (= max 340ms 観測) で
-    // 即 underrun → 「ブチ切れ音」。 100ms に上げて 1-2 packet 遅延を吸収可能に。
-    // latency が 30ms → 100ms に増えるが体感差は微小、 機械音より遥かにマシ。
+    // 100ms 以上 audio queue に貯まってたらスキップ (= Tailscale jitter 吸収余裕、
+    // 体感ラグ <100ms は知覚閾値外、 ぶつぶつ減のトレードオフ)。
     if (LiGetPendingAudioDuration() > 100) {
         return;
     }
 
-    // PCM buffer 確保 (= 1 opus frame 分、 通常 240 samples per channel @ 48kHz = 5ms)
-    AVAudioPCMBuffer* buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:g_audioFormat
-                                                            frameCapacity:(AVAudioFrameCount)g_audioFramesPerBuffer];
-    if (buffer == nil) {
-        return;
+    decodeLen = opus_multistream_decode(opusDecoder, (unsigned char *)sampleData, sampleLength,
+                                        (short*)audioBuffer, audioConfig.samplesPerFrame, 0);
+    if (decodeLen > 0) {
+        // SDL audio queue が積み上がりすぎないよう backpressure (= 20 packet 上限)
+        while (SDL_GetQueuedAudioSize(audioDevice) / audioFrameSize > 20) {
+            SDL_Delay(1);
+        }
+
+        if (SDL_QueueAudio(audioDevice,
+                           audioBuffer,
+                           sizeof(short) * decodeLen * audioConfig.channelCount) < 0) {
+            HavenDebugLog(@"Connection.m::ArDecode",
+                          [NSString stringWithFormat:@"SDL_QueueAudio failed: %s", SDL_GetError()]);
+        }
     }
 
-    // build 37: int16ChannelData[0] 経由で書き込み (= Apple 推奨 API)。
-    // interleaved Int16 stereo の場合 int16ChannelData[0] が唯一の interleaved buffer pointer
-    // を返す (stride = channels)。 audioBufferList->mBuffers[0].mData も同じ場所を指すが
-    // API 経由で書く方が動作保証されてる。
-    int16_t* dest = (int16_t*)buffer.int16ChannelData[0];
-    int decodeLen = opus_multistream_decode(opusDecoder,
-                                            (unsigned char*)sampleData, sampleLength,
-                                            dest, g_audioFramesPerBuffer, 0);
-    if (decodeLen <= 0) {
-        return;
-    }
-
-    buffer.frameLength = (AVAudioFrameCount)decodeLen;
-
-    // build 39: ArInit で play() 済 (= empty queue でも以降の schedule は受け付ける、 build 37 の判断撤回)。
-    // isPlaying check も削除 (= 余計な API call)。
-    [g_audioPlayer scheduleBuffer:buffer completionHandler:nil];
-
-    // build 37: ArDecodeAndPlaySample が呼ばれているか観測 (= 真因切り分け用)。
-    // 200 回ごと (= 約 1 秒に 1 回) 呼ばれ回数を log。 呼ばれてなければ moonlight-common-c の
-    // audio thread が動いてない、 呼ばれてるのに音出ない = AVAudioEngine 出力経路が真因。
+    // 観測 log: 200 call ごと (= 約 1 秒に 1 回 @ 5ms packet)
     static int g_arCallCount = 0;
     g_arCallCount++;
     if (g_arCallCount % 200 == 1) {
         HavenDebugLog(@"Connection.m::ArDecode",
-                      [NSString stringWithFormat:@"call #%d size=%d decodeLen=%d isPlaying=%d engineRunning=%d",
+                      [NSString stringWithFormat:@"call #%d sampleLen=%d decodeLen=%d queued=%u (samples)",
                        g_arCallCount, sampleLength, decodeLen,
-                       g_audioPlayer.isPlaying ? 1 : 0,
-                       g_audioEngine.isRunning ? 1 : 0]);
+                       audioDevice ? SDL_GetQueuedAudioSize(audioDevice) / (unsigned)sizeof(short) : 0]);
     }
 }
 
@@ -374,8 +370,8 @@ void ClConnectionTerminated(int errorCode)
 
 void ClLogMessage(const char* format, ...)
 {
-    // build 38: stderr → HavenDebugLog にリダイレクト (= moonlight-common-c の internal log を
-    // backend POST 経由で /tmp/app-debug.log に流す)。 audio packet drop の真因絞り込み用。
+    // moonlight-common-c の internal log を HavenDebugLog 経由で
+    // /tmp/app-debug.log に流す (= audio packet drop / stage 進行の観測用)。
     va_list va;
     va_start(va, format);
     char buf[1024];
@@ -494,10 +490,11 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     _streamConfig.supportedVideoFormats = config.supportedVideoFormats;
     _streamConfig.audioConfiguration = config.audioConfiguration;
     
-    // Since we require iOS 12 or above, we're guaranteed to be running
-    // on a 64-bit device with ARMv8 crypto instructions, so we don't
-    // need to check for that here.
-    _streamConfig.encryptionFlags = ENCFLG_ALL;
+    // ENCFLG_VIDEO のみ (= audio は plain で受信)。 Sunshine macOS は audio encryption v1
+    // を未実装の疑い (audio_control_t::set_sink() unimplemented 警告系列)、 ENCFLG_AUDIO を
+    // 立てると moonlight-c が AudioEncryptionEnabled=true で plain packet を AES 復号しようと
+    // して壊した bytes を opus に渡し OPUS_INVALID_PACKET (= -4) になる。
+    _streamConfig.encryptionFlags = ENCFLG_VIDEO;
     
     if ([Utils isActiveNetworkVPN]) {
         // Force remote streaming mode when a VPN is connected

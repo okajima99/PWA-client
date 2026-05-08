@@ -1,47 +1,15 @@
 // Web fallback for the Moonlight plugin.
 // PWA / 開発サーバで動いてる時、 native plugin の代わりにこれが呼ばれる。
-//
-// PWA 経由では Moonlight protocol を直接話せない (browser は raw UDP 不可)。
-// 既存 WebRTC 経由の画面共有 (useDesktopShare hook + backend screen_routes.py) は
-// 別系統で動いてるので、 ここでは「機能無し」 を返して呼び出し側に native 判定を促す。
-//
-// Phase 6 で WebRTC 経路を完全廃止する場合、 ここに moonlight-common-c の
-// WebAssembly 版 + WebTransport 経由の実装を入れる選択肢もある (今は未対応)。
+// browser は raw UDP 不可で Moonlight protocol を直接話せないので、 ここでは「機能無し」
+// を返して呼び出し側に native 判定 (= isNativeApp() false) を促す。
+// 実 plugin 表面 (= MoonlightPlugin.m + MoonlightInputBridge) と同じ method 名のみ stub。
 
 export class MoonlightWeb {
-  async pair() {
-    return { paired: false, error: 'native_only' }
-  }
-
-  async request() {
-    throw new Error('moonlight.request() is native-only')
-  }
-
-  async startStream() {
-    throw new Error('moonlight.startStream() is native-only')
-  }
-
-  async connect() {
-    return { connected: false, error: 'native_only' }
-  }
-
-  async disconnect() {
-    return
-  }
-
-  async setVideoFrame() {
-    return
-  }
-
-  async getStatus() {
-    return { state: 'idle', error: 'native_only' }
-  }
-
-  async togglePiP() {
-    return { active: false }
-  }
-
-  async addListener() {
-    return { remove: () => {} }
-  }
+  async pair() { return { paired: false, error: 'native_only' } }
+  async request() { throw new Error('moonlight.request() is native-only') }
+  async startStream() { throw new Error('moonlight.startStream() is native-only') }
+  async disconnect() { return }
+  async setVideoFrame() { return }
+  async getStatus() { return { state: 'idle', error: 'native_only' } }
+  async addListener() { return { remove: () => {} } }
 }

@@ -26,6 +26,9 @@ export function useStreamReconnect({
   onResultMessage,
 }) {
   const reconnectingRef = useRef({})
+  // (A4 fix) reconnect setTimeout の id を保持して unmount cleanup で clear する。
+  // unmount 中に発火すると state 更新 warning + 二重接続。
+  const reconnectTimerRef = useRef(null)
 
   const eventDeps = {
     setMessages,
@@ -109,7 +112,13 @@ export function useStreamReconnect({
         return { ...prev, [sid]: msgs }
       })
       requestAnimationFrame(() => { scrollToBottom() })
-      if (needsReconnect) setTimeout(() => reconnectStream(sid), 1000)
+      if (needsReconnect) {
+        if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null
+          reconnectStream(sid)
+        }, 1000)
+      }
     }
   }
 
@@ -243,6 +252,11 @@ export function useStreamReconnect({
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('pageshow', onPageShow)
       window.removeEventListener('focus', onFocus)
+      // (A4 fix) reconnect 待ちのタイマも cleanup
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

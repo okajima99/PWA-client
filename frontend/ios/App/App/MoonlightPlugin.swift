@@ -1,6 +1,6 @@
 // MoonlightPlugin.swift
 //
-// build 26 で「web 主導アーキテクチャ」 化。 plugin は generic な native 機能だけ expose する。
+// 「web 主導アーキテクチャ」: plugin は generic な native 機能だけ expose する。
 // 接続フローと値計算は frontend/src/native/moonlight-flow.js に移行。
 //
 // 公開メソッド:
@@ -22,16 +22,92 @@ import UIKit
 @objc(MoonlightPlugin)
 public class MoonlightPlugin: CAPPlugin {
 
-    private let moonlight = MoonlightBridge()
+    // MoonlightInputBridge.swift extension からも触る必要があるので internal 可視性 (= デフォルト)。
+    let moonlight = MoonlightBridge()
     private var streamView: UIView?
-    private var closeButton: UIButton?
+    // ✕ 閉じるボタンは無し (= web 側 🖥 トグルで disconnect、 UI 邪魔回避)。
+    // 代わりに statusLabel を streamView に被せて native 側で stream 進捗を表示。
+    private var statusLabel: UILabel?
+    private var statusHideTimer: Timer?
 
     public override func load() {
-        NSLog("[MoonlightPlugin] loaded (build 26: web-driven architecture, generic plugin)")
+        NSLog("[MoonlightPlugin] loaded")
         moonlight.setStatusCallback { [weak self] event, payload in
             var data: [String: Any] = ["event": event]
             for (k, v) in payload { data[k] = v }
             self?.notifyListeners("statusChange", data: data)
+            // native 側でも streamView 上の overlay label を更新 (= web 側 stream-status-line の代替)
+            self?.updateStatusOverlay(event: event, payload: payload)
+        }
+    }
+
+    /// streamView の上端中央に半透明の status pill を被せる。 stream の stage 進行 / 接続表示 /
+    /// 切断・失敗を user にフィードバック。 「videoContentShown」 で 1.5 秒後に自動非表示。
+    private func updateStatusOverlay(event: String, payload: [String: Any]) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let view = self.streamView else { return }
+            if self.statusLabel == nil {
+                let label = UILabel()
+                label.translatesAutoresizingMaskIntoConstraints = false
+                label.font = .systemFont(ofSize: 13, weight: .medium)
+                label.textColor = .white
+                label.backgroundColor = UIColor(white: 0, alpha: 0.55)
+                label.textAlignment = .center
+                label.layer.cornerRadius = 12
+                label.layer.masksToBounds = true
+                label.numberOfLines = 1
+                label.isUserInteractionEnabled = false
+                view.addSubview(label)
+                NSLayoutConstraint.activate([
+                    label.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+                    label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                    label.heightAnchor.constraint(equalToConstant: 24),
+                ])
+                // 横幅は内容に応じて (= padding 込み)、 ただし streamView の 80% を上限
+                label.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.8).isActive = true
+                self.statusLabel = label
+            }
+
+            // event → 表示文字
+            var text: String? = nil
+            var hideAfter: TimeInterval = 0  // 0 = 自動非表示しない
+            switch event {
+            case "stageStarting":
+                if let name = payload["name"] as? String { text = "⏳ \(name) …" }
+            case "stageComplete":
+                if let name = payload["name"] as? String { text = "✓ \(name)" }
+            case "stageFailed":
+                let name = (payload["name"] as? String) ?? "stage"
+                let code = (payload["code"] as? Int) ?? 0
+                text = "⚠ \(name) 失敗 (code=\(code))"
+                hideAfter = 4.0
+            case "connectionStarted":
+                text = "接続確立、 frame 待機…"
+            case "videoContentShown":
+                text = "✓ 表示中"
+                hideAfter = 1.5
+            case "connectionTerminated":
+                let code = (payload["code"] as? Int) ?? 0
+                text = "切断 (code=\(code))"
+                hideAfter = 3.0
+            case "userClosed":
+                self.statusLabel?.isHidden = true
+                self.statusHideTimer?.invalidate()
+                return
+            default:
+                return  // 他 event は overlay 更新しない (= getStats / pip 等)
+            }
+
+            if let t = text {
+                self.statusLabel?.text = "  \(t)  "
+                self.statusLabel?.isHidden = false
+                self.statusHideTimer?.invalidate()
+                if hideAfter > 0 {
+                    self.statusHideTimer = Timer.scheduledTimer(withTimeInterval: hideAfter, repeats: false) { [weak self] _ in
+                        self?.statusLabel?.isHidden = true
+                    }
+                }
+            }
         }
     }
 
@@ -79,48 +155,35 @@ public class MoonlightPlugin: CAPPlugin {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
 
-            // streamView を chat の上半分に重ねる layout (build 21 から維持)
+            // streamView を chat の上半分に重ねる layout
             guard let parent = self.bridge?.viewController?.view else {
                 call.reject("viewController.view が取得できません")
                 return
             }
             if self.streamView == nil {
-                let v = UIView()
+                let v = StreamHostView()
                 v.backgroundColor = .black
                 v.translatesAutoresizingMaskIntoConstraints = false
+                // streamView の touch event を WebView に pass-through (= web 側 overlay
+                // div で touch 受けて plugin の sendMouseMove 等を呼ぶ設計)。
+                // streamView 自体は描画だけ、 入力は web 側ジェスチャ層が処理する。
+                v.isUserInteractionEnabled = false
                 parent.addSubview(v)
-                // build 30: 16:9 アスペクト比で高さ自動調整 (= Mac の 1920x1080 とフィット、 黒余白なし)。
-                // 上端固定 + 横幅いっぱい + height = width * 9 / 16。
+                // 初期 layout: safeAreaLayoutGuide.topAnchor 起点 + width/9*16 の 16:9 矩形。
+                // 接続瞬間の setVideoFrame 反映前でも status bar を侵食しない位置に置く。
+                // web 側 stream-overlay div の位置に setVideoFrame で追従更新される
+                // (= キーボード on の間は引数を画面上端固定に切替、 入力欄が隠れない)。
                 let aspect = v.heightAnchor.constraint(equalTo: v.widthAnchor, multiplier: 9.0 / 16.0)
-                aspect.priority = .defaultHigh  // = setVideoFrame で上書きできるよう priority 下げる
+                aspect.priority = .defaultHigh  // setVideoFrame で上書き可能
                 NSLayoutConstraint.activate([
-                    v.topAnchor.constraint(equalTo: parent.topAnchor),
+                    v.topAnchor.constraint(equalTo: parent.safeAreaLayoutGuide.topAnchor),
                     v.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
                     v.trailingAnchor.constraint(equalTo: parent.trailingAnchor),
                     aspect,
                 ])
                 self.streamView = v
             }
-            if self.closeButton == nil, let view = self.streamView {
-                let btn = UIButton(type: .system)
-                btn.setTitle("✕", for: .normal)
-                btn.setTitleColor(.white, for: .normal)
-                btn.titleLabel?.font = .systemFont(ofSize: 22, weight: .bold)
-                btn.backgroundColor = UIColor(white: 0, alpha: 0.5)
-                btn.layer.cornerRadius = 18
-                btn.translatesAutoresizingMaskIntoConstraints = false
-                btn.addTarget(self, action: #selector(self.closeStreamTapped), for: .touchUpInside)
-                parent.addSubview(btn)
-                NSLayoutConstraint.activate([
-                    btn.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
-                    btn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-                    btn.widthAnchor.constraint(equalToConstant: 36),
-                    btn.heightAnchor.constraint(equalToConstant: 36),
-                ])
-                self.closeButton = btn
-            }
             self.streamView?.isHidden = false
-            self.closeButton?.isHidden = false
             self.moonlight.streamView = self.streamView
 
             // JS から渡された全パラメータを config dict としてそのまま渡す
@@ -154,25 +217,15 @@ public class MoonlightPlugin: CAPPlugin {
         moonlight.disconnect()
         DispatchQueue.main.async { [weak self] in
             self?.streamView?.isHidden = true
-            self?.closeButton?.isHidden = true
+            self?.statusLabel?.isHidden = true
+            self?.statusHideTimer?.invalidate()
         }
         call.resolve()
     }
 
-    @objc private func closeStreamTapped() {
-        moonlight.disconnect()
-        DispatchQueue.main.async { [weak self] in
-            self?.streamView?.isHidden = true
-            self?.closeButton?.isHidden = true
-        }
-        notifyListeners("statusChange", data: ["event": "userClosed"])
-    }
-
-    /// stream view の frame を web から動的に指示。 build 30 で実装、 build 32 で WebView origin 補正追加。
-    /// web から渡される (x, y) は WebView 内座標 (= getBoundingClientRect)、
-    /// streamView は viewController.view の subview なので画面絶対座標が必要。
-    /// WebView がキーボード退避で上シフトしても streamView を画面上端に固定するため、
-    /// WebView の frame.origin を加算する。
+    /// stream view の frame を web から動的に指示。 web から渡される (x, y) は WebView 内
+    /// 座標 (= getBoundingClientRect)、 streamView は viewController.view の subview なので
+    /// 画面絶対座標が必要。 WebView の frame.origin を加算して座標変換する。
     @objc func setVideoFrame(_ call: CAPPluginCall) {
         let x = CGFloat(call.getDouble("x") ?? 0)
         let y = CGFloat(call.getDouble("y") ?? 0)
@@ -194,22 +247,17 @@ public class MoonlightPlugin: CAPPlugin {
             }
             v.constraints.forEach { v.removeConstraint($0) }
             v.frame = CGRect(x: absX, y: absY, width: w, height: h)
-            // 閉じる ✕ ボタンも追従
-            self.closeButton?.frame.origin = CGPoint(x: absX + w - 48, y: absY + 12)
+            HavenDebugLog("MoonlightPlugin::setVideoFrame" as NSString,
+                          "in=(\(x),\(y),\(w),\(h)) webOrigin=(\(webOriginX),\(webOriginY)) abs=(\(absX),\(absY)) v.frame=\(v.frame) v.bounds=\(v.bounds)" as NSString)
             call.resolve()
         }
     }
 
     @objc func getStatus(_ call: CAPPluginCall) {
-        call.resolve(["state": "idle"])  // build 26 では JS 側で状態管理するので native は最小情報のみ
+        call.resolve(["state": "idle"])  // 状態は JS 側で管理 (= web 主導)、 native は最小情報のみ
     }
 
-    @objc func togglePiP(_ call: CAPPluginCall) {
-        // 旧 API、 enablePiP / disablePiP に置換
-        call.resolve(["active": false])
-    }
-
-    // MARK: - build 27 で追加: Phase 5 PiP
+    // MARK: - Phase 5 PiP
 
     @objc func enablePiP(_ call: CAPPluginCall) {
         let ok = moonlight.enablePiP()
@@ -221,128 +269,6 @@ public class MoonlightPlugin: CAPPlugin {
         call.resolve()
     }
 
-    // MARK: - build 27 で追加: Phase 5.5 全パソコン操作
-
-    @objc func sendMouseMove(_ call: CAPPluginCall) {
-        let dx = Int16(call.getInt("dx") ?? 0)
-        let dy = Int16(call.getInt("dy") ?? 0)
-        moonlight.sendMouseMove(dx: dx, dy: dy)
-        call.resolve()
-    }
-
-    @objc func sendMousePosition(_ call: CAPPluginCall) {
-        let x = Int16(call.getInt("x") ?? 0)
-        let y = Int16(call.getInt("y") ?? 0)
-        let refW = Int16(call.getInt("refW") ?? 1920)
-        let refH = Int16(call.getInt("refH") ?? 1080)
-        moonlight.sendMousePosition(x: x, y: y, refW: refW, refH: refH)
-        call.resolve()
-    }
-
-    @objc func sendMouseButton(_ call: CAPPluginCall) {
-        // button: "left"=1, "middle"=2, "right"=3, "x1"=4, "x2"=5
-        let buttonStr = call.getString("button") ?? "left"
-        let buttonMap: [String: UInt8] = ["left": 1, "middle": 2, "right": 3, "x1": 4, "x2": 5]
-        let button = buttonMap[buttonStr] ?? 1
-        // action: "press" / "release"
-        let actionStr = call.getString("action") ?? "press"
-        let action: UInt8 = (actionStr == "press") ? 0x07 : 0x08
-        moonlight.sendMouseButton(button: button, action: action)
-        call.resolve()
-    }
-
-    @objc func sendScroll(_ call: CAPPluginCall) {
-        // -127..127 の範囲 (Int8)、 1 click = 1 notch
-        let raw = call.getInt("delta") ?? 0
-        let clamped = max(-127, min(127, raw))
-        let delta = Int8(clamped)
-        let horizontal = call.getBool("horizontal") ?? false
-        if horizontal {
-            moonlight.sendHScroll(delta: delta)
-        } else {
-            moonlight.sendScroll(delta: delta)
-        }
-        call.resolve()
-    }
-
-    @objc func sendKeyEvent(_ call: CAPPluginCall) {
-        let keyCode = Int16(call.getInt("keyCode") ?? 0)
-        let modifiers = UInt8(call.getInt("modifiers") ?? 0)
-        // action: "down"=0x03 / "up"=0x04
-        let actionStr = call.getString("action") ?? "down"
-        let action: UInt8 = (actionStr == "down") ? 0x03 : 0x04
-        moonlight.sendKey(keyCode: keyCode, modifiers: modifiers, action: action)
-        call.resolve()
-    }
-
-    @objc func sendTouch(_ call: CAPPluginCall) {
-        // eventType: "down"=0, "up"=1, "move"=2, "cancel"=3
-        let typeMap: [String: UInt8] = ["down": 0, "up": 1, "move": 2, "cancel": 3]
-        let eventType = typeMap[call.getString("eventType") ?? "move"] ?? 2
-        let pointerId = UInt32(call.getInt("pointerId") ?? 0)
-        let x = Float(call.getDouble("x") ?? 0)
-        let y = Float(call.getDouble("y") ?? 0)
-        let pressure = Float(call.getDouble("pressure") ?? 0)
-        moonlight.sendTouch(eventType: eventType, pointerId: pointerId, x: x, y: y, pressure: pressure)
-        call.resolve()
-    }
-
-    // MARK: - build 27 で追加: Phase 6 一部 (Haptic + Face ID)
-
-    @objc func haptic(_ call: CAPPluginCall) {
-        let pattern = call.getString("pattern") ?? "light"
-        moonlight.haptic(pattern: pattern)
-        call.resolve()
-    }
-
-    // authenticate は削除: iOS 16+ の標準「アプリを Face ID でロック」 で代替
-
-    // MARK: - getStats (= 遅延 overlay 用、 リアルタイム RTT/fps/kbps/codec)
-    @objc func getStats(_ call: CAPPluginCall) {
-        let stats = moonlight.getStats()
-        call.resolve(stats)
-    }
-
-    // MARK: - 追加入力 (build 27 完成版)
-
-    @objc func sendUtf8Text(_ call: CAPPluginCall) {
-        let text = call.getString("text") ?? ""
-        moonlight.sendUtf8Text(text)
-        call.resolve()
-    }
-
-    @objc func sendHighResScroll(_ call: CAPPluginCall) {
-        let raw = call.getInt("delta") ?? 0
-        let clamped = max(-32768, min(32767, raw))
-        let delta = Int16(clamped)
-        let horizontal = call.getBool("horizontal") ?? false
-        if horizontal { moonlight.sendHighResHScroll(delta: delta) }
-        else { moonlight.sendHighResScroll(delta: delta) }
-        call.resolve()
-    }
-
-    @objc func requestIdrFrame(_ call: CAPPluginCall) {
-        moonlight.requestIdrFrame()
-        call.resolve()
-    }
-
-    @objc func interrupt(_ call: CAPPluginCall) {
-        moonlight.interrupt()
-        call.resolve()
-    }
-
-    // MARK: - 画面回転 lock / unlock (= Phase 7 用)
-    @objc func setOrientationLock(_ call: CAPPluginCall) {
-        let orient = call.getString("orientation") ?? "auto"
-        HavenOrientation.locked = orient
-        DispatchQueue.main.async {
-            // iOS 16+ では setNeedsUpdateOfSupportedInterfaceOrientations、 古い iOS では attemptRotation
-            if #available(iOS 16.0, *) {
-                self.bridge?.viewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-            } else {
-                UIViewController.attemptRotationToDeviceOrientation()
-            }
-        }
-        call.resolve()
-    }
+    // 入力 / 観測系メソッド (= Phase 5.5 全パソコン操作 / Haptic / getStats /
+    // 追加入力 / 画面回転 lock) は MoonlightInputBridge.swift に extension で分離。
 }

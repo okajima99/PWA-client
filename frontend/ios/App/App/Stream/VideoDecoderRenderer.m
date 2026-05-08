@@ -48,20 +48,14 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
     
     displayLayer = [[AVSampleBufferDisplayLayer alloc] init];
     displayLayer.backgroundColor = [UIColor blackColor].CGColor;
-    
-    // Ensure the AVSampleBufferDisplayLayer is sized to preserve the aspect ratio
-    // of the video stream. We used to use AVLayerVideoGravityResizeAspect, but that
-    // respects the PAR encoded in the SPS which causes our computed video-relative
-    // touch location to be wrong in StreamView if the aspect ratio of the host
-    // desktop doesn't match the aspect ratio of the stream.
-    CGSize videoSize;
-    if (_view.bounds.size.width > _view.bounds.size.height * _streamAspectRatio) {
-        videoSize = CGSizeMake(_view.bounds.size.height * _streamAspectRatio, _view.bounds.size.height);
-    } else {
-        videoSize = CGSizeMake(_view.bounds.size.width, _view.bounds.size.width / _streamAspectRatio);
-    }
-    displayLayer.position = CGPointMake(CGRectGetMidX(_view.bounds), CGRectGetMidY(_view.bounds));
-    displayLayer.bounds = CGRectMake(0, 0, videoSize.width, videoSize.height);
+
+    // streamView の枠と video を完全に一致させる (= 黒帯 letterbox 排除)。
+    // 旧仕様は video aspect ratio を保持する videoSize 計算で view 内に center 配置 →
+    // streamView (= 16:9) と stream の aspect (= 1920x1080 = 16:9) が完全一致しない時に
+    // 上下左右に微妙な黒帯が出てた (= user「ちょっとだけ噛み合ってない」)。
+    // displayLayer.frame = view.bounds + videoGravity=Resize で枠いっぱいにストレッチ
+    // (= aspect 歪み許容)。 host が 1920x1080 で streamView も 16:9 なら歪みは生じない。
+    displayLayer.frame = _view.bounds;
     displayLayer.videoGravity = AVLayerVideoGravityResize;
 
     // Hide the layer until we get an IDR frame. This ensures we
