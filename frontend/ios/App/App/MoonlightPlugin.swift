@@ -257,6 +257,22 @@ public class MoonlightPlugin: CAPPlugin {
         call.resolve(["state": "idle"])  // 状態は JS 側で管理 (= web 主導)、 native は最小情報のみ
     }
 
+    /// streamView の表示変換 (= iPhone 側の見た目だけ拡大/平行移動、 Mac には何も伝えない)。
+    /// scale=1.0 / tx=0 / ty=0 で identity (= 通常表示)。 zoom mode 中は web 側 pinch/pan
+    /// ジェスチャから連続的に呼ばれる。 anchor は view 中心 (デフォルト)。
+    @objc func setStreamViewTransform(_ call: CAPPluginCall) {
+        let scale = CGFloat(call.getDouble("scale") ?? 1.0)
+        let tx = CGFloat(call.getDouble("tx") ?? 0)
+        let ty = CGFloat(call.getDouble("ty") ?? 0)
+        DispatchQueue.main.async { [weak self] in
+            guard let v = self?.streamView else { call.resolve(); return }
+            // translate を先に当ててから scale (= scale 中心が view 中心、 translate は
+            // 画面ピクセル単位の見た目シフトに近い挙動)
+            v.transform = CGAffineTransform(translationX: tx, y: ty).scaledBy(x: scale, y: scale)
+            call.resolve()
+        }
+    }
+
     // MARK: - Phase 5 PiP
 
     @objc func enablePiP(_ call: CAPPluginCall) {

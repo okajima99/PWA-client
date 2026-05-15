@@ -266,6 +266,12 @@ export async function setOrientationLock(orientation) {
   return Moonlight.setOrientationLock({ orientation })
 }
 
+/** streamView の表示変換 (= iPhone 側の見た目だけ拡大/平行移動、 Mac には伝わらない)。
+ *  scale=1, tx=0, ty=0 で identity (= 通常表示)。 zoom mode の OFF は { scale: 1 }。 */
+export async function setStreamViewTransform({ scale = 1, tx = 0, ty = 0 } = {}) {
+  return Moonlight.setStreamViewTransform({ scale, tx, ty })
+}
+
 /**
  * 状態通知の購読。 cb は { event, name?, code?, message?, ... } を受ける。
  */

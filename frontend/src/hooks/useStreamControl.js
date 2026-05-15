@@ -3,176 +3,101 @@
 import { useEffect, useRef } from 'react'
 import { API_BASE } from '../constants.js'
 
-// 観測 log を /tmp/app-debug.log に流す (= /debug/log endpoint 経由)。
-// production でも残す軽量 fire-and-forget。
-function vvLog(msg) {
-  try {
-    fetch(`${API_BASE}/debug/log`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tag: 'web::stream-pos', message: msg }),
-      keepalive: true,
-    }).catch(() => { /* ignore */ })
-  } catch { /* ignore */ }
-}
-
-
-// --- streamView を web の overlay div 位置に追従 + キーボード時は画面上端固定 ---
+// --- streamView 位置を web 側 stream-overlay div に揃える最小版 ---
 // 戻り値: { streamOverlayRef } を JSX の <div ref={streamOverlayRef}> に渡す。
-// streaming 変化時には強制再評価して overlay の display: none → block タイミングで
-// getBoundingClientRect が初めて有効値を返すのを拾う。
-export function useMoonlightStreamPosition(streaming) {
+// 動作:
+//   - 接続時に 1 回 setVideoFrame: web 側 div の getBoundingClientRect の位置に
+//     native streamView を置く (= topbar 下、 chat 領域の上端)
+//   - visualViewport.resize で keyboard 検知: open なら status bar 直下 (= 画面上端)
+//     に持ち上げ、 close なら元位置に戻す
+//
+// 旧仕様 (= ResizeObserver / focusin/out 多段 setTimeout / negative-top skip) は
+// 「動いてた状態を変更し続けて悪化させる」 反省 (= journal 5/8) を踏まえ撤去。
+// 必要最小: 接続瞬間 + keyboard 切替 + drawerOpen 切替 の 3 イベントだけで update する。
+//
+// drawerOpen=true の間は streamView を画面外 (= 0px) に退避する: native UIView は
+// WebView より上のレイヤーなので web の z-index で SessionDrawer の下に押し込めない。
+// 既存 setVideoFrame API で width/height=0 を投げるだけで物理的に消える。
+//
+// zoomMode=true の間は setVideoFrame を呼ばない: 位置は固定して、 transform で
+// scale/translate するモードに切り替えるため、 frame を上書きすると zoom が破綻する。
+export function useMoonlightStreamPosition(streaming, drawerOpen = false, zoomMode = false) {
   const streamOverlayRef = useRef(null)
-  const keyboardOpenRef = useRef(false)
-  const streamUpdateRef = useRef(() => {})
-  // Moonlight plugin は @capacitor/core の dynamic import で取る async 取得、
-  // ref に格納して各 update 呼び出しで常に最新を見る (= local closure 変数だと
-  // mount 直後の useEffect 再実行で stale 化、 streaming=true 即座の呼び出しで null)。
-  const moonlightRef = useRef(null)
 
   useEffect(() => {
     if (!window.Capacitor?.isNativePlatform?.()) return
-    const el = streamOverlayRef.current
-    if (!el) return
+    if (!streaming) return
+
     let cancelled = false
-    let ro = null
-    let onResize = null
-    let onVvResize = null
-    let onFocusOut = null
-    const update = () => {
-      const Moonlight = moonlightRef.current
-      if (!Moonlight) return
-      let frame
-      if (keyboardOpenRef.current) {
-        // キーボード on: status bar の真下 + 画面幅 + 16:9 (= chat 打ちながら画面確認、
-        // status bar 領域は侵食しない)
+    let Moonlight = null
+
+    const compute = () => {
+      // drawer 開いてる間は画面外退避 (= SessionDrawer を最上部に表示するため)
+      if (drawerOpen) return { x: -9999, y: -9999, width: 1, height: 1 }
+      // zoom mode 中は frame 更新しない (= transform で scale/translate を維持するため)
+      if (zoomMode) return null
+      const el = streamOverlayRef.current
+      if (!el) return null
+      const sat = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sat')) || 0
+      const vv = window.visualViewport
+      const kbOpen = vv ? (vv.height / window.innerHeight) < 0.65 : false
+      if (kbOpen) {
+        // キーボード on: status bar 直下 + 画面幅 + 16:9 (= 画面上端固定で chat 入力中も
+        // Mac 画面が見える)
         const w = window.innerWidth
-        const sat = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sat')) || 0
-        frame = { x: 0, y: sat, width: w, height: w * 9 / 16 }
-      } else {
-        const r = el.getBoundingClientRect()
-        if (r.width <= 0 || r.height <= 0) return
-        const sat = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sat')) || 0
-        const proposedY = r.top + sat
-        // proposedY < 0 = iOS のキーボード auto-scroll 等で stream-overlay div が viewport の
-        // 外に追い出された transient な状態 → 値破棄して update skip。 直前の正しい frame が
-        // 維持されるので、 接続直後の topbar 下配置がリセットされない。
-        if (proposedY < 0) {
-          vvLog(`update skip (negative top) r.top=${r.top} sat=${sat}`)
-          return
-        }
-        frame = { x: r.left, y: proposedY, width: r.width, height: r.height }
+        return { x: 0, y: sat, width: w, height: w * 9 / 16 }
       }
-      vvLog(`update kb=${keyboardOpenRef.current} frame=${JSON.stringify(frame)}`)
-      Moonlight.setVideoFrame(frame).catch(() => {})
+      // キーボード off: web 側 div の位置 (= topbar 下、 messages の上)
+      const r = el.getBoundingClientRect()
+      if (r.width <= 0 || r.height <= 0) return null
+      const proposedY = r.top + sat
+      if (proposedY < 0) return null  // transient な異常値は破棄
+      return { x: r.left, y: proposedY, width: r.width, height: r.height }
     }
-    streamUpdateRef.current = update
+
+    const update = () => {
+      if (!Moonlight) return
+      const f = compute()
+      if (f) Moonlight.setVideoFrame(f).catch(() => {})
+    }
+
     ;(async () => {
       const { Capacitor } = await import('@capacitor/core')
-      const Moonlight = Capacitor.Plugins?.Moonlight
+      Moonlight = Capacitor.Plugins?.Moonlight
       if (!Moonlight || cancelled) return
-      moonlightRef.current = Moonlight
-
-      update()
-      ro = new ResizeObserver(update)
-      ro.observe(el)
-      onResize = update
-      window.addEventListener('resize', onResize)
-      window.addEventListener('orientationchange', onResize)
-
-      // visualViewport: キーボード on で viewport 高さが減る、 off で戻る
-      if (window.visualViewport) {
-        onVvResize = (e) => {
-          const vv = window.visualViewport
-          const ratio = vv.height / window.innerHeight
-          const open = ratio < 0.65
-          vvLog(`vv ${e?.type || '?'} innerH=${window.innerHeight} vvH=${vv.height.toFixed(1)} ratio=${ratio.toFixed(3)} open=${open} prev=${keyboardOpenRef.current}`)
-          if (open !== keyboardOpenRef.current) {
-            keyboardOpenRef.current = open
-            update()
-          } else if (!open) {
-            update()
-          }
-        }
-        window.visualViewport.addEventListener('resize', onVvResize)
-        window.visualViewport.addEventListener('scroll', onVvResize)
-      }
-
-      // input / textarea から focus が外れた = キーボード閉じる傾向。
-      // visualViewport.resize が拾えない / 遅れる場合の保険、 多段で再判定して
-      // streamView を topbar 下に戻す。
-      onFocusOut = (e) => {
-        if (cancelled) return
-        vvLog(`focusout target=${e?.target?.tagName || '?'}`)
-        update()
-        setTimeout(() => { if (!cancelled) onVvResize?.({ type: 'focusout-200ms' }) }, 200)
-        setTimeout(() => { if (!cancelled) onVvResize?.({ type: 'focusout-500ms' }) }, 500)
-      }
-      document.addEventListener('focusout', onFocusOut, true)
-      // focusin (= キーボードが出てくるトリガ) も観測
-      const onFocusIn = (e) => {
-        if (cancelled) return
-        vvLog(`focusin target=${e?.target?.tagName || '?'}`)
-        // resize 待たずに 0/200/500ms で再判定
-        setTimeout(() => { if (!cancelled) onVvResize?.({ type: 'focusin-immediate' }) }, 0)
-        setTimeout(() => { if (!cancelled) onVvResize?.({ type: 'focusin-200ms' }) }, 200)
-        setTimeout(() => { if (!cancelled) onVvResize?.({ type: 'focusin-500ms' }) }, 500)
-      }
-      document.addEventListener('focusin', onFocusIn, true)
-      // cleanup の参照用に外側へ漏らす
-      streamUpdateRef.__onFocusIn = onFocusIn
+      // 接続瞬間: RAF を 2 回噛ませて layout 確定後に 1 回呼ぶ
+      requestAnimationFrame(() => requestAnimationFrame(update))
     })()
+
+    const onVv = () => update()
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', onVv)
+    }
 
     return () => {
       cancelled = true
-      // unmount 後に streaming-state-driven useEffect から呼ばれて stale closure を
-      // 触らないよう no-op に置き換える
-      streamUpdateRef.current = () => {}
-      if (ro) ro.disconnect()
-      if (onResize) {
-        window.removeEventListener('resize', onResize)
-        window.removeEventListener('orientationchange', onResize)
-      }
-      if (onVvResize && window.visualViewport) {
-        window.visualViewport.removeEventListener('resize', onVvResize)
-        window.visualViewport.removeEventListener('scroll', onVvResize)
-      }
-      if (onFocusOut) document.removeEventListener('focusout', onFocusOut, true)
-      if (streamUpdateRef.__onFocusIn) {
-        document.removeEventListener('focusin', streamUpdateRef.__onFocusIn, true)
-        streamUpdateRef.__onFocusIn = null
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', onVv)
       }
     }
-  }, [])
-
-  // streaming 変化時 (= 接続/切断) に強制再評価。 接続瞬間に Moonlight plugin の
-  // async 取得がまだ完了してない可能性があるので、 RAF + 短い間隔で 数回 retry する。
-  useEffect(() => {
-    if (!streaming) return
-    let attempts = 0
-    let cancelled = false
-    const trigger = () => {
-      if (cancelled) return
-      streamUpdateRef.current()
-      attempts++
-      // 最初の数回は moonlightRef がまだ null の場合がある。 1 秒間 retry。
-      if (attempts < 10 && !moonlightRef.current) {
-        setTimeout(trigger, 100)
-      }
-    }
-    requestAnimationFrame(() => requestAnimationFrame(trigger))
-    return () => { cancelled = true }
-  }, [streaming])
+  }, [streaming, drawerOpen, zoomMode])
 
   return { streamOverlayRef }
 }
 
 
-// --- streamView 上の touch ジェスチャ → mouse / scroll / mission-control 等 ---
-// 1 本指 tap = 左 click、 1 本指 drag = mouse 移動、
-// 2 本指 tap = 右 click、 2 本指 scroll = 高解像度スクロール、
-// 3 本指 swipe (上) = Mission Control、 (下) = App Exposé、 (左/右) = デスクトップ切替。
-export function useStreamGestures(streamOverlayRef, streaming) {
+// --- streamView 上の touch ジェスチャ → mouse / scroll / zoom ---
+// zoomMode=false (通常):
+//   1 本指 tap = 左 click、 1 本指 drag = mouse 移動、
+//   2 本指 tap = 右 click、 2 本指 scroll = 高解像度スクロール (= pinch は noop)。
+// zoomMode=true (= iPhone 側で表示拡大、 Mac には何も伝えない):
+//   2 本指 pinch = scale 変更 (1.0×〜4.0×)、 1 本指 drag = pan (= 表示位置移動)。
+//   マウス / クリック / scroll は送信しない (= 操作と分離して誤クリック防止)。
+// 3 本指 swipe は iOS system に奪われて web に届かないので撤去。
+export function useStreamGestures(streamOverlayRef, streaming, zoomMode = false) {
+  // zoom 中の transform 状態 (= mode 切り替え時の起点として保持)
+  const zoomStateRef = useRef({ scale: 1, tx: 0, ty: 0 })
+
   useEffect(() => {
     if (!window.Capacitor?.isNativePlatform?.()) return
     const el = streamOverlayRef.current
@@ -185,7 +110,28 @@ export function useStreamGestures(streamOverlayRef, streaming) {
     const TAP_TIME = 220       // ms 以内の release を tap 判定
     const TAP_DIST = 10        // pt 以内の移動なら drag でなく tap
     const SCROLL_GAIN = 4      // 高解像度スクロール gain (= 画面 1pt あたり 4 単位)
-    const SWIPE_THRESH = 60    // 三本指 swipe 発火距離
+    // 2 本指の mode 遷移しきい値:
+    //   - SCROLL_MOVE_THRESH: 中心点移動量 (pt)、 これ超えたら scroll mode 確定
+    //   - PINCH_DIST_THRESH: 指間隔の変化量 (pt)、 これ超えたら pinch mode (noop)
+    // 旧仕様 (distChange > 30 を先に判定) だと、 軽く scroll しようとした時の指間隔
+    // ±30px 揺らぎで先に pinch (= noop) に入り「scroll が動かない」 症状になってた。
+    // scroll を先に判定 + pinch しきい値を 60 に上げて誤判定を抑える。
+    const SCROLL_MOVE_THRESH = 3
+    const PINCH_DIST_THRESH = 60
+
+    // gesture 専用の観測 log (= vvLog は stream-pos tag、 こちらは stream-gesture)。
+    // touchstart の touches.length / mode 遷移を追えるよう、 stream-gesture tag で
+    // /tmp/app-debug.log に流す。 真因仮説が外れた時の切り分け用。
+    const gLog = (msg) => {
+      try {
+        fetch(`${API_BASE}/debug/log`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tag: 'web::stream-gesture', message: msg }),
+          keepalive: true,
+        }).catch(() => { /* ignore */ })
+      } catch { /* ignore */ }
+    }
 
     let touchStartTime = 0
     let touchStartX = 0, touchStartY = 0
@@ -193,8 +139,11 @@ export function useStreamGestures(streamOverlayRef, streaming) {
     let mode = null
     let twoFingerStartTime = 0
     let pinchStartDist = 0
-    let threeFingerStartX = 0, threeFingerStartY = 0
-    let threeFingerHandled = false
+
+    // zoom mode 中の pinch 起点 (= touchstart 時の scale を保存して相対倍率で更新)
+    let zoomPinchStartScale = 1
+    const ZOOM_MIN = 1.0
+    const ZOOM_MAX = 4.0
 
     const onTouchStart = (e) => {
       if (!mod || !streaming) return
@@ -204,7 +153,7 @@ export function useStreamGestures(streamOverlayRef, streaming) {
         touchStartTime = Date.now()
         touchStartX = t[0].clientX; touchStartY = t[0].clientY
         lastX = touchStartX; lastY = touchStartY
-        mode = 'oneFingerTap'
+        mode = zoomMode ? 'zoomPan' : 'oneFingerTap'
       } else if (t.length === 2) {
         const dx = t[1].clientX - t[0].clientX
         const dy = t[1].clientY - t[0].clientY
@@ -212,13 +161,15 @@ export function useStreamGestures(streamOverlayRef, streaming) {
         twoFingerStartTime = Date.now()
         lastX = (t[0].clientX + t[1].clientX) / 2
         lastY = (t[0].clientY + t[1].clientY) / 2
-        mode = 'twoFingerStart'
-      } else if (t.length === 3) {
-        threeFingerStartX = t[0].clientX
-        threeFingerStartY = t[0].clientY
-        threeFingerHandled = false
-        mode = 'threeFinger'
+        if (zoomMode) {
+          mode = 'zoomPinch'
+          zoomPinchStartScale = zoomStateRef.current.scale
+        } else {
+          mode = 'twoFingerStart'
+        }
       }
+      // 3 本指は iOS system に奪われて touchstart が来ない / 不安定なので扱わない
+      gLog(`touchstart len=${t.length} mode=${mode} zoom=${zoomMode}`)
     }
 
     const onTouchMove = (e) => {
@@ -226,6 +177,27 @@ export function useStreamGestures(streamOverlayRef, streaming) {
       e.preventDefault()
       const t = e.touches
 
+      // === zoom mode の処理 (= マウス/scroll は送信しない、 native transform を更新) ===
+      if (mode === 'zoomPan' && t.length === 1) {
+        const dx = t[0].clientX - lastX
+        const dy = t[0].clientY - lastY
+        const s = zoomStateRef.current
+        s.tx += dx
+        s.ty += dy
+        mod.setStreamViewTransform({ scale: s.scale, tx: s.tx, ty: s.ty }).catch(() => {})
+        lastX = t[0].clientX; lastY = t[0].clientY
+        return
+      }
+      if (mode === 'zoomPinch' && t.length === 2) {
+        const dist = Math.hypot(t[1].clientX - t[0].clientX, t[1].clientY - t[0].clientY)
+        const ratio = pinchStartDist > 0 ? (dist / pinchStartDist) : 1
+        const s = zoomStateRef.current
+        s.scale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomPinchStartScale * ratio))
+        mod.setStreamViewTransform({ scale: s.scale, tx: s.tx, ty: s.ty }).catch(() => {})
+        return
+      }
+
+      // === 通常 mode (zoom OFF) ===
       if (mode === 'oneFingerTap' && t.length === 1) {
         const dx = t[0].clientX - touchStartX
         const dy = t[0].clientY - touchStartY
@@ -248,8 +220,14 @@ export function useStreamGestures(streamOverlayRef, streaming) {
         const moveAmount = Math.hypot(cx - lastX, cy - lastY)
 
         if (mode === 'twoFingerStart') {
-          if (distChange > 30) mode = 'pinch'
-          else if (moveAmount > 5) mode = 'twoFingerScroll'
+          // scroll を先に判定 (= 軽い指間隔の揺らぎで pinch に取られないため)
+          if (moveAmount > SCROLL_MOVE_THRESH) {
+            mode = 'twoFingerScroll'
+            gLog(`mode -> twoFingerScroll (moveAmount=${moveAmount.toFixed(1)} distChange=${distChange.toFixed(1)})`)
+          } else if (distChange > PINCH_DIST_THRESH) {
+            mode = 'pinch'
+            gLog(`mode -> pinch (distChange=${distChange.toFixed(1)})`)
+          }
         }
 
         if (mode === 'twoFingerScroll') {
@@ -259,30 +237,7 @@ export function useStreamGestures(streamOverlayRef, streaming) {
             lastX = cx; lastY = cy
           }
         }
-        // pinch は当面 noop (= macOS Cmd+Scroll 等で実装可、 暫定)
-      }
-
-      if (mode === 'threeFinger' && t.length === 3 && !threeFingerHandled) {
-        const dx = t[0].clientX - threeFingerStartX
-        const dy = t[0].clientY - threeFingerStartY
-        if (Math.abs(dy) > SWIPE_THRESH && Math.abs(dy) > Math.abs(dx)) {
-          if (dy < 0) {
-            // Mission Control (F3 = VK 0x72)
-            mod.sendKeyEvent(0x72, 0, 'down').catch(() => {})
-            mod.sendKeyEvent(0x72, 0, 'up').catch(() => {})
-          } else {
-            // App Exposé (Ctrl + 下矢印)
-            mod.sendKeyEvent(0x28, 0x02, 'down').catch(() => {})
-            mod.sendKeyEvent(0x28, 0x02, 'up').catch(() => {})
-          }
-          threeFingerHandled = true
-        } else if (Math.abs(dx) > SWIPE_THRESH && Math.abs(dx) > Math.abs(dy)) {
-          // デスクトップ切替 (Ctrl + 左/右)
-          const k = dx > 0 ? 0x27 : 0x25
-          mod.sendKeyEvent(k, 0x02, 'down').catch(() => {})
-          mod.sendKeyEvent(k, 0x02, 'up').catch(() => {})
-          threeFingerHandled = true
-        }
+        // 通常 mode の pinch は noop (= zoom 機能は zoomMode toggle で別経路)
       }
     }
 
@@ -316,7 +271,24 @@ export function useStreamGestures(streamOverlayRef, streaming) {
       el.removeEventListener('touchend', onTouchEnd)
       el.removeEventListener('touchcancel', onTouchEnd)
     }
-  }, [streaming, streamOverlayRef])
+  }, [streaming, streamOverlayRef, zoomMode])
+
+  // zoom mode OFF に切り替わった時、 native side の transform と内部 state を identity にリセット。
+  const prevZoomRef = useRef(zoomMode)
+  useEffect(() => {
+    const prev = prevZoomRef.current
+    prevZoomRef.current = zoomMode
+    if (prev && !zoomMode) {
+      zoomStateRef.current = { scale: 1, tx: 0, ty: 0 }
+      ;(async () => {
+        if (!window.Capacitor?.isNativePlatform?.()) return
+        try {
+          const m = await import('../native/moonlight-flow.js')
+          await m.setStreamViewTransform({ scale: 1, tx: 0, ty: 0 })
+        } catch { /* ignore */ }
+      })()
+    }
+  }, [zoomMode])
 }
 
 

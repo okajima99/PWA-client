@@ -93,6 +93,9 @@ export default function App() {
   const [streamStatus, setStreamStatus] = useState(null)
   const [pipActive, setPipActive] = useState(false)
   const [streaming, setStreaming] = useState(false)
+  // zoom mode: ON 中は iPhone 側の見た目だけ拡大、 Mac には何も伝えない。
+  // 2 本指 pinch で scale、 1 本指 drag で pan。 マウス / クリック送信は無効。
+  const [zoomMode, setZoomMode] = useState(false)
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
   useEffect(() => {
     const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 30000)
@@ -117,9 +120,11 @@ export default function App() {
   // 物理キーボード → Mac へ転送 (stream 接続中のみ、 chat 入力 focus 時は除外)
   usePhysicalKeyboardForward(streaming)
 
-  // streamView 位置追従 (= キーボード on で画面上端固定) + touch ジェスチャ + status / PiP / 回転 lock
-  const { streamOverlayRef } = useMoonlightStreamPosition(streaming)
-  useStreamGestures(streamOverlayRef, streaming)
+  // streamView 位置追従 (= キーボード on で画面上端固定 / drawer 開いたら退避 / zoom 中は固定)
+  // + touch ジェスチャ (= zoom OFF はマウス/scroll、 zoom ON は pinch/pan で transform)
+  // + status / PiP / 回転 lock
+  const { streamOverlayRef } = useMoonlightStreamPosition(streaming, drawerOpen, zoomMode)
+  useStreamGestures(streamOverlayRef, streaming, zoomMode)
   useStreamStatusListener(setStreamStatus, setPipActive)
 
   // IME 入力 → Mac へ送信 (= 「あ」 ボタンで focus、 compositionend で sendUtf8Text)
@@ -336,43 +341,74 @@ export default function App() {
         plugin の sendMouseMove 等で Mac に転送する layer。 native streamView は
         isUserInteractionEnabled=false で touch を pass-through、 web 側の overlay にジェスチャ
         がそのまま届く。 stream の進捗表示は native 側 (MoonlightPlugin::updateStatusOverlay) で
-        streamView 上端に被せ表示。 */}
+        streamView 上端に被せ表示。 streamView の位置は MoonlightPlugin.swift の初期 constraint
+        (= safeArea 上端 + 16:9) で固定、 web から setVideoFrame は呼ばない (= シンプル化)。 */}
       {window.Capacitor?.isNativePlatform?.() && (
-        <div
-          ref={streamOverlayRef}
-          className="stream-overlay"
-          style={{ display: streaming ? 'block' : 'none' }}
-        >
-          {/* 右下に IDR 再要求 + PiP トグルの control row */}
-          <div className="stream-overlay-controls">
-            <button
-              className="stream-ctrl-btn"
-              onClick={async (e) => {
-                e.stopPropagation()
-                const m = await import('./native/moonlight-flow.js')
-                m.requestIdrFrame().catch(() => {})
-              }}
-              aria-label="IDR frame 再要求"
-              title="画面崩れ復旧"
-            >⟳</button>
-            <button
-              className="stream-ctrl-btn"
-              onClick={async (e) => {
-                e.stopPropagation()
-                const m = await import('./native/moonlight-flow.js')
-                if (pipActive) {
-                  m.disablePiP().catch(() => {})
-                  setPipActive(false)
-                } else {
-                  m.enablePiP().catch(() => {})
-                  setPipActive(true)
-                }
-              }}
-              aria-label="PiP 切替"
-              title="ピクチャ・イン・ピクチャ切替"
-            >🪟</button>
-          </div>
-        </div>
+        <>
+          <div
+            ref={streamOverlayRef}
+            className="stream-overlay"
+            style={{ display: streaming ? 'block' : 'none' }}
+          />
+          {/* streamView 真下の制御 row。 native streamView の覆い範囲外なので z-index
+              問題が起きず、 常に見える。 zoom トグル + デスクトップ ◀ ▶ + IDR 再要求 + PiP。 */}
+          {streaming && (
+            <div className="stream-controls-row">
+              <button
+                className={`stream-ctrl-btn ${zoomMode ? 'active' : ''}`}
+                onClick={() => setZoomMode(prev => !prev)}
+                aria-label="ズームモード切替"
+                title={zoomMode ? 'ズーム解除' : 'ズーム ON (= 2 本指 pinch / 1 本指 pan、 マウス無効)'}
+              >🔍</button>
+              <button
+                className="stream-ctrl-btn"
+                onClick={async () => {
+                  const m = await import('./native/moonlight-flow.js')
+                  // Ctrl+← (= 0x25 = VK_LEFT、 modifiers=0x02 = Ctrl)
+                  m.sendKeyEvent(0x25, 0x02, 'down').catch(() => {})
+                  m.sendKeyEvent(0x25, 0x02, 'up').catch(() => {})
+                }}
+                aria-label="左のデスクトップへ"
+                title="左のデスクトップへ (Ctrl+←)"
+              >◀</button>
+              <button
+                className="stream-ctrl-btn"
+                onClick={async () => {
+                  const m = await import('./native/moonlight-flow.js')
+                  // Ctrl+→ (= 0x27 = VK_RIGHT)
+                  m.sendKeyEvent(0x27, 0x02, 'down').catch(() => {})
+                  m.sendKeyEvent(0x27, 0x02, 'up').catch(() => {})
+                }}
+                aria-label="右のデスクトップへ"
+                title="右のデスクトップへ (Ctrl+→)"
+              >▶</button>
+              <button
+                className="stream-ctrl-btn"
+                onClick={async () => {
+                  const m = await import('./native/moonlight-flow.js')
+                  m.requestIdrFrame().catch(() => {})
+                }}
+                aria-label="IDR frame 再要求"
+                title="画面崩れ復旧"
+              >⟳</button>
+              <button
+                className="stream-ctrl-btn"
+                onClick={async () => {
+                  const m = await import('./native/moonlight-flow.js')
+                  if (pipActive) {
+                    m.disablePiP().catch(() => {})
+                    setPipActive(false)
+                  } else {
+                    m.enablePiP().catch(() => {})
+                    setPipActive(true)
+                  }
+                }}
+                aria-label="PiP 切替"
+                title="ピクチャ・イン・ピクチャ切替"
+              >🪟</button>
+            </div>
+          )}
+        </>
       )}
 
       {drawerOpen && (

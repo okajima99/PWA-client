@@ -200,8 +200,8 @@ export function timeUntil(unixSec, nowSec) {
 const WEEKDAYS_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 // unix 秒の reset 時刻を「Sat 18:00」 形式で表示 (英略曜日 + HH:MM)。
-// Anthropic の 7 日 window は固定で土曜 18:00 JST にリセットされるが、
-// 万一変わっても header から取った値で正しく追従する。
+// Anthropic の 7d window は **rolling 7-day** (= 最初の prompt から 7 日)、
+// 固定曜日ではないので header から取った値で個人ごとに変わる時刻を表示する。
 export function formatResetWeekdayTime(unixSec) {
   if (!unixSec) return ''
   const d = new Date(unixSec * 1000)

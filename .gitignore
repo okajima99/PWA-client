@@ -14,7 +14,10 @@ __pycache__/
 node_modules/
 .DS_Store
 logs/
-scripts/
+# scripts/ 中身は基本除外 (= setup-sunshine.sh / setup-openssl-shim.sh / start.sh
+# は環境依存)、 build-ipa.sh だけ再ロスト防止で git 管理下に置く
+scripts/*
+!scripts/build-ipa.sh
 
 # Phase 3 build artifacts
 frontend/ios/build/

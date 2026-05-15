@@ -574,12 +574,15 @@
   touch-action: none;
 }
 
-.stream-overlay-controls {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
+/* streamView の真下の制御 row: 通常の DOM フローで配置 (= native streamView と
+   重ならないので z-index 問題が起きない)。 streaming=true の時だけ render。 */
+.stream-controls-row {
   display: flex;
   gap: 8px;
+  justify-content: flex-end;
+  padding: 6px 8px;
+  flex-shrink: 0;
+  background: #0a0a0a;
 }
 .stream-ctrl-btn {
   width: 36px;
@@ -597,6 +600,10 @@
 }
 .stream-ctrl-btn:active {
   background: rgba(0, 0, 0, 0.75);
+}
+/* zoom mode ON 時の active 表示 (= ボタンが押されたまま色付く) */
+.stream-ctrl-btn.active {
+  background: rgba(120, 130, 250, 0.85);
 }
 
 /* IME 入力用の隠れ input。 タップに当たらないが focus は受けて iOS キーボード出る。 */

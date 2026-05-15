@@ -32,4 +32,5 @@ CAP_PLUGIN(MoonlightPlugin, "Moonlight",
     CAP_PLUGIN_METHOD(requestIdrFrame, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(interrupt, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(setOrientationLock, CAPPluginReturnPromise);
+    CAP_PLUGIN_METHOD(setStreamViewTransform, CAPPluginReturnPromise);
 )
