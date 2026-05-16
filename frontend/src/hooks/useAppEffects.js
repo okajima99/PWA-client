@@ -1,5 +1,5 @@
 // App.jsx から責務分離した小粒 hook 群 (= push 状態同期、 既読化、 バッジ、 deep link 等)。
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { API_BASE, LS_SESSION_ACTIVITY } from '../constants.js'
 import { syncBadgeFromServer } from '../utils/badge.js'
 
@@ -136,11 +136,40 @@ export function useSessionActivity(messages, sessions) {
 
 // --- session ごとの新着 / 処理中 / 質問待ちバッジ計算 ---
 // active session は常に lastSeen を最新化、 非 active で arr.length > lastSeen なら新着。
-// 「最後に見た時の messages.length」 は state ではなく version 付き object にして、
-// effect 内でだけ書き換える。 render 中は lastSeenLen state を読むだけにして
-// react-hooks/refs ルール (= ref を render 中に触ると再 render されない) を避ける。
+// 「最後に見た時の messages.length」 を localStorage に永続化することで、 リロード越しでも
+// 既読状態が消えない + state 更新の race condition で「タップしたのに赤丸残る」 を防ぐ。
+// 明示的な markAsSeen(sid) も expose し、 session click handler から二重に確実化する。
+const LS_LAST_SEEN_LEN = 'cpc.lastSeenLen'
+
+function loadLastSeen() {
+  try {
+    const raw = localStorage.getItem(LS_LAST_SEEN_LEN)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') return parsed
+    }
+  } catch { /* ignore */ }
+  return {}
+}
+
 export function useSessionBadges({ sids, activeSid, messages, loading }) {
-  const [lastSeenLen, setLastSeenLen] = useState({})
+  const [lastSeenLen, setLastSeenLen] = useState(loadLastSeen)
+  // messages の最新 ref (= markAsSeen で render 中にも参照する用)
+  const messagesRef = useRef(messages)
+  useEffect(() => { messagesRef.current = messages }, [messages])
+
+  // localStorage 永続化
+  useEffect(() => {
+    try { localStorage.setItem(LS_LAST_SEEN_LEN, JSON.stringify(lastSeenLen)) } catch { /* ignore */ }
+  }, [lastSeenLen])
+
+  // 明示的既読化: session click 時に呼ばれる。 activeSid の useEffect が走る前に
+  // sync で lastSeen を確定するので、 タップ → 別タブ切替の高速操作でも漏れない。
+  const markAsSeen = useCallback((sid) => {
+    if (!sid) return
+    const len = (messagesRef.current[sid] || []).length
+    setLastSeenLen(prev => (prev[sid] === len ? prev : { ...prev, [sid]: len }))
+  }, [])
 
   // active 会話: messages 変化のたびに lastSeen を最新化
   useEffect(() => {
@@ -179,7 +208,7 @@ export function useSessionBadges({ sids, activeSid, messages, loading }) {
     if (arr.length > lastSeen) { sessionBadges[sid] = { kind: 'new', label: '●' }; continue }
     sessionBadges[sid] = null
   }
-  return sessionBadges
+  return { sessionBadges, markAsSeen }
 }
 
 
