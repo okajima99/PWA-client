@@ -5,6 +5,7 @@ backend/sessions.json.bak
 backend/session_meta.json
 backend/vapid.json
 backend/subscriptions.json
+backend/notifications.json
 /.env
 frontend/public/manifest.json
 frontend/public/local-icons/
@@ -14,13 +15,6 @@ __pycache__/
 node_modules/
 .DS_Store
 logs/
-# scripts/ 中身は基本除外 (= setup-sunshine.sh / setup-openssl-shim.sh / start.sh
-# は環境依存)、 build-ipa.sh だけ再ロスト防止で git 管理下に置く
-scripts/*
-!scripts/build-ipa.sh
 
-# Phase 3 build artifacts
-frontend/ios/build/
-frontend/ios/App/Frameworks/
-backend/notifications.json
-altstore/*.ipa
+# scripts/ 配下は環境依存ヘルパ (= sunshine セットアップ等)、 公開リポでは管理しない。
+scripts/*
