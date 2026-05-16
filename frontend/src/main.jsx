@@ -13,7 +13,8 @@ if ('serviceWorker' in navigator) {
   })
 }
 
-// PWA は chat 単一画面 (= 2026-05-16 で mode 分岐撤去、 通知センターは将来削除予定)。
+// PWA は chat 単一画面 (= 2026-05-16 で mode 分岐撤去 + 通知センター撤去、 未読数だけ
+// app badge 用に維持)。
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <ErrorBoundary>

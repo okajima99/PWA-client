@@ -3,14 +3,14 @@
 - VAPID 鍵 / サブスクリプションの永続化
 - ターン完了時に呼ばれる broadcast_push()
 - /push/state, /push/vapid-public-key, /push/subscribe, /push/unsubscribe
-- 通知履歴 (notifications.json) + /notifications API
+- 未読数 (= app badge 用) の保持 + /notifications/unread-count + /notifications/read-all
+  (= 通知履歴は持たない、 未読カウンタだけ。 PWA を開いた / 該当 session を見た時に 0 リセット)
 """
 import asyncio
 import json
 import logging
 import re
 import time
-import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException
@@ -29,84 +29,14 @@ router = APIRouter()
 
 VAPID_PATH = Path(__file__).parent / "vapid.json"
 SUBSCRIPTIONS_PATH = Path(__file__).parent / "subscriptions.json"
-NOTIFICATIONS_PATH = Path(__file__).parent / "notifications.json"
 
-# 通知履歴: 全 push 送信を蓄積、 PWA 通知センターから取得 / 既読化される
-NOTIFICATIONS_MAX = 500  # 古いものから FIFO で切る上限
-notifications_history: list[dict] = []
-# SSE listener queue: 通知追加 / 既読化を購読中のクライアントに push する
-_sse_listeners: list[asyncio.Queue] = []
+# 未読カウンタ: broadcast_push のたびに +1、 PWA を開いた時 (= /push/state visible) や
+# /notifications/read-all で 0 リセット。 通知履歴本体は保持しない (= 2026-05-16 改修で
+# 通知センター UI を撤去したため、 アプリバッジ同期に必要な int 1 個だけ残す)。
+unread_count: int = 0
 
 # client visible 状態: 該当 session を見てる時の通知抑制判定用
 client_states: dict[str, dict] = {}
-
-
-def _load_notifications() -> list[dict]:
-    if not NOTIFICATIONS_PATH.exists():
-        return []
-    try:
-        data = json.loads(NOTIFICATIONS_PATH.read_text())
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
-
-
-_save_notifications_task: asyncio.Task | None = None
-_NOTIF_FLUSH_DELAY = 5.0  # 秒、 高頻度時の I/O 圧縮
-
-
-def _save_notifications_now() -> None:
-    """同期的に notifications.json を atomic write する内部実装。"""
-    if len(notifications_history) > NOTIFICATIONS_MAX:
-        del notifications_history[: len(notifications_history) - NOTIFICATIONS_MAX]
-    atomic_write_text(NOTIFICATIONS_PATH, json.dumps(notifications_history, ensure_ascii=False, indent=2))
-
-
-async def _save_notifications_debounced() -> None:
-    """N 秒後に flush。 既存の予約があれば cancel して再 schedule。"""
-    try:
-        await asyncio.sleep(_NOTIF_FLUSH_DELAY)
-        _save_notifications_now()
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("notifications debounce flush failed")
-
-
-def _save_notifications() -> None:
-    """notification 追加 / 既読化のたびに呼ばれる。 5 秒 debounce で I/O 圧縮。
-    最終確実性のため lifespan 終了時にも flush 想定 (= 終了 hook で _save_notifications_now)。"""
-    global _save_notifications_task
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        # ループ外 (= startup 前等) なら同期 flush で fallback
-        _save_notifications_now()
-        return
-    if _save_notifications_task and not _save_notifications_task.done():
-        _save_notifications_task.cancel()
-    _save_notifications_task = loop.create_task(_save_notifications_debounced())
-
-
-def is_session_actively_viewed(session_id: str | None) -> bool:
-    """指定 session を visible で見てる client がいるか。
-    session_id が None なら 1 client でも visible なら True (legacy 互換)。
-    """
-    if not session_id:
-        return any(s.get("visible") for s in client_states.values())
-    for s in client_states.values():
-        if s.get("visible") and s.get("session_id") == session_id:
-            return True
-    return False
-
-
-def _broadcast_sse_event(event: dict) -> None:
-    """通知履歴の変化を全 SSE listener に push する (queue にいれるだけ、 失敗は無視)"""
-    for q in list(_sse_listeners):
-        try:
-            q.put_nowait(event)
-        except Exception:
-            pass
 
 
 def _load_vapid() -> dict | None:
@@ -144,7 +74,6 @@ def _save_subscriptions() -> None:
 
 vapid_config: dict | None = _load_vapid()
 subscriptions: list[dict] = _load_subscriptions()
-notifications_history = _load_notifications()
 
 _NOTIF_BODY_RE = re.compile(r"\s+")
 
@@ -225,19 +154,33 @@ def notification_title_for(session_id: str) -> str:
     return NOTIFICATION_TITLE_DEFAULT
 
 
+def is_session_actively_viewed(session_id: str | None) -> bool:
+    """指定 session を visible で見てる client がいるか。
+    session_id が None なら 1 client でも visible なら True (legacy 互換)。
+    """
+    if not session_id:
+        return any(s.get("visible") for s in client_states.values())
+    for s in client_states.values():
+        if s.get("visible") and s.get("session_id") == session_id:
+            return True
+    return False
+
+
 async def broadcast_push(
     message: str,
     title: str | None = None,
     session_id: str | None = None,
 ) -> None:
-    """登録済みの全 Web Push サブスクリプションに通知を送る + 通知履歴に記録。
+    """登録済みの全 Web Push サブスクリプションに通知を送る + 未読カウンタ +1。
 
-    アクティブに該当セッションを見てる client がいる時は OS 通知も履歴も
-    スキップする (= 既に画面で読まれてる前提、 重複させない)。
+    アクティブに該当セッションを見てる client がいる時は OS 通知も未読カウンタ加算も
+    スキップする (= 既に画面で読まれてる前提)。
 
     session_id を渡すと payload に sid + URL を含める。 通知タップ時に SW が
     chat の該当セッションを開く。
     """
+    global unread_count
+
     # 抑制判定: いずれかの client がこのセッションを active 表示中なら通知不要
     if is_session_actively_viewed(session_id):
         return
@@ -245,22 +188,9 @@ async def broadcast_push(
     body_clean = sanitize_notif_body(message)
     notif_title = title or NOTIFICATION_TITLE_DEFAULT
 
-    # 通知履歴に追記 (Web Push が無効でも履歴は残す = 通知センターで見える)
-    notif_id = uuid.uuid4().hex[:12]
-    notif_record = {
-        "id": notif_id,
-        "ts": time.time(),
-        "session_id": session_id,
-        "title": notif_title,
-        "body": body_clean,
-        "read": False,
-    }
-    notifications_history.append(notif_record)
-    try:
-        _save_notifications()
-    except Exception:
-        logger.exception("notification save failed")
-    _broadcast_sse_event({"type": "added", "notification": notif_record})
+    # 未読カウンタを +1 して payload に載せる (= sw.js が setAppBadge に使う、 端末側で
+    # 再 fetch せずに badge 更新できる)
+    unread_count += 1
 
     if not _HAS_WEBPUSH or not vapid_config or not subscriptions:
         return
@@ -269,11 +199,7 @@ async def broadcast_push(
     if not private_b64:
         return
 
-    # 未読数を payload に載せて SW でバッジ更新できるようにする (= fetch 不要、 省電力)
-    unread_count = sum(1 for n in notifications_history if not n.get("read"))
-
     payload_dict = {
-        "id": notif_id,
         "title": notif_title,
         "body": body_clean,
         "unread_count": unread_count,
@@ -341,110 +267,21 @@ def push_state(payload: dict = Body(...)):
     return {"ok": True}
 
 
-# --- 通知センター API ---
-@router.get("/notifications")
-def list_notifications(limit: int = 50, unread_only: bool = False):
-    """通知履歴を新しい順で返す。 PWA 通知センターから取得される。
-    response に unread_count を含めるので app badge 同期に使える。"""
-    items = list(reversed(notifications_history))
-    if unread_only:
-        items = [n for n in items if not n.get("read")]
-    unread_count = sum(1 for n in notifications_history if not n.get("read"))
-    return {
-        "notifications": items[: max(1, min(limit, NOTIFICATIONS_MAX))],
-        "unread_count": unread_count,
-    }
-
-
+# --- 未読カウンタ API (= 通知履歴は持たない、 badge 同期用の数値だけ) ---
 @router.get("/notifications/unread-count")
 def get_unread_count():
-    """未読数だけ返す軽量エンドポイント。 app badge 同期 / 起動時 fetch 用。"""
-    return {"unread_count": sum(1 for n in notifications_history if not n.get("read"))}
-
-
-@router.post("/notifications/{notif_id}/read")
-def mark_notification_read(notif_id: str):
-    """単一通知を既読化。 PWA で通知タップ時に呼ばれる。"""
-    changed = False
-    for n in notifications_history:
-        if n.get("id") == notif_id and not n.get("read"):
-            n["read"] = True
-            changed = True
-            break
-    if changed:
-        try:
-            _save_notifications()
-        except Exception:
-            logger.exception("notification save failed")
-        _broadcast_sse_event({"type": "read", "ids": [notif_id]})
-    return {"ok": True, "changed": changed}
+    """未読数を返す。 app badge 同期 / 起動時 fetch 用。"""
+    return {"unread_count": unread_count}
 
 
 @router.post("/notifications/read-all")
 def mark_all_read(payload: dict = Body(default={})):
-    """まとめて既読化。 session_id 指定時はそのセッション分だけ。"""
-    target_sid = payload.get("session_id")
-    changed_ids: list[str] = []
-    for n in notifications_history:
-        if n.get("read"):
-            continue
-        if target_sid is not None and n.get("session_id") != target_sid:
-            continue
-        n["read"] = True
-        changed_ids.append(n.get("id"))
-    if changed_ids:
-        try:
-            _save_notifications()
-        except Exception:
-            logger.exception("notification save failed")
-        _broadcast_sse_event({"type": "read", "ids": changed_ids})
-    return {"ok": True, "count": len(changed_ids)}
-
-
-@router.delete("/notifications/{notif_id}")
-def delete_notification(notif_id: str):
-    """通知を削除 (履歴から消す)。"""
-    before = len(notifications_history)
-    notifications_history[:] = [n for n in notifications_history if n.get("id") != notif_id]
-    if len(notifications_history) != before:
-        try:
-            _save_notifications()
-        except Exception:
-            logger.exception("notification save failed")
-        _broadcast_sse_event({"type": "removed", "ids": [notif_id]})
-    return {"ok": True}
-
-
-@router.get("/notifications/stream")
-async def notifications_stream():
-    """SSE: 通知の追加 / 既読 / 削除を全 PWA タブにリアルタイム配信。"""
-    from fastapi.responses import StreamingResponse
-
-    queue: asyncio.Queue = asyncio.Queue()
-    _sse_listeners.append(queue)
-
-    async def gen():
-        try:
-            # 接続直後にハンドシェイク (= retry 設定 + 接続確認)
-            yield "retry: 3000\n\n"
-            while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=25.0)
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                except asyncio.TimeoutError:
-                    # keep-alive ping (一部 proxy が idle connection を切るので 25 秒毎に)
-                    yield ": ping\n\n"
-        finally:
-            try:
-                _sse_listeners.remove(queue)
-            except ValueError:
-                pass
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    """未読カウンタを 0 にリセット。 PWA を開いた時 / session を開いた時に呼ばれる。
+    payload の session_id は legacy 互換で受け取るが、 履歴を持たないので無視する。"""
+    global unread_count
+    before = unread_count
+    unread_count = 0
+    return {"ok": True, "count": before}
 
 
 @router.get("/push/vapid-public-key")
