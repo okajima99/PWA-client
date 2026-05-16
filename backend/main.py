@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # --- アプリ内モジュール ---
 import http_client  # noqa: E402
-from config import UPLOADS_TMP  # noqa: E402
+from config import CORS_ALLOW_ORIGINS, UPLOADS_TMP  # noqa: E402
 from sdk_runner import disconnect_client, idle_disconnect_loop  # noqa: E402
 from session_logging import close_all as close_all_session_logs, prune_all_existing  # noqa: E402
 from state import sessions_meta, stream_states  # noqa: E402
@@ -88,12 +88,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# frontend は backend で配信される設計なので、 通常運用では同一オリジン = CORS 不要。
+# config に明示指定があった時だけ middleware を有効化 (= dev で vite から叩く等)。
+if CORS_ALLOW_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ALLOW_ORIGINS,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 app.include_router(chat_routes.router)
 app.include_router(files_routes.router)
