@@ -281,6 +281,7 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
           )}
           {msg.tools?.length > 0 && (
             <div className="tool-log">
+              <div className="tool-log-header">Claude のツール使用履歴</div>
               {msg.tools.map((t) => {
                 const resultText = t.result ? formatToolResultContent(t.result.content) : null
                 const truncated = resultText && resultText.length > RESULT_PREVIEW_CHARS

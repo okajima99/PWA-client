@@ -76,6 +76,59 @@ export function formatTool(block) {
       label = lines.join('\n')
       break
     }
+    case 'TodoWrite': {
+      // input: { todos: [{ content, status, activeForm }] }
+      // status: 'pending' | 'in_progress' | 'completed'
+      const todos = Array.isArray(input?.todos) ? input.todos : []
+      const n = todos.length
+      const doing = todos.filter(t => t?.status === 'in_progress').length
+      const done = todos.filter(t => t?.status === 'completed').length
+      shortLabel = doing > 0
+        ? `📋 ${n} todos (${doing} doing)`
+        : done === n && n > 0
+          ? `📋 ${n} todos (all done)`
+          : `📋 ${n} todos`
+      const lines = todos.map(t => {
+        const mark = t?.status === 'completed' ? '✓'
+          : t?.status === 'in_progress' ? '◉'
+          : '○'
+        return `  ${mark} ${t?.content ?? ''}`
+      })
+      label = `todo update (${n} items)\n${lines.join('\n')}`
+      break
+    }
+    case 'ExitPlanMode': {
+      // input: { plan }
+      const plan = (input?.plan ?? '').toString()
+      const firstLine = plan.split('\n').find(l => l.trim()) || ''
+      shortLabel = `📑 plan: ${truncate(firstLine, SHORT_LABEL_MAX - 10)}`
+      label = `plan:\n${plan}`
+      break
+    }
+    case 'AskUserQuestion': {
+      // input: { questions: [{ question, header, options, multiSelect }] }
+      // 専用バブル (AskUserQuestionBubble) で UI 提示してるので、 tool-log では簡略のみ。
+      const questions = Array.isArray(input?.questions) ? input.questions : []
+      const first = questions[0]
+      const q = first?.question ?? ''
+      shortLabel = `❓ ${truncate(q, SHORT_LABEL_MAX - 4)}`
+      const headers = questions.map(qq => qq?.header || qq?.question || '').filter(Boolean)
+      label = `ask user: ${questions.length} question(s)\n${headers.map(h => `  • ${h}`).join('\n')}`
+      break
+    }
+    case 'Monitor': {
+      // input: { command, description, timeout_ms, persistent }
+      const desc = input?.description ?? ''
+      const cmd = input?.command ?? ''
+      shortLabel = `👁 monitor: ${truncate(desc || cmd, SHORT_LABEL_MAX - 12)}`
+      const lines = []
+      if (desc) lines.push(`description: ${desc}`)
+      if (cmd) lines.push('', 'command:', cmd)
+      if (input?.timeout_ms) lines.push('', `timeout: ${input.timeout_ms}ms`)
+      if (input?.persistent) lines.push(`persistent: true`)
+      label = lines.join('\n')
+      break
+    }
     default: {
       label = `[${name}] ${JSON.stringify(input ?? {})}`
       // Extract the first string-valued field as a human-readable hint
