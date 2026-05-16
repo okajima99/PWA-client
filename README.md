@@ -226,7 +226,15 @@ claude-pwa-client/
 
 ## ライセンス
 
-GPL-3.0 (= moonlight-web-stream / Sunshine 系の影響で copyleft 継承)
+Apache License 2.0 (`LICENSE` + `NOTICE` 参照)。
+
+Sunshine / moonlight-web-stream は GPL-3.0 だが、 本リポはそれらを**バンドル / リンク
+していない** — 別プロセスとして起動し、 HTTP / WebRTC 経由で連携するだけなので、
+このリポ自体には GPL の copyleft は波及しない (FSF GPL FAQ「プロセス分離は通常
+derivative work ではない」 に依拠)。
+
+派生物は `NOTICE` を保持し、 改造した主要ファイルにその旨を明記すること
+(Apache-2.0 §4)。
 
 ## 謝辞
 

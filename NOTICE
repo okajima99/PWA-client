@@ -1,0 +1,21 @@
+Claude PWA Client
+Copyright 2026 okajima99
+
+Originally developed at:
+https://github.com/okajima99/claude-pwa-client
+
+This product includes software developed by the contributors listed in
+the project's git history. Derivative works are required by the Apache
+License 2.0 to preserve this NOTICE file.
+
+----
+
+Third-party components used at runtime (not bundled — invoked via
+separate processes / HTTP) and their licenses:
+
+- Claude Code CLI / claude-agent-sdk    MIT     (Anthropic)
+- Sunshine                              GPL-3.0 (LizardByte)
+- moonlight-web-stream                  GPL-3.0 (MrCreativ3001)
+
+The GPL components above are not statically linked or bundled into this
+repository. They are accessed as external processes via HTTP / WebRTC.
