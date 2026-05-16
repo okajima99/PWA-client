@@ -5,6 +5,7 @@ import AttachedImages from './AttachedImages.jsx'
 import { formatToolResultContent, formatCost, formatDuration, formatModelName, formatTokens } from '../utils/format.js'
 import { diffLines, compactDiff } from '../utils/diff.js'
 import { API_BASE } from '../constants.js'
+import './MessageItem.css'
 
 const RESULT_PREVIEW_CHARS = 800
 

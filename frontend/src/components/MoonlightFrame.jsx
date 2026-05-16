@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import './MoonlightFrame.css'
 
 // 画面共有 (= moonlight-web-stream を iframe で埋め込み)。
 // backend の Tailscale Serve で /moonlight/ → moonlight-web-stream にプロキシ済み前提

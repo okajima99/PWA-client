@@ -15,6 +15,7 @@ import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml'
 import toml from 'react-syntax-highlighter/dist/esm/languages/prism/toml'
 import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash'
 import { API_BASE } from './constants.js'
+import './Modal.css'
 
 SyntaxHighlighter.registerLanguage('python', python)
 SyntaxHighlighter.registerLanguage('javascript', javascript)

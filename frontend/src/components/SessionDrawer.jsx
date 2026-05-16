@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import './SessionDrawer.css'
 
 // 左サイドからスライドインする会話一覧ドロワー (ChatGPT 風)。
 // - 上部: 「+ 新規会話」 → agent を選ぶ → createSession

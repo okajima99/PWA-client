@@ -1,4 +1,5 @@
 import { memo, useEffect, useState } from 'react'
+import './ActivityBar.css'
 
 // 全完了 TODO を画面から消すまでの猶予（進行中は残し続ける）
 const TODOS_HIDE_AFTER_DONE_MS = 5_000

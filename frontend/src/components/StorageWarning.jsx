@@ -1,3 +1,4 @@
+import './StorageWarning.css'
 // localStorage / IndexedDB / cache 等の合計使用率が高い時に出す警告バナー。
 // しきい値: 85% で表示。 タップで隠せる (セッション中だけ)。
 const WARN_RATIO = 0.85

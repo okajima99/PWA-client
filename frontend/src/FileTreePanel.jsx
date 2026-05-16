@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { API_BASE } from './constants.js'
+import './FileTreePanel.css'
 
 const HOME = '~'
 

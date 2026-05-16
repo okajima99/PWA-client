@@ -1,0 +1,23 @@
+/* ステータスバー */
+.statusbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  /* iPhone Safari の PWA standalone で notch / Dynamic Island ぶん上にずらす。 通常 web は 0。 */
+  padding: calc(6px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 6px calc(12px + env(safe-area-inset-left));
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.model {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.pct { font-weight: 500; }
+.pct.green { color: var(--green); }
+.pct.yellow { color: var(--yellow); }
+.pct.red { color: var(--red); }
+.dim { color: var(--text-dim); }

@@ -1,4 +1,5 @@
 import { memo, useState } from 'react'
+import './AskUserQuestionBubble.css'
 
 // Claude が AskUserQuestion に渡してくる options の形が想定外のときも落ちないよう正規化
 function normalizeOption(opt) {
