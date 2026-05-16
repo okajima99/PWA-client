@@ -293,8 +293,9 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
                 const suppressSuccessResult = hasDiff && t.result && !t.result.is_error
                 const showResult = !!t.result && !suppressSuccessResult
                 const hasMore = hasDiff || showInputFull || showResult
-                // diff のある Edit/Write は初期展開（ターミナル風に変更点を目視できるように）
-                const openByDefault = hasDiff
+                // 過去メッセージのスクロールバック中に diff / 結果が大きく開きっぱなしだと
+                // 読みにくいので、 デフォルトは全部閉じる。 必要な時だけタップで展開する。
+                const openByDefault = false
                 return (
                   <details
                     key={t.id}
