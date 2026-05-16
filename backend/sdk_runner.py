@@ -161,6 +161,7 @@ def make_permission_handler(session_id: str):
                 "input": input_data,
             }) + "\n\n"
         )
+        state.buffer_event.set()
 
         # Web Push: アプリが前面表示されてないなら、 質問テキストを通知に流す
         # (回答待ちでロックされるので、 ターン完了まで待つと体感が悪い)
@@ -356,6 +357,7 @@ async def run_sdk_background(session_id: str, content: list, user_request_id: st
             # ResultMessage 検出で proactive_id を更新 (turn 境界)
             wire["request_id"] = proactive_id_drain
             state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
+            state.buffer_event.set()
             session_log(
                 session_id,
                 f"[drain] type={wire.get('type')} request_id={proactive_id_drain}",
@@ -496,6 +498,7 @@ async def run_sdk_background(session_id: str, content: list, user_request_id: st
             if wire is not None:
                 wire["request_id"] = current_request_id
                 state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
+                state.buffer_event.set()
                 # 検証ログ: メッセージ種別 + request_id を 1 行で残す
                 _suffix = " (user-turn-end)" if (isinstance(msg, ResultMessage) and current_request_id == user_request_id) else ""
                 session_log(
@@ -523,6 +526,7 @@ async def run_sdk_background(session_id: str, content: list, user_request_id: st
             f"[run_sdk] === END user_request_id={user_request_id} user_turn_done={user_turn_done} ===",
         )
         state.complete = True
+        state.buffer_event.set()  # replay 側を必ず wake (= 残り 0 件 + complete で break する)
         # ターン完了時刻を活動時刻として記録 (アイドル GC の起点)
         state.last_activity_at = time.time()
         reset_activity(session_id)

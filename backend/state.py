@@ -198,6 +198,11 @@ class StreamState:
     # アイドル GC 用: 直近のターン活動時刻 (ターン開始 / 完了時に更新)。
     # 0.0 = まだ一度も発話してない (= GC 対象にしない)
     last_activity_at: float = 0.0
+    # SSE replay 用のシグナル。 buffer.append / complete=True / buffer reset 時に set
+    # することで _sse_replay の polling sleep を撤廃 (= 20Hz wake → イベント駆動)。
+    # 受信側は wait_for(timeout=15) で待ち、 タイムアウト時は keep-alive ping を yield。
+    # event.set() を漏らしても最大 15 秒遅延、 ハングはしない (= timeout が保険)。
+    buffer_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 def _make_agent_status(agent_id: str) -> dict:

@@ -83,9 +83,24 @@ export default function App() {
   const [confirmEnd, setConfirmEnd] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(null) // 削除確認中の session_id
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
+  // 30 秒ごとに時刻表示を更新。 ただし hidden 中は止める (= 見えてないので無駄、 iOS は
+  // background でも setInterval が呼ばれる時間帯があり電力消費要因になる)。
+  // visible 復帰時は即同期して、 ユーザが古い数字を見る瞬間を作らない。
   useEffect(() => {
-    const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 30000)
-    return () => clearInterval(id)
+    let id = null
+    const tick = () => setNowSec(Math.floor(Date.now() / 1000))
+    const start = () => {
+      if (id != null) return
+      tick()
+      id = setInterval(tick, 30000)
+    }
+    const stop = () => {
+      if (id != null) { clearInterval(id); id = null }
+    }
+    const onVis = () => { document.hidden ? stop() : start() }
+    if (!document.hidden) start()
+    document.addEventListener('visibilitychange', onVis)
+    return () => { stop(); document.removeEventListener('visibilitychange', onVis) }
   }, [])
   const menuRef = useRef(null)
 

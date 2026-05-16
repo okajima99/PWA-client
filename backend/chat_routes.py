@@ -80,21 +80,32 @@ async def _await_task_cancellation(state):
 # --- SSE replay generator (chat_stream / reconnect_stream で共有) ---
 async def _sse_replay(state, from_pos: int = 0):
     """state.buffer を from_pos から再生 + 15 秒間隔で keep-alive ping。
-    state.complete + sent が buffer 末尾に追いついたら終了。"""
+    state.complete + sent が buffer 末尾に追いついたら終了。
+
+    state.buffer_event を待つイベント駆動。 mutation 側 (= buffer.append / complete=True /
+    buffer reset) が event.set() を呼ぶ前提だが、 wait_for(timeout=15) で必ず wake する
+    ので set() を漏らしても最大 15 秒遅延でハングはしない。 timeout 自体が ping 用にも
+    使われる二重用途。"""
     sent = max(0, from_pos)
-    last_heartbeat = asyncio.get_event_loop().time()
     while True:
+        # buffer に未送信ぶんがあれば先に flush
         while sent < len(state.buffer):
             yield state.buffer[sent]
             sent += 1
-            last_heartbeat = asyncio.get_event_loop().time()
         if state.complete and sent >= len(state.buffer):
             break
-        now = asyncio.get_event_loop().time()
-        if now - last_heartbeat >= 15:
+        # event を待つ。 timeout = keep-alive ping 周期。
+        # clear() は wait の直前 (= buffer を読み切った後) に行うことで、 wait 中に来た
+        # set() を取りこぼさない (= event.set() は idempotent)。
+        state.buffer_event.clear()
+        # ただし event.clear() と len(state.buffer) の再チェック間に append が来る race
+        # を考慮: clear 後にもう一度 buffer / complete を見て、 すでに進展があれば即 loop。
+        if sent < len(state.buffer) or state.complete:
+            continue
+        try:
+            await asyncio.wait_for(state.buffer_event.wait(), timeout=15.0)
+        except asyncio.TimeoutError:
             yield ": ping\n\n"
-            last_heartbeat = now
-        await asyncio.sleep(0.05)
 
 
 # --- セッション CRUD ---
@@ -209,6 +220,10 @@ async def chat_stream(
             "data: " + _json.dumps({"type": "request_id", "request_id": user_request_id}) + "\n\n"
         )
         state.complete = False
+        # 新 turn 開始: 前 turn の complete=True で set された event を一旦落としてから、
+        # 新規 append ぶんを通知 (= replay 側が即 wake して先頭イベントを受け取れる)。
+        state.buffer_event.clear()
+        state.buffer_event.set()
         state.task = asyncio.create_task(run_sdk_background(session_id, content, user_request_id))
 
     return StreamingResponse(
@@ -261,6 +276,7 @@ async def chat_stop(session_id: str):
     await disconnect_client(session_id)
 
     state.complete = True
+    state.buffer_event.set()  # replay 側を wake (= /stop 時の SSE クローズを即時化)
     reset_activity(session_id)
 
     return {"status": "stopped"}
