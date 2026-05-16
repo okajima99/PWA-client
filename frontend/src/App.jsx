@@ -220,7 +220,10 @@ export default function App() {
   // 1 本の経路で送るよう統合。 ここの旧 visibility listener は重複で session_id 落ち
   // race を起こしてたため削除済。
 
-  const inputDisabled = !activeSid || !!loading[activeSid]
+  // 入力欄は active session が無い時だけ disabled。 loading[activeSid] (= 推論中) でも
+  // ユーザーは次に送る文を編集しておけるように許可 — 送信ボタンは loading 中は停止ボタン
+  // に切り替わるので、 推論完了 → 自動で送信ボタンに戻る → ユーザーが押す、 で流れる。
+  const inputDisabled = !activeSid
 
   return (
     <div className="app">

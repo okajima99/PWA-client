@@ -64,4 +64,9 @@ def build_content(message: str, saved_files: List[dict]) -> list:
                 logger.debug("attachment text read failed for %s", sf.get("path"), exc_info=True)
     if message:
         content.append({"type": "text", "text": message})
+    # 全件 read 失敗 + message 空 = content が空のまま SDK に渡ると Anthropic API が
+    # 400 を返す。 添付があった事実だけでも text として残す (= 「ファイル N 件添付」)。
+    if not content and saved_files:
+        names = ", ".join(sf["name"] for sf in saved_files)
+        content.append({"type": "text", "text": f"[添付ファイル {len(saved_files)} 件: {names}]"})
     return content

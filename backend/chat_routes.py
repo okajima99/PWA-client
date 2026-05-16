@@ -167,7 +167,9 @@ async def delete_session(session_id: str):
 @router.post("/chat/{session_id}/stream")
 async def chat_stream(
     session_id: str,
-    message: str = Form(...),
+    # message は空でも OK (= 画像 / ファイル単独送信)。 frontend は attachment があれば
+    # text 空でも送信ボタンを enable する設計に合わせる。
+    message: str = Form(default=""),
     files: List[UploadFile] = File(default=[]),
 ):
     if session_id not in sessions_meta:
