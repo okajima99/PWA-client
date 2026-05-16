@@ -20,7 +20,7 @@ import {
   useDeepLink,
   useSessionActivity,
   useSessionBadges,
-} from './hooks/useNativeBridges.js'
+} from './hooks/useAppEffects.js'
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
 const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
@@ -89,7 +89,7 @@ export default function App() {
   }, [])
   const menuRef = useRef(null)
 
-  // backend / 通知 / deep link 系の effect を hook に集約 (= useNativeBridges.js)
+  // backend / 通知 / deep link 系の effect を hook に集約 (= useAppEffects.js)
   usePushState(activeSid)
   useReadOnSessionOpen(activeSid)
   useBadgeSync()

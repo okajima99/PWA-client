@@ -11,12 +11,7 @@
   display: flex;
   gap: 12px;
   align-items: center;
-  /* JS から取り出して setVideoFrame の y に加算するため CSS 変数で safe-area top を expose。
-     getBoundingClientRect は WebView 内座標、 native streamView は viewController.view の
-     subview (= status bar 含む全画面) なので safe-area-top の差分を web 側で補う必要がある。 */
-  --sat: env(safe-area-inset-top, 0);
-  /* native (Capacitor) では env(safe-area-inset-top) が notch / Dynamic Island の
-     高さを返す。 PWA Safari / 通常 web では 0 になるので、 PWA 側の見た目は不変。 */
+  /* iPhone Safari の PWA standalone で notch / Dynamic Island ぶん上にずらす。 通常 web は 0。 */
   padding: calc(6px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 6px calc(12px + env(safe-area-inset-left));
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
@@ -561,65 +556,6 @@
   50% { opacity: 0.4; }
 }
 
-/* stream-overlay: flex item として topbar 下に配置。 native streamView は setVideoFrame で
-   同位置に追従、 キーボード on の間は引数を画面上端固定に切替。 この div 自体は touch を
-   受ける layer、 native streamView は isUserInteractionEnabled=false で touch を pass-through、
-   だから overlay の touch handler にジェスチャが届く。 */
-.stream-overlay {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: #000;
-  flex-shrink: 0;
-  /* デフォルトの iOS gesture (= スクロール / ズーム) を全部抑止 */
-  touch-action: none;
-}
-
-/* streamView の真下の制御 row: 通常の DOM フローで配置 (= native streamView と
-   重ならないので z-index 問題が起きない)。 streaming=true の時だけ render。 */
-.stream-controls-row {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-  padding: 6px 8px;
-  flex-shrink: 0;
-  background: #0a0a0a;
-}
-.stream-ctrl-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 18px;
-  border: none;
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  font-size: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-.stream-ctrl-btn:active {
-  background: rgba(0, 0, 0, 0.75);
-}
-/* zoom mode ON 時の active 表示 (= ボタンが押されたまま色付く) */
-.stream-ctrl-btn.active {
-  background: rgba(120, 130, 250, 0.85);
-}
-
-/* IME 入力用の隠れ input。 タップに当たらないが focus は受けて iOS キーボード出る。 */
-.ime-hidden-input {
-  position: absolute;
-  top: -100px;
-  left: 0;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-  /* font-size 16px 未満だと iOS が auto-zoom する → 16px 固定で防ぐ */
-  font-size: 16px;
-}
-
 /* メッセージ */
 .messages-container {
   flex: 1;
@@ -745,8 +681,7 @@
 .inputarea {
   display: flex;
   gap: 8px;
-  /* native (Capacitor) では env(safe-area-inset-bottom) でホームインジケータ分の
-     余白を確保。 PWA / web では 0 になり影響なし。 */
+  /* iPhone Safari の PWA standalone でホームインジケータぶん下を確保。 通常 web は 0。 */
   padding: 10px calc(12px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
   border-top: 1px solid var(--border);
   background: var(--bg2);

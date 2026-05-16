@@ -1,4 +1,4 @@
-// App.jsx から責務分離した小粒 hook 群。 PWA 専用、 旧 native (Capacitor) 経路は撤去済。
+// App.jsx から責務分離した小粒 hook 群 (= push 状態同期、 既読化、 バッジ、 deep link 等)。
 import { useEffect, useState } from 'react'
 import { API_BASE, LS_SESSION_ACTIVITY } from '../constants.js'
 import { syncBadgeFromServer } from '../utils/badge.js'
