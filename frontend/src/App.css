@@ -1756,3 +1756,18 @@ button:disabled {
 .moonlight-ctrl-btn.active {
   background: rgba(120, 130, 250, 0.85);
 }
+
+/* hosts/apps fetch 失敗時のエラーバナー (= iframe 上端に薄く重ねる)。 */
+.moonlight-error {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  padding: 6px 12px;
+  background: rgba(180, 60, 60, 0.9);
+  color: #fff;
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
+}
