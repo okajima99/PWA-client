@@ -137,7 +137,71 @@ export default function App() {
   const currentAttachments = (activeSid && attachments[activeSid]) || []
 
   // session ごとの新着 / 処理中 / 質問待ちバッジ計算 (= active session は常に既読)
-  const sessionBadges = useSessionBadges({ sids, activeSid, messages, loading })
+  const { sessionBadges, markAsSeen } = useSessionBadges({ sids, activeSid, messages, loading })
+  // session を tap した時に activeSid 切替と同時に markAsSeen を呼ぶことで、
+  // useEffect の遅延を待たずに「赤丸が確実に消える」 状態を作る。
+  const selectSession = useCallback((sid) => {
+    setActiveId(sid)
+    markAsSeen(sid)
+  }, [setActiveId, markAsSeen])
+
+  // session ごとの model / effort 上書き設定 (= ⋯ メニュー → Model & Effort ダイアログで切替)。
+  // backend が返す default_model / default_effort は override 未設定時の表示用。
+  // 推論中 (= loading[activeSid]) は backend が 409 で弾く + UI 側でも disable。
+  const [sessionConfig, setSessionConfig] = useState({
+    model: null, effort: null, defaultModel: null, defaultEffort: null,
+  })
+  const [pickerOpen, setPickerOpen] = useState(null) // null | 'config'
+  useEffect(() => {
+    if (!activeSid) {
+      setSessionConfig({ model: null, effort: null, defaultModel: null, defaultEffort: null })
+      return
+    }
+    let cancelled = false
+    fetch(`${API_BASE}/sessions/${activeSid}/config`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d || cancelled) return
+        setSessionConfig({
+          model: d.model, effort: d.effort,
+          defaultModel: d.default_model, defaultEffort: d.default_effort,
+        })
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [activeSid])
+  const patchSessionConfig = useCallback(async (patch) => {
+    if (!activeSid) return
+    try {
+      const res = await fetch(`${API_BASE}/sessions/${activeSid}/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      })
+      if (res.ok) {
+        const d = await res.json()
+        setSessionConfig(prev => ({ ...prev, model: d.model, effort: d.effort }))
+      }
+    } catch { /* ignore */ }
+  }, [activeSid])
+
+  // 公式 CLI が受け入れる短縮形 + effort 階層。 SDK に渡る値とラベルを併記。
+  const MODEL_OPTIONS = [
+    { value: 'opus', label: 'Opus' },
+    { value: 'sonnet', label: 'Sonnet' },
+    { value: 'haiku', label: 'Haiku' },
+  ]
+  const EFFORT_OPTIONS = [
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra High' },
+    { value: 'max', label: 'Max' },
+  ]
+  // override 値が無ければ backend が返した default を ✓ 位置に使う。
+  const activeModel = sessionConfig.model ?? sessionConfig.defaultModel
+  const activeEffort = sessionConfig.effort ?? sessionConfig.defaultEffort
+  const configDisabled = !!(activeSid && loading[activeSid])
 
   const displayMessages = useMemo(() => {
     if (!activeSid) return []
@@ -269,7 +333,7 @@ export default function App() {
             sessions={sortedSessions}
             agents={agents}
             activeId={activeId}
-            onSelect={setActiveId}
+            onSelect={selectSession}
             onCreate={(agentId) => createSession(agentId)}
             onRename={renameSession}
             onDelete={(sid) => setConfirmDelete(sid)}
@@ -351,6 +415,14 @@ export default function App() {
               <button onClick={() => { fetchLatest(); requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) }); setMenuOpen(false) }} className="menu-item">
                 最新を取得
               </button>
+              {activeSession && (
+                <button
+                  className="menu-item"
+                  onClick={() => { setPickerOpen('config'); setMenuOpen(false) }}
+                >
+                  Model & Effort
+                </button>
+              )}
               <button
                 onClick={() => { setMenuOpen(false); setConfirmEnd(true) }}
                 className="menu-item end"
@@ -379,6 +451,46 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {pickerOpen === 'config' && activeSid && (
+        <div className="picker-overlay" onClick={() => setPickerOpen(null)}>
+          <div className="picker-dialog" onClick={e => e.stopPropagation()}>
+            <div className="picker-title">Model &amp; Effort</div>
+            {configDisabled && (
+              <div className="picker-notice">推論中は変更できません</div>
+            )}
+            <div className="picker-section">
+              <div className="picker-section-label">Model</div>
+              {MODEL_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  className={`picker-option ${activeModel === opt.value ? 'active' : ''}`}
+                  onClick={() => patchSessionConfig({ model: opt.value })}
+                  disabled={configDisabled}
+                >
+                  <span>{opt.label}</span>
+                  {activeModel === opt.value && <span className="picker-check">✓</span>}
+                </button>
+              ))}
+            </div>
+            <div className="picker-section">
+              <div className="picker-section-label">Effort</div>
+              {EFFORT_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  className={`picker-option ${activeEffort === opt.value ? 'active' : ''}`}
+                  onClick={() => patchSessionConfig({ effort: opt.value })}
+                  disabled={configDisabled}
+                >
+                  <span>{opt.label}</span>
+                  {activeEffort === opt.value && <span className="picker-check">✓</span>}
+                </button>
+              ))}
+            </div>
+            <button className="picker-close" onClick={() => setPickerOpen(null)}>Close</button>
+          </div>
+        </div>
+      )}
 
       <ConfirmDialog
         open={confirmEnd}

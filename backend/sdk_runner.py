@@ -201,9 +201,12 @@ async def ensure_client(session_id: str) -> ClaudeSDKClient:
 
     agent_id = state.agent_id
     cfg = AGENTS[agent_id]
+    # session override > config の model、 override > "medium" の effort。
+    effort = state.effort_override or "medium"
+    model = state.model_override or cfg.get("model") or None
     env = {
         "ANTHROPIC_BASE_URL": "http://localhost:8000/proxy",
-        "CLAUDE_CODE_EFFORT_LEVEL": "medium",
+        "CLAUDE_CODE_EFFORT_LEVEL": effort,
     }
     options = ClaudeAgentOptions(
         cwd=cfg["cwd"],
@@ -214,6 +217,7 @@ async def ensure_client(session_id: str) -> ClaudeSDKClient:
         permission_mode="bypassPermissions",
         env=env,
         cli_path=CLAUDE_PATH,
+        **({"model": model} if model else {}),
     )
     client = ClaudeSDKClient(options=options)
     await client.connect()

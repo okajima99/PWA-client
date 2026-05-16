@@ -356,3 +356,63 @@ def list_agents():
         {"id": name, "display_name": cfg.get("display_name", name.upper())}
         for name, cfg in AGENTS.items()
     ]
+
+
+# --- session 別 model / effort 切替 ---
+ALLOWED_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+
+
+@router.get("/sessions/{session_id}/config")
+def get_session_config(session_id: str):
+    """session の model / effort 上書き値を返す (= 未設定なら null)。
+    UI が現在の選択を表示するため。"""
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    state = stream_states[session_id]
+    cfg = AGENTS.get(state.agent_id) or {}
+    return {
+        "model": state.model_override,
+        "effort": state.effort_override,
+        "default_model": cfg.get("model"),
+        "default_effort": "medium",
+    }
+
+
+@router.patch("/sessions/{session_id}/config")
+async def patch_session_config(session_id: str, payload: dict = Body(...)):
+    """session の model / effort 上書きを更新する。 None / 未指定で「デフォルトに戻す」。
+    変更時は既存 SDK client を disconnect して、 次ターン開始時に新値で建て直す。"""
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    state = stream_states[session_id]
+    # 推論中の切替は SDK client を強制切断 → 走ってる receive_response が途中で死ぬ
+    # ため、 ストリーム表示が中途半端な状態で固まる。 完了を待つか /stop してからに。
+    if not state.complete:
+        raise HTTPException(
+            status_code=409,
+            detail="推論中はモデル / effort 切替不可。 応答完了 or 停止後に再試行してください。",
+        )
+    changed = False
+    if "model" in payload:
+        m = payload["model"]
+        if m is not None and not isinstance(m, str):
+            raise HTTPException(status_code=400, detail="model は文字列か null")
+        if state.model_override != m:
+            state.model_override = m or None
+            changed = True
+    if "effort" in payload:
+        e = payload["effort"]
+        if e is not None:
+            if not isinstance(e, str) or e not in ALLOWED_EFFORTS:
+                raise HTTPException(status_code=400, detail=f"effort は {ALLOWED_EFFORTS} のいずれか or null")
+        if state.effort_override != e:
+            state.effort_override = e or None
+            changed = True
+    if changed:
+        # 既存 client を切断 → 次の ensure_client で新 model / effort で建て直し
+        await disconnect_client(session_id)
+    return {
+        "ok": True,
+        "model": state.model_override,
+        "effort": state.effort_override,
+    }

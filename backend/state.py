@@ -198,6 +198,11 @@ class StreamState:
     # アイドル GC 用: 直近のターン活動時刻 (ターン開始 / 完了時に更新)。
     # 0.0 = まだ一度も発話してない (= GC 対象にしない)
     last_activity_at: float = 0.0
+    # session 別 model / effort 上書き。 None なら AGENTS 設定 + env デフォルトを使う。
+    # PATCH /sessions/{id}/config で更新 → 次の ensure_client で反映 (= 既存 client は
+    # disconnect される)。
+    model_override: str | None = None
+    effort_override: str | None = None  # "low" | "medium" | "high"
     # SSE replay 用のシグナル。 buffer.append / complete=True / buffer reset 時に set
     # することで _sse_replay の polling sleep を撤廃 (= 20Hz wake → イベント駆動)。
     # 受信側は wait_for(timeout=15) で待ち、 タイムアウト時は keep-alive ping を yield。
