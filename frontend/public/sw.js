@@ -48,10 +48,9 @@ self.addEventListener('notificationclick', (event) => {
   const data = event.notification.data || {}
   const sid = data.sid
   const notifId = data.id  // backend が払い出した通知 id (既読化用)
-  // PWA 経由で App (native) へリダイレクトさせる URL (?deep=1 で auto redirect 起動)
-  const bridgeUrl = sid
-    ? `/?mode=notify&deep=1&ses=${encodeURIComponent(sid)}`
-    : '/?mode=notify'
+  // 通知タップは常に chat に着地 (= 旧 native bridge は撤去、 2026-05-16)。
+  // 将来 sid からセッションを active にする deep link は chat 側で実装する。
+  const targetUrl = '/'
   event.waitUntil((async () => {
     // 既読化 (失敗時は無視)
     if (notifId) {
@@ -59,27 +58,21 @@ self.addEventListener('notificationclick', (event) => {
         await fetch(`/notifications/${encodeURIComponent(notifId)}/read`, { method: 'POST' })
       } catch { /* ignore */ }
     }
-    // バッジは PWA 起動直後に App.jsx の syncBadgeFromServer で再同期される。
-    // ここで unread-count を再 fetch するのは冗長 (= 既読化 POST と GET の 2 往復、
-    // 直後の sync で結局上書きされる) ので削除済。
-    // iOS は SW から app:// を openWindow で直接呼んでも動かない仕様。
-    // 代わりに PWA を bridgeUrl で開く → PWA 側 (NotificationCenter.jsx) が
-    // ?deep=1 を見て location.href = app://chat/<sid> を実行 → App 起動。
-    // 既存タブがあれば focus + navigate でリロード代わり。
+    // 既存タブがあれば focus、 無ければ新規開く。
     const allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
     for (const client of allClients) {
       if ('focus' in client) {
         try {
           await client.focus()
           if ('navigate' in client) {
-            try { await client.navigate(bridgeUrl) } catch { /* ignore */ }
+            try { await client.navigate(targetUrl) } catch { /* ignore */ }
           }
           return
         } catch { /* ignore */ }
       }
     }
     if (self.clients.openWindow) {
-      try { await self.clients.openWindow(bridgeUrl) } catch { /* ignore */ }
+      try { await self.clients.openWindow(targetUrl) } catch { /* ignore */ }
     }
   })())
 })

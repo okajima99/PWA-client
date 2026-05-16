@@ -34,6 +34,8 @@ const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
 const FileTreePanel = lazy(() => import('./FileTreePanel.jsx'))
 // SessionDrawer は drawerOpen=true の時のみ render = 遅延 load 妥当 (= 初回 paint 早く)
 const SessionDrawer = lazy(() => import('./components/SessionDrawer.jsx'))
+// 画面共有 (= moonlight-web-stream を iframe 埋め込み)。 開いた時だけ load。
+const MoonlightFrame = lazy(() => import('./components/MoonlightFrame.jsx'))
 
 export default function App() {
   // セッション (= UI 上のタブ = 1 議題) 管理
@@ -81,6 +83,7 @@ export default function App() {
 
   const [storageWarnDismissed, setStorageWarnDismissed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [desktopOpen, setDesktopOpen] = useState(false)  // 画面共有 (Mac デスクトップ) overlay
   const [menuOpen, setMenuOpen] = useState(false)
   const [previewPath, setPreviewPath] = useState(null)
   const [treeOpen, setTreeOpen] = useState(null)
@@ -297,6 +300,17 @@ export default function App() {
           ☰
         </button>
         <span className="topbar-title">{activeSession?.title || '会話なし'}</span>
+        {/* 画面共有 (= moonlight-web-stream を iframe で埋め込み) ON/OFF。
+            ボタン位置はネイティブ実装と同じ「topbar 右端」、 トグルで chat 上部に
+            16:9 box が現れる。 */}
+        <button
+          className={`screen-toggle ${desktopOpen ? 'active' : ''}`}
+          onClick={() => setDesktopOpen(prev => !prev)}
+          aria-label="画面共有"
+          title={desktopOpen ? '画面共有を閉じる' : '画面共有を開く (Sunshine 経由、 ペア済前提)'}
+        >
+          🖥
+        </button>
         {/* IME 入力モード切替 (= stream 接続中のみ意味あり)。 タップで隠れた input を focus、
             iOS 標準キーボードで日本語入力 → 確定文字を Mac へ sendUtf8Text。 */}
         {window.Capacitor?.isNativePlatform?.() && streaming && (
@@ -336,6 +350,14 @@ export default function App() {
           </button>
         )}
       </header>
+
+      {/* 画面共有 iframe (= 16:9 box、 topbar 直下に flex 配置)。 chat 入力欄や
+          status bar は隠れない。 desktopOpen=true の時だけ render。 */}
+      {desktopOpen && (
+        <Suspense fallback={null}>
+          <MoonlightFrame />
+        </Suspense>
+      )}
 
             {/* streamOverlay: native streamView と同位置の透明 div、 touch event を受けて
         plugin の sendMouseMove 等で Mac に転送する layer。 native streamView は

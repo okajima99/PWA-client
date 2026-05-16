@@ -46,10 +46,31 @@ export default function SessionDrawer({
   const [renameValue, setRenameValue] = useState('')
   const renameInputRef = useRef(null)
   const [globalMenuOpen, setGlobalMenuOpen] = useState(false)  // ヘッダ ⋯ の総合メニュー
+  const [resetBusy, setResetBusy] = useState(false)
   const globalMenuRef = useRef(null)
   const isLastSession = sessions.length <= 1
-  // global popup に出す項目があるか (= ⋯ ボタン自体の表示条件)
-  const hasGlobalMenuItems = !!((pushAvailable && onTogglePush) || onPairSunshine)
+  // リセット (= SW unregister + cache 全消し + reload) は常時提供。
+  // PWA 化すると Safari の cache クリア UI に届かなくなるための救済。
+  // localStorage / IndexedDB / 通知許可は触らない (= 状態は保持)。
+  const handleReset = async () => {
+    setResetBusy(true)
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations()
+        await Promise.all(regs.map(r => r.unregister().catch(() => {})))
+      }
+      if (typeof caches !== 'undefined') {
+        const keys = await caches.keys()
+        await Promise.all(keys.map(k => caches.delete(k).catch(() => {})))
+      }
+    } catch { /* ignore */ }
+    const url = new URL(window.location.href)
+    url.searchParams.set('_r', String(Date.now()))
+    window.location.replace(url.toString())
+  }
+  // global popup に出す項目があるか (= ⋯ ボタン自体の表示条件)。
+  // リセットは常時あるので、 ⋯ ボタンは常に表示される。
+  const hasGlobalMenuItems = true
 
   useEffect(() => {
     if (renameFor && renameInputRef.current) {
@@ -139,6 +160,13 @@ export default function SessionDrawer({
                     Sunshine ペアリング
                   </button>
                 )}
+                <button
+                  onClick={() => { setGlobalMenuOpen(false); handleReset() }}
+                  disabled={resetBusy}
+                  title="SW / cache を削除して最新コードを再読込 (履歴・通知許可は保持)"
+                >
+                  ↺ リセット (cache クリア)
+                </button>
               </div>
             )}
           </div>

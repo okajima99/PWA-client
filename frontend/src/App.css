@@ -5,6 +5,7 @@
   background: var(--bg);
 }
 
+
 /* ステータスバー */
 .statusbar {
   display: flex;
@@ -1746,4 +1747,77 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ============================================================
+ * 画面共有 (= moonlight-web-stream を iframe 埋め込み)
+ *
+ * 配置: topbar 直下に flex item として置く。 16:9 box でアスペクト固定。
+ * status bar / topbar / chat 入力欄は隠さない (= ネイティブ実装と同形)。
+ * ============================================================ */
+
+/* moonlight-frame: Mac native aspect (= 1470x956 ≈ 956/1470) の video 領域 + 上端 80px のサイドバー余白。
+   moonlight-web-stream は video を中央寄せするので、 iframe 高さを video ぴったりにすると
+   上は 80px の sidebar 余白だけ残り、 下余白は出ない。
+   ⚙ ⛶ ボタンはサイドバー余白の左右に absolute 重ねて、 同じ帯に同居。 */
+.moonlight-frame {
+  position: relative;
+  width: 100%;
+  height: calc(100vw * 9 / 16 + 35px);
+  background: #000;
+  flex-shrink: 0;
+  z-index: 5;
+}
+
+.moonlight-iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
+/* ⛶ ボタンで切り替わる擬似フルスクリーン。 高さも viewport 全体に。 */
+.moonlight-frame.fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  width: 100vw;
+  height: 100vh;
+}
+
+.moonlight-ctrl-left {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  z-index: 6;
+}
+
+.moonlight-ctrl-right {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 6;
+}
+
+.moonlight-ctrl-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.moonlight-ctrl-btn:active {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.moonlight-ctrl-btn.active {
+  background: rgba(120, 130, 250, 0.85);
 }

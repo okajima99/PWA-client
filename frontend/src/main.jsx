@@ -1,4 +1,4 @@
-import { StrictMode, lazy, Suspense } from 'react'
+import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
@@ -13,38 +13,11 @@ if ('serviceWorker' in navigator) {
   })
 }
 
-// 役割分担: PWA = 通知センター、 App (native) = チャット + 画面共有
-// 起動時に platform で default mode を分岐:
-//   - native (Capacitor) → chat (チャット UI)
-//   - web (PWA) → notify (通知センター)
-// URL に ?mode=xxx があれば上書き (debug 用)
-function getMode() {
-  try {
-    const sp = new URLSearchParams(window.location.search)
-    const fromUrl = sp.get('mode')
-    if (fromUrl) return fromUrl
-    if (window.Capacitor?.isNativePlatform?.() === true) return 'chat'
-    return 'notify'
-  } catch {
-    return 'notify'
-  }
-}
-
-const NotificationCenter = lazy(() => import('./NotificationCenter.jsx'))
-
-const mode = getMode()
-const Root = mode === 'notify'
-  ? (
-      <Suspense fallback={<div style={{ padding: 20, color: '#888' }}>読み込み中…</div>}>
-        <NotificationCenter />
-      </Suspense>
-    )
-  : <App />
-
+// PWA は chat 単一画面 (= 2026-05-16 で mode 分岐撤去、 通知センターは将来削除予定)。
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <ErrorBoundary>
-      {Root}
+      <App />
     </ErrorBoundary>
   </StrictMode>,
 )
