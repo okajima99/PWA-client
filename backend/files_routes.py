@@ -52,7 +52,11 @@ def get_tree(path: str = Query(default="~")):
         raise HTTPException(status_code=400, detail="Not a directory")
     entries = []
     try:
+        # dotfile (= `.` で始まるエントリ) は非表示。 .git / .DS_Store / .env など普段
+        # 触らないファイルが大量に並んで本来見たいものが埋もれるため。
         for entry in sorted(resolved.iterdir(), key=lambda e: (e.is_file(), e.name.lower())):
+            if entry.name.startswith("."):
+                continue
             entries.append({
                 "name": entry.name,
                 "path": str(entry),
