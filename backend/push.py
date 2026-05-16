@@ -37,8 +37,7 @@ notifications_history: list[dict] = []
 # SSE listener queue: 通知追加 / 既読化を購読中のクライアントに push する
 _sse_listeners: list[asyncio.Queue] = []
 
-# client 別 visible 状態: 「web」 / 「native」 各クライアントの可視状態 + アクティブ session
-# broadcast_push() で「該当 session を見てる client がいるなら抑制」 判定に使う
+# client visible 状態: 該当 session を見てる時の通知抑制判定用
 client_states: dict[str, dict] = {}
 
 
@@ -91,7 +90,6 @@ def _save_notifications() -> None:
 
 def is_session_actively_viewed(session_id: str | None) -> bool:
     """指定 session を visible で見てる client がいるか。
-    App (native) と PWA (web) のいずれかが該当 session で前面表示中なら True。
     session_id が None なら 1 client でも visible なら True (legacy 互換)。
     """
     if not session_id:
@@ -237,11 +235,10 @@ async def broadcast_push(
     アクティブに該当セッションを見てる client がいる時は OS 通知も履歴も
     スキップする (= 既に画面で読まれてる前提、 重複させない)。
 
-    session_id を渡すと payload に sid + URL を含める。 PWA (通知センター) で
-    通知タップ時に SW が `app://chat/<sid>` deep link で App (native) アプリへ
-    遷移できる。
+    session_id を渡すと payload に sid + URL を含める。 通知タップ時に SW が
+    chat の該当セッションを開く。
     """
-    # 抑制判定: native or web のいずれかがこのセッションを active 表示中なら通知不要
+    # 抑制判定: いずれかの client がこのセッションを active 表示中なら通知不要
     if is_session_actively_viewed(session_id):
         return
 
@@ -327,16 +324,13 @@ def push_state(payload: dict = Body(...)):
     request body:
       - visible: bool   フォアグラウンド (= 通知不要) かどうか
       - session_id: str  現在見てるセッション id (可視時のみ意味あり)
-      - client: "web" | "native"   どのクライアントか (省略時 web)
+      - client: 後方互換のため受け取るが内部では使わない
 
-    App (native) と PWA (web) で別エントリを保持し、 broadcast_push 時に
-    「該当 session を見てる client がいるなら抑制」 判定に使う。
+    broadcast_push 時に「該当 session を見てる client がいるなら抑制」 判定に使う。
     """
     visible = bool(payload.get("visible"))
     session_id = payload.get("session_id")
     client = payload.get("client") or "web"
-    if client not in ("web", "native"):
-        client = "web"
     client_states[client] = {
         "visible": visible,
         "session_id": session_id if visible else None,
