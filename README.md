@@ -99,7 +99,11 @@ npm run build  # dist/ を生成、 バックエンドが配信
 4. 通知を有効にしたい場合は ⋯ メニューから「通知を有効にする」 (iOS は 16.4+ +
    ホーム画面追加が必須)
 
-### Path B: Mac 画面共有も追加
+### Path B: Mac 画面共有も追加 (= 開発者向けオプション)
+
+> ⚠️ **optional / 開発者向け**。 Rust nightly + 30 分の自前ビルドが要るので、
+> 「自分の Mac の画面を自分のスマホで遠隔操作したい」 という明確な用途がある人だけ
+> 進めてください。 chat + 通知だけ使う人は Path A で完結します。
 
 Path A の構成に加えて、 Sunshine + moonlight-web-stream を Mac に install すると
 PWA 内の 🖥 ボタンから Mac の画面共有 + タッチ遠隔操作が動く。
