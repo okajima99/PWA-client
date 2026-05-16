@@ -1,8 +1,0 @@
-{
-  "appId": "com.local.claudepwaclient",
-  "appName": "App",
-  "webDir": "dist",
-  "server": {
-    "url": "https://user.tailnet.ts.net"
-  }
-}
