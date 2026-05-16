@@ -1,23 +1,12 @@
 // Web Push 通知の登録/解除ヘルパ。
 // iOS PWA は 16.4+ かつホーム画面追加済み (display:standalone) でのみ動作する。
-// Capacitor native (iOS app) は WKWebView の Web Push サポート次第:
-// iOS 17.4+ で部分対応、 動作するかは実機検証必要。
 
 import { API_BASE } from '../constants.js'
 
 const ENABLED_KEY = 'cpc_push_enabled'
 
-function isCapacitorNative() {
-  return (
-    typeof window !== 'undefined' &&
-    window.Capacitor?.isNativePlatform?.() === true
-  )
-}
-
 export function isPushSupported() {
   if (typeof window === 'undefined') return false
-  // Capacitor native でも判定: WKWebView で SW + PushManager + Notification が
-  // 全部揃ってるかを runtime チェックする (iOS のバージョン次第で変わるため)。
   return (
     'serviceWorker' in navigator &&
     'PushManager' in window &&
@@ -27,9 +16,6 @@ export function isPushSupported() {
 
 export function isStandalone() {
   if (typeof window === 'undefined') return false
-  // Capacitor native は常に standalone 扱い (display-mode を返さないバージョンが
-  // あるので Capacitor 判定を優先)
-  if (isCapacitorNative()) return true
   if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) return true
   // iOS Safari fallback
   return !!window.navigator.standalone
@@ -63,11 +49,7 @@ async function getRegistration() {
 
 export async function enablePush() {
   if (!isPushSupported()) {
-    throw new Error(
-      isCapacitorNative()
-        ? 'この iOS バージョンの WKWebView は Web Push 非対応です'
-        : 'Push 通知に対応していません'
-    )
+    throw new Error('Push 通知に対応していません')
   }
   if (!isStandalone()) {
     throw new Error('iOS では「ホーム画面に追加」した PWA でのみ通知を受け取れます')

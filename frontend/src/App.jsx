@@ -20,14 +20,7 @@ import {
   useDeepLink,
   useSessionActivity,
   useSessionBadges,
-  useImeBridge,
-  usePhysicalKeyboardForward,
 } from './hooks/useNativeBridges.js'
-import {
-  useMoonlightStreamPosition,
-  useStreamGestures,
-  useStreamStatusListener,
-} from './hooks/useStreamControl.js'
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
 const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
@@ -89,16 +82,6 @@ export default function App() {
   const [treeOpen, setTreeOpen] = useState(null)
   const [confirmEnd, setConfirmEnd] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(null) // 削除確認中の session_id
-  // stream 関連 state (= App body 上から下に流れる中で line 360 付近の useEffect 等で
-  // 参照する。 const 宣言が後ろにあると TDZ で ReferenceError になり ErrorBoundary が
-  // 「リロード / データ消去して再起動」 を出してしまう。 必ずここに置く)
-  // eslint-disable-next-line no-unused-vars -- streamStatus は将来 web 側 overlay で再利用予定、 setter は useStreamStatusListener に渡す
-  const [streamStatus, setStreamStatus] = useState(null)
-  const [pipActive, setPipActive] = useState(false)
-  const [streaming, setStreaming] = useState(false)
-  // zoom mode: ON 中は iPhone 側の見た目だけ拡大、 Mac には何も伝えない。
-  // 2 本指 pinch で scale、 1 本指 drag で pan。 マウス / クリック送信は無効。
-  const [zoomMode, setZoomMode] = useState(false)
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
   useEffect(() => {
     const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 30000)
@@ -117,67 +100,6 @@ export default function App() {
       setTreeOpen(path)
     } else {
       setPreviewPath(path)
-    }
-  }, [])
-
-  // 物理キーボード → Mac へ転送 (stream 接続中のみ、 chat 入力 focus 時は除外)
-  usePhysicalKeyboardForward(streaming)
-
-  // streamView 位置追従 (= キーボード on で画面上端固定 / drawer 開いたら退避 / zoom 中は固定)
-  // + touch ジェスチャ (= zoom OFF はマウス/scroll、 zoom ON は pinch/pan で transform)
-  // + status / PiP / 回転 lock
-  const { streamOverlayRef } = useMoonlightStreamPosition(streaming, drawerOpen, zoomMode)
-  useStreamGestures(streamOverlayRef, streaming, zoomMode)
-  useStreamStatusListener(setStreamStatus, setPipActive)
-
-  // IME 入力 → Mac へ送信 (= 「あ」 ボタンで focus、 compositionend で sendUtf8Text)
-  const { imeInputRef, handleImeFocus, handleImeCompositionEnd } = useImeBridge()
-
-  // Sunshine ペアリング: SessionDrawer の総合 ⋯ メニューから呼ばれる。
-  // alert / prompt で手順を案内 → moonlight.pair で 4-stage handshake。
-  const handlePairSunshine = useCallback(async () => {
-    const moonlightMod = await import('./native/moonlight-flow.js')
-    window.alert(
-      'これからペアリングを開始します。\n\n' +
-      '【手順】\n' +
-      '1. このダイアログ OK 押す前に、 まず Mac の Sunshine Web UI で:\n' +
-      '   - PIN: 任意 4 桁 (例 1234) を入力\n' +
-      '   - Device Name: App (完全一致)\n' +
-      '   - Send クリック\n' +
-      '2. OK 押すと iPhone 側で host + PIN 入力 → 自動で handshake\n' +
-      '3. Sunshine の Send から 60 秒以内に完了する必要あり\n\n' +
-      'Mac 側で Send 済んだら OK を押してください。'
-    )
-    const host = window.prompt('Sunshine ホスト名 / IP', 'user.tailnet.ts.net')
-    if (!host) return
-    const pin = window.prompt('Sunshine で入力したのと同じ PIN (4 桁)', '')
-    if (!pin) return
-    try {
-      const res = await moonlightMod.pair({ host, pin })
-      window.alert(res.paired ? 'ペアリング成功 ✅' : ('失敗: ' + JSON.stringify(res)))
-    } catch (e) {
-      const msg = (e.message || String(e))
-      if (msg.includes('not implemented')) {
-        window.alert(
-          'Moonlight plugin が iOS で認識されてません。\n' +
-          '通常は build を update + アプリ再起動で直ります。\n\n' +
-          '【対処】\n' +
-          '1. AltStore で App の UPDATE をタップ\n' +
-          '2. App を完全終了 (上スワイプ kill) → 再起動\n' +
-          '3. もう一度メニューから Sunshine ペアリング\n\n' +
-          '詳細: ' + msg
-        )
-      } else {
-        window.alert(
-          'ペアリング失敗: ' + msg + '\n\n' +
-          '【ありがちな原因】\n' +
-          '- Mac 側で Send してから 60 秒以上経過\n' +
-          '- PIN が Mac と iPhone で違う\n' +
-          '- Device Name が App と完全一致してない\n' +
-          '- Tailscale 接続が切れてる\n' +
-          '再度試すには Sunshine 側で Send からやり直してください'
-        )
-      }
     }
   }, [])
 
@@ -311,126 +233,14 @@ export default function App() {
         >
           🖥
         </button>
-        {/* IME 入力モード切替 (= stream 接続中のみ意味あり)。 タップで隠れた input を focus、
-            iOS 標準キーボードで日本語入力 → 確定文字を Mac へ sendUtf8Text。 */}
-        {window.Capacitor?.isNativePlatform?.() && streaming && (
-          <button
-            className="screen-toggle"
-            onClick={handleImeFocus}
-            aria-label="Mac へ日本語入力"
-            title="Mac 側に日本語等を入力 (IME)"
-          >
-            あ
-          </button>
-        )}
-        {/* Moonlight 経路の Mac 画面ストリーム接続/切断 (pair 済前提) */}
-        {window.Capacitor?.isNativePlatform?.() && (
-          <button
-            className="screen-toggle"
-            onClick={async () => {
-              const m = await import('./native/moonlight-flow.js')
-              // 既に接続中 / 接続処理中なら disconnect 経路 (= 二重 tap 防止)
-              if (streaming) {
-                try { await m.disconnect() } catch { /* ignore */ }
-                setStreaming(false)
-                return
-              }
-              setStreaming(true)
-              try {
-                await m.startSession({ host: 'user.tailnet.ts.net' })
-              } catch (e) {
-                setStreaming(false)
-                window.alert('接続失敗: ' + (e.message || e))
-              }
-            }}
-            aria-label="デスクトップに繋ぐ"
-            title="Mac のデスクトップに接続 / 切断 (Sunshine 経由、 ペア済前提)"
-          >
-            🖥
-          </button>
-        )}
       </header>
 
-      {/* 画面共有 iframe (= 16:9 box、 topbar 直下に flex 配置)。 chat 入力欄や
-          status bar は隠れない。 desktopOpen=true の時だけ render。 */}
+      {/* 画面共有 iframe (= moonlight-web-stream を埋め込み、 Mac の Sunshine と
+          連携)。 desktopOpen=true の時だけ render。 */}
       {desktopOpen && (
         <Suspense fallback={null}>
           <MoonlightFrame />
         </Suspense>
-      )}
-
-            {/* streamOverlay: native streamView と同位置の透明 div、 touch event を受けて
-        plugin の sendMouseMove 等で Mac に転送する layer。 native streamView は
-        isUserInteractionEnabled=false で touch を pass-through、 web 側の overlay にジェスチャ
-        がそのまま届く。 stream の進捗表示は native 側 (MoonlightPlugin::updateStatusOverlay) で
-        streamView 上端に被せ表示。 streamView の位置は MoonlightPlugin.swift の初期 constraint
-        (= safeArea 上端 + 16:9) で固定、 web から setVideoFrame は呼ばない (= シンプル化)。 */}
-      {window.Capacitor?.isNativePlatform?.() && (
-        <>
-          <div
-            ref={streamOverlayRef}
-            className="stream-overlay"
-            style={{ display: streaming ? 'block' : 'none' }}
-          />
-          {/* streamView 真下の制御 row。 native streamView の覆い範囲外なので z-index
-              問題が起きず、 常に見える。 zoom トグル + デスクトップ ◀ ▶ + IDR 再要求 + PiP。 */}
-          {streaming && (
-            <div className="stream-controls-row">
-              <button
-                className={`stream-ctrl-btn ${zoomMode ? 'active' : ''}`}
-                onClick={() => setZoomMode(prev => !prev)}
-                aria-label="ズームモード切替"
-                title={zoomMode ? 'ズーム解除' : 'ズーム ON (= 2 本指 pinch / 1 本指 pan、 マウス無効)'}
-              >🔍</button>
-              <button
-                className="stream-ctrl-btn"
-                onClick={async () => {
-                  const m = await import('./native/moonlight-flow.js')
-                  // Ctrl+← (= 0x25 = VK_LEFT、 modifiers=0x02 = Ctrl)
-                  m.sendKeyEvent(0x25, 0x02, 'down').catch(() => {})
-                  m.sendKeyEvent(0x25, 0x02, 'up').catch(() => {})
-                }}
-                aria-label="左のデスクトップへ"
-                title="左のデスクトップへ (Ctrl+←)"
-              >◀</button>
-              <button
-                className="stream-ctrl-btn"
-                onClick={async () => {
-                  const m = await import('./native/moonlight-flow.js')
-                  // Ctrl+→ (= 0x27 = VK_RIGHT)
-                  m.sendKeyEvent(0x27, 0x02, 'down').catch(() => {})
-                  m.sendKeyEvent(0x27, 0x02, 'up').catch(() => {})
-                }}
-                aria-label="右のデスクトップへ"
-                title="右のデスクトップへ (Ctrl+→)"
-              >▶</button>
-              <button
-                className="stream-ctrl-btn"
-                onClick={async () => {
-                  const m = await import('./native/moonlight-flow.js')
-                  m.requestIdrFrame().catch(() => {})
-                }}
-                aria-label="IDR frame 再要求"
-                title="画面崩れ復旧"
-              >⟳</button>
-              <button
-                className="stream-ctrl-btn"
-                onClick={async () => {
-                  const m = await import('./native/moonlight-flow.js')
-                  if (pipActive) {
-                    m.disablePiP().catch(() => {})
-                    setPipActive(false)
-                  } else {
-                    m.enablePiP().catch(() => {})
-                    setPipActive(true)
-                  }
-                }}
-                aria-label="PiP 切替"
-                title="ピクチャ・イン・ピクチャ切替"
-              >🪟</button>
-            </div>
-          )}
-        </>
       )}
 
       {drawerOpen && (
@@ -450,7 +260,6 @@ export default function App() {
             pushEnabled={pushEnabled}
             pushBusy={pushBusy}
             onTogglePush={handleTogglePush}
-            onPairSunshine={window.Capacitor?.isNativePlatform?.() ? handlePairSunshine : undefined}
           />
         </Suspense>
       )}
@@ -571,23 +380,6 @@ export default function App() {
         onCancel={() => setConfirmDelete(null)}
         onConfirm={handleDeleteSession}
       />
-
-      {/* Mac 側 IME 入力用の隠れ input。 stream 中に「あ」 ボタン押すと focus、
-        iOS キーボード出る → 日本語入力 → 確定 (compositionend) で Mac へ sendUtf8Text。
-        position: absolute + opacity: 0 で見えない、 タップ判定にも当たらない。 */}
-      {window.Capacitor?.isNativePlatform?.() && (
-        <input
-          ref={imeInputRef}
-          className="ime-hidden-input"
-          type="text"
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          onCompositionEnd={handleImeCompositionEnd}
-          aria-hidden="true"
-        />
-      )}
 
       <Suspense fallback={null}>
         {previewPath && (

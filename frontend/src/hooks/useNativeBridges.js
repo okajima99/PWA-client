@@ -1,22 +1,18 @@
-// App.jsx から責務分離した小粒 hook 群。
-// 1 hook あたり数十行、 App.jsx の useEffect / useState の塊を別 module に外出しして
-// メイン本体を 1088 行から ~620 行に縮小する目的。
-import { useEffect, useRef, useCallback, useState } from 'react'
+// App.jsx から責務分離した小粒 hook 群。 PWA 専用、 旧 native (Capacitor) 経路は撤去済。
+import { useEffect, useState } from 'react'
 import { API_BASE, LS_SESSION_ACTIVITY } from '../constants.js'
 import { syncBadgeFromServer } from '../utils/badge.js'
 
 
 // --- /push/state を可視状態 + active session で backend に申告 ---
-// broadcast_push 抑制用: 「App (native) / PWA (web) のいずれかが該当 session を
-// 見てる時は通知しない」 判定材料を backend に渡す。
+// broadcast_push 抑制用: 「該当 session を見てる時は通知しない」 判定材料を backend に渡す。
 export function usePushState(activeSid) {
   useEffect(() => {
     const sendState = () => {
-      const isNative = !!window.Capacitor?.isNativePlatform?.()
       const body = JSON.stringify({
         visible: !document.hidden,
         session_id: activeSid,
-        client: isNative ? 'native' : 'web',
+        client: 'web',
       })
       try {
         fetch(`${API_BASE}/push/state`, {
@@ -63,9 +59,8 @@ export function useBadgeSync() {
 }
 
 
-// --- PWA 通知 / native deep link を受けて該当 session に切替 ---
-// - PWA: ?ses=xxx URL を一度読んでから history.replaceState で除去
-// - Native: Capacitor App の appUrlOpen で app://chat/<sid> を listen
+// --- PWA 通知から ?ses=xxx URL で該当 session に切替 ---
+// 一度読んでから history.replaceState で URL から除去する。
 export function useDeepLink(setActiveId) {
   useEffect(() => {
     try {
@@ -78,23 +73,6 @@ export function useDeepLink(setActiveId) {
         window.history.replaceState({}, '', url.toString())
       }
     } catch { /* ignore */ }
-
-    let cleanup = null
-    ;(async () => {
-      try {
-        if (!window.Capacitor?.isNativePlatform?.()) return
-        const { App: CapApp } = await import('@capacitor/app')
-        const handler = ({ url }) => {
-          try {
-            const m = String(url || '').match(/^app:\/\/chat\/([\w-]+)/)
-            if (m && m[1]) setActiveId(m[1])
-          } catch { /* ignore */ }
-        }
-        const sub = await CapApp.addListener('appUrlOpen', handler)
-        cleanup = () => { try { sub.remove() } catch { /* ignore */ } }
-      } catch { /* @capacitor/app 未インストール環境では noop */ }
-    })()
-    return () => { if (cleanup) cleanup() }
   }, [setActiveId])
 }
 
@@ -205,62 +183,3 @@ export function useSessionBadges({ sids, activeSid, messages, loading }) {
 }
 
 
-// --- IME 入力 hidden input の handler ---
-// 「あ」 ボタンで focus、 iOS キーボード出る → 日本語確定 (compositionend) で
-// Mac へ sendUtf8Text。 入力後は input.value をクリアして次の入力に備える。
-export function useImeBridge() {
-  const imeInputRef = useRef(null)
-  const handleImeFocus = useCallback(() => {
-    imeInputRef.current?.focus()
-  }, [])
-  const handleImeCompositionEnd = useCallback(async (e) => {
-    const text = e.target.value
-    if (!text) return
-    try {
-      const m = await import('../native/moonlight-flow.js')
-      await m.sendUtf8Text(text)
-    } catch { /* ignore */ }
-    e.target.value = ''
-  }, [])
-  return { imeInputRef, handleImeFocus, handleImeCompositionEnd }
-}
-
-
-// --- 物理キーボード → Mac へ転送 (stream 接続中のみ、 chat 入力フォーカス時は除外) ---
-export function usePhysicalKeyboardForward(streaming) {
-  useEffect(() => {
-    if (!window.Capacitor?.isNativePlatform?.()) return
-    let mod = null
-    let mappers = null
-    ;(async () => {
-      mod = await import('../native/moonlight-flow.js')
-      mappers = await import('../native/keyboard-map.js')
-    })()
-
-    const isInputFocused = () => {
-      const a = document.activeElement
-      if (!a) return false
-      const tag = a.tagName
-      return tag === 'TEXTAREA' || tag === 'INPUT' || a.isContentEditable
-    }
-
-    const send = (action) => (ev) => {
-      if (!streaming) return
-      if (isInputFocused()) return
-      if (!mod || !mappers) return
-      const m = mappers.mapKeyEventToVK(ev)
-      if (!m) return
-      mod.sendKeyEvent(m.keyCode, m.modifiers, action).catch(() => {})
-      ev.preventDefault()
-    }
-
-    const onDown = send('down')
-    const onUp = send('up')
-    document.addEventListener('keydown', onDown, { capture: true })
-    document.addEventListener('keyup', onUp, { capture: true })
-    return () => {
-      document.removeEventListener('keydown', onDown, { capture: true })
-      document.removeEventListener('keyup', onUp, { capture: true })
-    }
-  }, [streaming])
-}

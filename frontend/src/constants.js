@@ -1,16 +1,7 @@
 // VITE_API_BASE が未設定 (undefined) のときだけ localhost フォールバック。
 // 空文字 ('') を明示すると同一オリジン相対 (= PWA を配信したホスト) になる。
 // 同一オリジン相対にしておくと http/https 両方の URL から問題なく API が叩ける。
-//
-// Capacitor native (iOS app) のときだけ例外: origin が capacitor://localhost に
-// なるので相対 URL では backend に届かない。 Tailscale MagicDNS で絶対 URL を使う。
-// VITE_NATIVE_API_BASE で上書き可能 (Tailscale 名が変わった時の保険)。
-const _isNative =
-  typeof window !== 'undefined' &&
-  window.Capacitor?.isNativePlatform?.() === true
-export const API_BASE = _isNative
-  ? (import.meta.env.VITE_NATIVE_API_BASE || 'https://user.tailnet.ts.net')
-  : (import.meta.env.VITE_API_BASE ?? 'http://localhost:8000')
+export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
 
 export const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 export const MAX_MESSAGES = 200

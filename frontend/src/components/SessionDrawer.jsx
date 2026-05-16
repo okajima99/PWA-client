@@ -21,7 +21,6 @@ import { useEffect, useRef, useState } from 'react'
 //   pushEnabled         : 通知 ON/OFF 状態
 //   pushBusy            : 通知切替処理中
 //   onTogglePush        : 通知 ON/OFF 切替 callback
-//   onPairSunshine      : Sunshine ペアリング (= native 環境のみ、 undefined の時は項目非表示)
 export default function SessionDrawer({
   open,
   onClose,
@@ -37,7 +36,6 @@ export default function SessionDrawer({
   pushEnabled = false,
   pushBusy = false,
   onTogglePush,
-  onPairSunshine,
 }) {
   const [agentPicker, setAgentPicker] = useState(false) // + ボタン押下後の agent 選択メニュー
   const [menuFor, setMenuFor] = useState(null)          // ⋯ メニュー出してる session_id
@@ -153,11 +151,6 @@ export default function SessionDrawer({
                     disabled={pushBusy}
                   >
                     {pushEnabled ? '通知を無効にする' : '通知を有効にする'}
-                  </button>
-                )}
-                {onPairSunshine && (
-                  <button onClick={() => { setGlobalMenuOpen(false); onPairSunshine() }}>
-                    Sunshine ペアリング
                   </button>
                 )}
                 <button
