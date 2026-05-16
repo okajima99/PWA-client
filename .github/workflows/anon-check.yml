@@ -17,7 +17,13 @@ jobs:
           set -u
           # Detect personal identifiers that must not appear in public repos.
           # Word-boundaries avoid false positives (aria-hidden, remark-gfm, etc).
-          PATTERN='(?i)(\b(user|cpc|araya)\b|com\.user\.|\baria\b(?!-)|\bark\b(?!-))'
+          # Personal handles / hosts / org names that must never appear in source.
+          # `aria` / `ark` use a negative lookahead so common HTML attrs (aria-label,
+          # markdown libs like remark-* / spark-*) don't false-positive.
+          # Note: generic words like `user` / `cpc` are NOT in the pattern — they
+          # collide with HTTP role names (`role: 'user'`), CSS (`user-select`), and
+          # this project's internal URL scheme (`cpc-file://`).
+          PATTERN='(?i)(\b(araya|okg|okajima|tsukasa|haven|tail662202)\b|com\.okg\.|com\.haven\.|\baria\b(?!-)|\bark\b(?!-))'
 
           matches=$(grep -rEnP \
               --exclude-dir=.git \
@@ -32,7 +38,11 @@ jobs:
               --exclude='package-lock.json' \
               --exclude='yarn.lock' \
               --exclude='*.min.js' \
+              --exclude='*.png' \
+              --exclude='*.jpg' \
+              --exclude='*.ico' \
               --exclude='anon-check.yml' \
+              --exclude='LICENSE' \
               "$PATTERN" . || true)
 
           if [ -n "$matches" ]; then

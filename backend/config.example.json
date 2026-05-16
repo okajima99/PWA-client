@@ -9,7 +9,9 @@
       "model": "Sonnet"
     }
   },
+  "claude_path": "/path/to/claude",
   "rate_limits_log": "/path/to/rate-limits.jsonl",
   "vapid_sub": "mailto:you@example.com",
-  "notification_title": "Notification"
+  "notification_title": "Notification",
+  "cors_allow_origins": ["http://localhost:5173"]
 }

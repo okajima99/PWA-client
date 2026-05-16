@@ -168,20 +168,31 @@ moonlight-web-stream 側の `server/config.json` で `url_path_prefix` を `/moo
       "model": "Opus"
     }
   },
+  "claude_path": "/path/to/claude",
   "rate_limits_log": "/path/to/rate-limits.jsonl",
-  "notification_title": "Claude"
+  "notification_title": "Claude",
+  "cors_allow_origins": []
 }
 ```
 
-各エージェントの `cwd` に置かれた `CLAUDE.md` が `claude` コマンド起動時に自動 load される。
+- `claude_path`: `claude` コマンドのフルパス (`which claude` で確認)。 未指定だと
+  SDK が PATH から拾うが、 conda 等の環境差で読めない場合は明示する
+- 各エージェントの `cwd` に置かれた `CLAUDE.md` が `claude` コマンド起動時に自動 load
+  される
+- `cors_allow_origins`: 通常は `[]` (= backend が同一オリジンで frontend を配信するので
+  CORS 不要)。 Vite dev server から叩く場合は `["http://localhost:5173"]` 等を入れる
 
-### `frontend/.env.local` (任意)
+### `frontend/.env` / `frontend/.env.local`
+
+- **`frontend/.env`** はリポに commit される既定値 (アプリ名 / アイコン等)
+- **`frontend/.env.local`** は gitignore 済の個人用 override。 例:
 
 ```
 VITE_API_BASE=https://<your-host>.tail<xxxx>.ts.net
 ```
 
-未設定なら同一オリジン相対 URL になる (= バックエンドが配信するなら不要)。
+`VITE_API_BASE` 未設定なら同一オリジン相対 URL になる (= backend が frontend を配信する
+標準構成なら不要)。 backend と frontend を別オリジンで動かす場合だけ設定。
 
 ## ディレクトリ構成
 
