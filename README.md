@@ -38,7 +38,7 @@ Claude Code をスマートフォンから操作するための PWA クライア
        │                    │   │   ├ Claude Code CLI  │
        │                    ├─▶ │   │   subprocess     │
        │                    │   │   └ Web Push (VAPID) │
-   ホーム画面追加で            │   │                      │
+   ホーム画面追加で             │   │                      │
    standalone 起動           │   │ moonlight-web-stream │ ← 任意
                             │   │   └ Sunshine         │ ← 任意
                             │   └──────────────────────┘
@@ -94,6 +94,52 @@ npm install
 npm run build  # dist/ を生成、 バックエンドが配信
 ```
 
+#### Tailscale で外部公開 (= tailnet 内のみ)
+
+```bash
+# backend を tailnet 経由で HTTPS 提供。 同一オリジン (= /) に張る。
+tailscale serve --bg http://localhost:8000
+```
+
+これで `https://<your-host>.tail<xxxx>.ts.net/` が backend を指す状態になる。
+`tailscale serve status` で確認可能。
+
+#### backend を auto-start にする (= macOS 例)
+
+毎回 `uvicorn` を手で起動するのは面倒なので、 macOS なら LaunchAgent で常駐させる。
+`~/Library/LaunchAgents/com.example.claudepwa.plist` 例:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.claudepwa</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>cd /path/to/claude-pwa-client && source /path/to/miniforge/etc/profile.d/conda.sh && conda activate pwa-client && exec uvicorn backend.main:app --host 0.0.0.0 --port 8000</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/path/to/claude-pwa-client/logs/backend.out</string>
+  <key>StandardErrorPath</key><string>/path/to/claude-pwa-client/logs/backend.err</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.claudepwa.plist
+```
+
+backend は app 内で `RotatingFileHandler` を組んでるので、 上の `StandardOutPath` は
+最低限の補助 (= uvicorn 起動行・致命例外用)。 メイン log は `logs/backend.access.log`
+/ `logs/backend.error.log` に 5MB × 3 世代で自動 rotate される (= 長期運用しても
+ディスクを食い続けない)。
+
+Windows なら NSSM や Task Scheduler、 Linux なら systemd user service で同等のことを。
+
 #### スマホから接続
 
 1. Tailscale で Mac の MagicDNS 名を確認 (例: `your-host.tail<xxxx>.ts.net`)
@@ -127,12 +173,38 @@ sunshine
 # ブラウザで https://localhost:47990 → 管理者アカウント作成
 ```
 
-ホスト OS 側で **画面キャプチャ許可**を sunshine に与える:
-- macOS: System Settings → プライバシーとセキュリティ → 画面録画
+ホスト OS 側で **画面キャプチャ + 入力注入の許可**を sunshine に与える:
+- macOS: System Settings → プライバシーとセキュリティ で **画面録画**と**入力監視 (Input
+  Monitoring) / アクセシビリティ (Accessibility)** の両方に sunshine を追加 (= 後者は
+  ブラウザからのタップ / キー入力を Mac に注入するために必須、 忘れると画面は映るが
+  クリックが効かない)
 - Windows: 通常不要 (= UAC レベルで実行)
 - Linux: X11 / Wayland の捕捉設定 (= Sunshine docs 参照)
 
-自動起動は OS ごとに違う (= macOS は LaunchAgent / Linux は systemd / Windows はサービス)。
+自動起動の例 (macOS LaunchAgent、 `~/Library/LaunchAgents/dev.lizardbyte.sunshine.plist`):
+
+```xml
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.lizardbyte.sunshine</string>
+  <key>ProgramArguments</key>
+  <array><string>/opt/homebrew/bin/sunshine</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+</dict>
+</plist>
+```
+
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.lizardbyte.sunshine.plist` で
+有効化。 Linux は systemd user service、 Windows はサービス登録で同等。
+
+> ⚠️ **sunshine の encoder hang 注意**: `launchctl kickstart -k` (= SIGTERM) で再起動
+> すると、 macOS の ScreenCaptureKit / VideoToolbox の resource が graceful shutdown
+> 中に中途半端解放されて、 respawn 後の encoder 初期化で永久待ちすることがある。
+> 復旧は `kill -9 <sunshine pid>` で SIGKILL → KeepAlive が 10 秒で respawn → clean
+> state で起動。 Mac 再起動経由なら問題なし。
 
 #### moonlight-web-stream (= Sunshine ↔ ブラウザ WebRTC bridge)
 
@@ -153,22 +225,108 @@ cp -r dist static  # release mode は static/ を見る
 
 # 起動
 ./target/release/web-server
-# ブラウザで http://localhost:8080/ → ユーザ作成 → host に localhost を追加 →
-# Sunshine 側で PIN 入力でペアリング
 ```
+
+**config** (`server/config.json`) の `web_server` セクションで:
+
+```json
+{
+  "web_server": {
+    "url_path_prefix": "/moonlight",
+    "default_user_id": <ペアリング後に決まる user_id>
+  }
+}
+```
+
+- `url_path_prefix = /moonlight` で Tailscale Serve の `/moonlight` プロキシと整合
+- `default_user_id` を設定すると PWA の iframe が認証スキップで即起動 (= 友達に
+  URL 渡すだけで動く)
+
+**自動起動** (macOS LaunchAgent 例、 `~/Library/LaunchAgents/com.example.moonlight-web-stream.plist`):
+
+```xml
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.moonlight-web-stream</string>
+  <key>ProgramArguments</key>
+  <array><string>/path/to/moonlight-web-stream/target/release/web-server</string></array>
+  <key>WorkingDirectory</key><string>/path/to/moonlight-web-stream</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>
+```
+
+**ペアリング** (= 1 度だけ):
+
+1. ブラウザで `http://localhost:8080/` を開いてユーザ作成
+2. Hosts に localhost を追加 → Pair → PIN が表示される
+3. Sunshine の Web UI (= `https://localhost:47990`) → PIN タブで PIN 入力 → Send
+4. moonlight-web-stream 側で「Paired」 表示になれば完了
+
+> ⚠️ **pair が壊れた時の復旧**: ホスト再起動の挙動で moonlight-web-stream の
+> `data.json` の pair_info と sunshine の `named_devices` の cert が一致しなくなる
+> ことがある。 その時は data.json の hosts エントリを空にして moonlight-web-stream を
+> 再起動 → PWA から Add Host → Pair → sunshine admin で PIN 入力、 の流れで作り直す。
 
 #### Tailscale Serve で同一オリジン公開
 
-PWA から `/moonlight/` 配下にプロキシで届くよう Tailscale Serve を設定:
+PWA から `/moonlight/` 配下にプロキシで届くよう Tailscale Serve を設定 (= Path A で
+既に backend を `/` に張ってる前提、 追加で `/moonlight` を mount):
 
 ```bash
-# claude-pwa-client backend は :8000、 moonlight-web-stream は :8080
-tailscale serve --bg http://localhost:8000
 tailscale serve --bg --set-path=/moonlight http://localhost:8080/moonlight
 ```
 
-moonlight-web-stream 側の `server/config.json` で `url_path_prefix` を `/moonlight` に
-設定 + `default_user_id` を自動ログイン用に設定すると PWA の iframe が即起動する。
+これで同一オリジン (= `https://<your-host>.tail<xxxx>.ts.net/moonlight/...`) で
+moonlight-web-stream が叩けて、 PWA の iframe / CORS / Cookie 制約を全部素通りできる。
+
+#### 音声を PWA に乗せる (= 任意、 macOS 例)
+
+Sunshine がキャプチャできる audio sink を別途用意する。 macOS は通常出力を直接
+sunshine に渡せないので、 [BlackHole](https://github.com/ExistentialAudio/BlackHole)
+等の仮想 audio device を経由:
+
+```bash
+brew install blackhole-2ch
+```
+
+`~/.config/sunshine/sunshine.conf` に:
+
+```
+audio_sink = BlackHole 2ch
+```
+
+ただこのままだと Mac 本体スピーカーに音が出なくなる (= 出力先が BlackHole に固定)。
+「PWA で見てる時だけ BlackHole に切替、 接続切れたら元のスピーカーに戻す」 を
+LaunchAgent + `switchaudio-osx` の常駐スクリプトで自動化できる:
+
+```bash
+brew install switchaudio-osx
+```
+
+`~/Library/Application Support/sunshine-audio-switch/switch.sh` (= 抜粋):
+
+```bash
+#!/bin/bash
+LOG="$HOME/.config/sunshine/sunshine.log"
+TARGET="BlackHole 2ch"
+STATE="/tmp/sunshine-audio-prev"
+SWITCH="/opt/homebrew/bin/SwitchAudioSource"
+tail -n0 -F "$LOG" | while IFS= read -r line; do
+  case "$line" in
+    *"New streaming session started"*)
+      PREV=$("$SWITCH" -c); [ "$PREV" != "$TARGET" ] && { printf '%s' "$PREV" > "$STATE"; "$SWITCH" -s "$TARGET"; } ;;
+    *"CLIENT DISCONNECTED"*)
+      [ -f "$STATE" ] && { "$SWITCH" -s "$(cat $STATE)"; rm -f "$STATE"; } ;;
+  esac
+done
+```
+
+LaunchAgent 化 (= `com.example.sunshine-audio-switch.plist`) で常駐させる。
+
+Windows / Linux は OS の loopback audio で直接拾える場合が多く、 仮想 device 不要な
+ことが多い (= Sunshine docs の OS 別注記を参照)。
 
 ## 設定ファイル
 
