@@ -129,15 +129,145 @@ export function formatTool(block) {
       label = lines.join('\n')
       break
     }
+    case 'Agent': {
+      // input: { description, prompt, subagent_type, model, isolation, run_in_background }
+      const desc = input?.description ?? ''
+      const sub = input?.subagent_type ?? 'general-purpose'
+      shortLabel = `🤖 agent[${sub}]: ${truncate(desc, SHORT_LABEL_MAX - sub.length - 12)}`
+      const lines = [`agent: ${sub}`, `description: ${desc}`]
+      if (input?.model) lines.push(`model: ${input.model}`)
+      if (input?.isolation) lines.push(`isolation: ${input.isolation}`)
+      if (input?.run_in_background) lines.push(`background: true`)
+      if (input?.prompt) lines.push('', 'prompt:', input.prompt)
+      label = lines.join('\n')
+      break
+    }
+    case 'CronCreate': {
+      // input: { cron, prompt, recurring, durable }
+      const cron = input?.cron ?? ''
+      const prompt = input?.prompt ?? ''
+      shortLabel = `⏰ cron[${cron}]: ${truncate(prompt, SHORT_LABEL_MAX - cron.length - 12)}`
+      const lines = [`schedule: ${cron}`]
+      if (input?.recurring === false) lines.push('recurring: false (one-shot)')
+      if (input?.durable) lines.push('durable: true (survives restart)')
+      if (prompt) lines.push('', 'prompt:', prompt)
+      label = lines.join('\n')
+      break
+    }
+    case 'CronDelete': {
+      shortLabel = `🗑 cron delete: ${input?.id ?? '?'}`
+      label = `delete cron job id=${input?.id ?? '?'}`
+      break
+    }
+    case 'CronList': {
+      shortLabel = `⏰ cron list`
+      label = `list all scheduled cron jobs`
+      break
+    }
+    case 'ScheduleWakeup': {
+      // input: { delaySeconds, reason, prompt }
+      const sec = input?.delaySeconds ?? '?'
+      const reason = input?.reason ?? ''
+      shortLabel = `⏱ wakeup +${sec}s: ${truncate(reason, SHORT_LABEL_MAX - 16)}`
+      const lines = [`delay: ${sec}s`, `reason: ${reason}`]
+      if (input?.prompt) lines.push('', 'prompt:', input.prompt)
+      label = lines.join('\n')
+      break
+    }
+    case 'EnterPlanMode': {
+      shortLabel = `📑 plan mode ON`
+      label = `enter plan mode (= read-only, no edits until ExitPlanMode)`
+      break
+    }
+    case 'EnterWorktree': {
+      // input: { name?, path? }
+      const what = input?.name || input?.path || '(auto-named)'
+      shortLabel = `🌳 worktree: ${truncate(what, SHORT_LABEL_MAX - 14)}`
+      const lines = [`isolated worktree`]
+      if (input?.name) lines.push(`name: ${input.name}`)
+      if (input?.path) lines.push(`path: ${input.path}`)
+      label = lines.join('\n')
+      break
+    }
+    case 'ExitWorktree': {
+      // input: { action, discard_changes }
+      const action = input?.action ?? '?'
+      shortLabel = `🌳 worktree exit: ${action}`
+      const lines = [`action: ${action}`]
+      if (input?.discard_changes) lines.push('discard_changes: true')
+      label = lines.join('\n')
+      break
+    }
+    case 'PushNotification': {
+      const msg = input?.message ?? ''
+      shortLabel = `🔔 push: ${truncate(msg, SHORT_LABEL_MAX - 8)}`
+      label = `push notification:\n${msg}`
+      break
+    }
+    case 'NotebookEdit': {
+      // input: { notebook_path, cell_id?, cell_type?, edit_mode?, new_source }
+      const p = input?.notebook_path ?? ''
+      const base = p.split('/').pop()
+      const mode = input?.edit_mode || 'replace'
+      shortLabel = `📓 notebook ${mode}: ${truncate(base, SHORT_LABEL_MAX - 16)}`
+      const lines = [`path: ${p}`, `mode: ${mode}`]
+      if (input?.cell_id) lines.push(`cell_id: ${input.cell_id}`)
+      if (input?.cell_type) lines.push(`cell_type: ${input.cell_type}`)
+      label = lines.join('\n')
+      break
+    }
+    case 'RemoteTrigger': {
+      // input: { action, trigger_id?, body? }
+      const action = input?.action ?? '?'
+      const tid = input?.trigger_id ?? ''
+      shortLabel = `🔗 remote ${action}${tid ? ' ' + tid : ''}`
+      const lines = [`action: ${action}`]
+      if (tid) lines.push(`trigger_id: ${tid}`)
+      if (input?.body) lines.push('', 'body:', JSON.stringify(input.body, null, 2))
+      label = lines.join('\n')
+      break
+    }
+    case 'Skill': {
+      // input: { skill, args? }
+      const s = input?.skill ?? '?'
+      const args = input?.args ?? ''
+      shortLabel = `⚡ /${s}${args ? ' ' + truncate(args, SHORT_LABEL_MAX - s.length - 4) : ''}`
+      label = `/${s}${args ? ' ' + args : ''}`
+      break
+    }
+    case 'TaskOutput': {
+      const tid = input?.task_id ?? '?'
+      shortLabel = `📥 task output: ${tid.slice(0, 12)}`
+      label = `get output of task ${tid}` + (input?.block ? ` (blocking)` : ` (non-blocking)`)
+      break
+    }
+    case 'TaskStop': {
+      const tid = input?.task_id ?? input?.shell_id ?? '?'
+      shortLabel = `🛑 task stop: ${tid.slice(0, 12)}`
+      label = `stop background task ${tid}`
+      break
+    }
+    case 'ShareOnboardingGuide': {
+      const mode = input?.mode || 'check'
+      shortLabel = `📤 share onboarding (${mode})`
+      label = `share onboarding guide, mode=${mode}`
+      if (input?.short_code) label += `, short_code=${input.short_code}`
+      break
+    }
     default: {
-      label = `[${name}] ${JSON.stringify(input ?? {})}`
+      // MCP tools (= mcp__<server>__<method>) or other未知 tool。
+      // 名前を整形してから入力 hint を出す。
+      const displayName = name.startsWith('mcp__')
+        ? name.replace(/^mcp__/, '').replace(/__/g, '.')
+        : name
+      label = `[${displayName}] ${JSON.stringify(input ?? {})}`
       // Extract the first string-valued field as a human-readable hint
       const firstString = input && typeof input === 'object'
         ? Object.values(input).find(v => typeof v === 'string' && v.length > 0)
         : null
       shortLabel = firstString
-        ? `[${name}] ${truncate(firstString, SHORT_LABEL_MAX - name.length - 3)}`
-        : `[${name}]`
+        ? `🔧 ${displayName}: ${truncate(firstString, SHORT_LABEL_MAX - displayName.length - 4)}`
+        : `🔧 ${displayName}`
     }
   }
   return { id, name, label, shortLabel, diffInput }
