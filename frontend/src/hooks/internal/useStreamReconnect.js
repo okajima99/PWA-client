@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { API_BASE, MAX_MESSAGES } from '../../constants.js'
 import { generateId } from '../../utils/id.js'
+import { nextNextFrame } from '../../utils/raf.js'
 import { processStreamEvent } from './processStreamEvent.js'
 
 // SSE が切れた後の復帰を担当する。
@@ -48,38 +49,33 @@ export function useStreamReconnect({
 
   const allSessionIds = () => (sessionsRef.current || []).map(s => s.id)
 
-  // reconnect: T1 移行で常に from=0 で全 buffer 再生する
-  // - 204 なら false、データあり(ストリーミング完了)なら true を返す
-  //
-  // 注意点 (2026-05-17 fix):
-  //   1. AbortController を必ず登録 (= 「最新を取得」 / 新 user POST で abort できる)
-  //   2. cache-bust query を付ける (= iOS Safari の GET キャッシュバグ回避)
-  //   3. cache: 'no-store' で念押し
-  // sendMessage は POST + signal なので普通に動く、 reconnect は GET なので iOS が
-  // 古いレスポンスを再利用してハングする報告あり。
-  const reconnectStream = async (sid) => {
+  // --- reconnectStream の内部 helper 群 (= 90 行関数を責務別に分割) ---
+
+  // 1. fetch を投げて 204 / エラーをハンドル、 ストリームの response を返す。
+  //    cache-bust + cache:'no-store' は iOS Safari の GET キャッシュ回避対策。
+  const _openReplayFetch = async (sid) => {
     const controller = new AbortController()
     abortControllers.current[sid] = controller
     const url = `${API_BASE}/chat/${sid}/reconnect?from=0&_t=${Date.now()}`
     const res = await fetch(url, { cache: 'no-store', signal: controller.signal })
-    if (res.status === 204) return false
-    if (!res.ok) return false
+    if (res.status === 204 || !res.ok) return null
+    return res
+  }
 
-    isAtBottomRef.current = true
-    // backend が現在進行中 (= state.complete=False = streaming=true) の時のみ loading=true 化。
-    // forceResyncAll / visibility 復帰経由で「実は完了済みの buffer replay」 する場合に
-    // 「一瞬 停止ボタン → すぐ送信ボタン」 の flicker が起きてたのを防ぐ。
-    const statusNow = await fetch(`${API_BASE}/status/${sid}`)
-      .then(r => r.ok ? r.json() : null).catch(() => null)
-    const streamingNow = !!statusNow?.streaming
-    if (streamingNow) {
-      setLoading(prev => ({ ...prev, [sid]: true }))
-    }
+  // 2. backend の現在 streaming 状態を取得 (= reconnect 中の loading 制御に使う)。
+  //    flicker 防止のため、 backend が streaming=true でない時は loading を触らない。
+  const _checkStreamingNow = async (sid) => {
+    try {
+      const s = await fetch(`${API_BASE}/status/${sid}`).then(r => r.ok ? r.json() : null)
+      return !!s?.streaming
+    } catch { return false }
+  }
+
+  // 3. replay 開始時の messages 整形: 末尾の error bubble を取り除き、 末尾 agent bubble を
+  //    空 streaming に初期化、 無ければ新規 streaming bubble を追加。
+  const _seedMessagesForReplay = (sid) => {
     setMessages(prev => {
       const cur = prev[sid] || []
-      // 直前の send が失敗して error bubble が末尾に積まれているケースでは、
-      // それを削除してから replay する。 そうしないと
-      // [user] [error] [新 agent bubble] の順で表示されて UX が崩れる。
       let trimmed = [...cur]
       while (trimmed.length > 0 && trimmed[trimmed.length - 1].role === 'error') {
         trimmed.pop()
@@ -92,53 +88,71 @@ export function useStreamReconnect({
       }
       return { ...prev, [sid]: [...trimmed, { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES) }
     })
+  }
 
-    buffer.resetBuf(sid)
-    // replay は通常受信と同じロジック (uuid dedup) で済ませるので、 専用のフラグは不要
-
+  // 4. SSE ストリームを最後まで読んで 1 line ずつ processStreamEvent に渡す。
+  const _consumeReplayStream = async (sid, res) => {
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const data = line.slice(6).trim()
+        if (!data) continue
+        try {
+          processStreamEvent(eventDeps, sid, JSON.parse(data))
+        } catch { /* ignored */ }
+      }
+    }
+  }
+
+  // 5. replay 完了後の終了処理: buffer flush、 loading 戻し、 streaming flag 落とし、 scroll。
+  const _teardownReplay = (sid, streamingNow) => {
+    buffer.cancelAndFlush(sid)
+    if (streamingNow) {
+      setLoading(prev => ({ ...prev, [sid]: false }))
+    }
+    setMessages(prev => {
+      const cur = prev[sid] || []
+      const msgs = [...cur]
+      if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
+        msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
+      }
+      return { ...prev, [sid]: msgs }
+    })
+    requestAnimationFrame(scrollToBottom)
+  }
+
+  // reconnect: T1 移行で常に from=0 で全 buffer 再生する。
+  //  - 204 なら false、 データあり (ストリーミング完了) なら true を返す
+  //  - 内部処理は上の _openReplayFetch / _checkStreamingNow / _seedMessagesForReplay /
+  //    _consumeReplayStream / _teardownReplay に分割
+  //  - ストリーム完了時に backend が依然 streaming=true ならば 1 秒後に自動 re-reconnect
+  const reconnectStream = async (sid) => {
+    const res = await _openReplayFetch(sid)
+    if (!res) return false
+
+    isAtBottomRef.current = true
+    const streamingNow = await _checkStreamingNow(sid)
+    if (streamingNow) {
+      setLoading(prev => ({ ...prev, [sid]: true }))
+    }
+    _seedMessagesForReplay(sid)
+    buffer.resetBuf(sid)
+
     let needsReconnect = false
     try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n')
-        buf = lines.pop()
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const data = line.slice(6).trim()
-          if (!data) continue
-          try {
-            processStreamEvent(eventDeps, sid, JSON.parse(data))
-          } catch { /* ignored */ }
-        }
-      }
-
-      try {
-        const s = await fetch(`${API_BASE}/status/${sid}`).then(r => r.json()).catch(() => null)
-        if (s?.streaming) needsReconnect = true
-      } catch { /* ignored */ }
-
+      await _consumeReplayStream(sid, res)
+      needsReconnect = await _checkStreamingNow(sid)
       return true
     } finally {
-      buffer.cancelAndFlush(sid)
-      // setLoading(true) を冒頭で呼んでない場合は触らない (= visibility 復帰 flicker 防止)。
-      // 呼んでる場合 (= streamingNow=true だった時) のみ false に戻して終了処理する。
-      if (streamingNow) {
-        setLoading(prev => ({ ...prev, [sid]: false }))
-      }
-      setMessages(prev => {
-        const cur = prev[sid] || []
-        const msgs = [...cur]
-        if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
-          msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
-        }
-        return { ...prev, [sid]: msgs }
-      })
-      requestAnimationFrame(() => { scrollToBottom() })
+      _teardownReplay(sid, streamingNow)
       if (needsReconnect) {
         if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
         reconnectTimerRef.current = setTimeout(() => {
@@ -262,7 +276,7 @@ export function useStreamReconnect({
       else checkAndReconnect(true)
       // 800ms 後の追加 checkAndReconnect は visibility 経路で既に走った reconnect と
       // 重複する race の温床だったので撤廃 (= 初回 checkAndReconnect で十分)。
-      requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
+      nextNextFrame(scrollToBottom)
     }
 
     const onPageShow = (e) => {

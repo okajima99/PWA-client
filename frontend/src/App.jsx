@@ -21,6 +21,7 @@ import {
   useSessionBadges,
 } from './hooks/useAppEffects.js'
 import { setBadge } from './utils/badge.js'
+import { nextNextFrame } from './utils/raf.js'
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
 // 公式 CLI が受け入れる短縮形 + effort 階層 (= module scope const、 毎 render 再生成を避ける)。
@@ -176,8 +177,12 @@ export default function App() {
     const prev = lastBackendStartRef.current
     lastBackendStartRef.current = status.backend_start_time
     if (prev === null || prev === status.backend_start_time) return
-    // backend が再起動された
+    // backend が再起動された:
+    //   - loading 全 reset
+    //   - 楽観的 pendingSend deadline も全 reset (= 残ってると停止ボタンが居座る)
+    //   - 各 session 末尾の streaming bubble を false に固定 (= 永遠の推論中表示を消す)
     setLoading({})
+    pendingSendUntilRef.current = {}
     setMessages(p => {
       const next = {}
       for (const sid of Object.keys(p)) {
@@ -240,15 +245,20 @@ export default function App() {
     sendAnswer(activeSid, tool_use_id, answer)
   }, [sendAnswer, activeSid])
 
+  // click-outside listener: menu open/close で add/remove を繰り返さず、 mount 時 1 回登録。
+  // menuOpen の値は ref 経由で読み取り、 dep 変化での listener 付け外し race を消す。
+  const menuOpenRef = useRef(menuOpen)
+  useEffect(() => { menuOpenRef.current = menuOpen }, [menuOpen])
   useEffect(() => {
     const handleClickOutside = (e) => {
+      if (!menuOpenRef.current) return
       if (menuRef.current && !menuRef.current.contains(e.target)) {
         setMenuOpen(false)
       }
     }
-    if (menuOpen) document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [menuOpen])
+  }, [])
 
   const sids = useMemo(() => sessions.map(s => s.id), [sessions])
   const currentAttachments = (activeSid && attachments[activeSid]) || []
@@ -527,7 +537,7 @@ export default function App() {
               <button onClick={() => { setTreeOpen('~'); setMenuOpen(false) }} className="menu-item">
                 ファイルツリー
               </button>
-              <button onClick={() => { fetchLatest(); requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) }); setMenuOpen(false) }} className="menu-item">
+              <button onClick={() => { fetchLatest(); nextNextFrame(scrollToBottom); setMenuOpen(false) }} className="menu-item">
                 最新を取得
               </button>
               {activeSession && (
