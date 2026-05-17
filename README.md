@@ -24,9 +24,10 @@ Claude Code をスマートフォンから操作するための PWA クライア
 
 ### 追加機能 (任意セットアップ)
 
-- **Mac デスクトップの画面共有**: PWA 内に [Sunshine](https://github.com/LizardByte/Sunshine)
+- **デスクトップ画面共有**: PWA 内に [Sunshine](https://github.com/LizardByte/Sunshine)
   + [moonlight-web-stream](https://github.com/MrCreativ3001/moonlight-web-stream) 経由で
-  Mac の画面を映す。 タッチ操作で Mac を遠隔操作できる。 セットアップ手順は後述
+  デスクトップを映す。 タッチで遠隔操作。 Sunshine は **Windows / Linux / macOS** で動くので
+  ホスト OS は問わない (= 動作確認は macOS、 他は手順を読み替えれば動くはず)。 セットアップ手順は後述
 
 ## アーキテクチャ
 
@@ -52,7 +53,7 @@ Claude Code をスマートフォンから操作するための PWA クライア
 ## セットアップ
 
 2 段階の構成。 **Path A** はチャット + 通知だけのシンプル版、 **Path B** はそれに加えて
-Mac 画面共有まで使う上位版。
+デスクトップ画面共有まで使う上位版。
 
 ### Path A: チャット + 通知
 
@@ -101,19 +102,23 @@ npm run build  # dist/ を生成、 バックエンドが配信
 4. 通知を有効にしたい場合は ⋯ メニューから「通知を有効にする」 (iOS は 16.4+ +
    ホーム画面追加が必須)
 
-### Path B: Mac 画面共有も追加 (= 開発者向けオプション)
+### Path B: デスクトップ画面共有も追加 (= 開発者向けオプション)
 
 > ⚠️ **optional / 開発者向け**。 Rust nightly + 30 分の自前ビルドが要るので、
-> 「自分の Mac の画面を自分のスマホで遠隔操作したい」 という明確な用途がある人だけ
+> 「自分の PC の画面を自分のスマホで遠隔操作したい」 という明確な用途がある人だけ
 > 進めてください。 chat + 通知だけ使う人は Path A で完結します。
+>
+> ホスト OS は **Windows / Linux / macOS** どれでも OK (= Sunshine は cross-platform)。
+> 以下は **macOS の例**、 他 OS は同等の手段で読み替えて (= brew → apt/scoop 等、
+> 権限設定 → 各 OS の screen capture 許可)。 動作確認は macOS で実施。
 
-Path A の構成に加えて、 Sunshine + moonlight-web-stream を Mac に install すると
-PWA 内の 🖥 ボタンから Mac の画面共有 + タッチ遠隔操作が動く。
+Path A の構成に加えて、 Sunshine + moonlight-web-stream をホスト機に install すると
+PWA 内の 🖥 ボタンからデスクトップ画面共有 + タッチ遠隔操作が動く。
 
 #### Sunshine (画面キャプチャ + Moonlight protocol サーバ)
 
 ```bash
-# Homebrew で install
+# macOS の例: Homebrew で install (Windows は scoop / installer、 Linux は apt/rpm/AUR)
 brew tap LizardByte/homebrew
 brew install sunshine-beta
 
@@ -122,20 +127,23 @@ sunshine
 # ブラウザで https://localhost:47990 → 管理者アカウント作成
 ```
 
-macOS の System Settings → プライバシーとセキュリティ → 画面録画 で sunshine に
-許可を与える。 LaunchAgent で自動起動させる場合は `~/Library/LaunchAgents/` に
-plist を置く (TCC 許可は手動が安全)。
+ホスト OS 側で **画面キャプチャ許可**を sunshine に与える:
+- macOS: System Settings → プライバシーとセキュリティ → 画面録画
+- Windows: 通常不要 (= UAC レベルで実行)
+- Linux: X11 / Wayland の捕捉設定 (= Sunshine docs 参照)
+
+自動起動は OS ごとに違う (= macOS は LaunchAgent / Linux は systemd / Windows はサービス)。
 
 #### moonlight-web-stream (= Sunshine ↔ ブラウザ WebRTC bridge)
 
-macOS バイナリは公式提供されてないので Rust から自前ビルド。
+公式 release が無い OS は Rust から自前ビルド (= macOS 含む)。
 
 ```bash
-# Rust nightly install
+# Rust nightly install (= macOS の例、 他 OS は rustup の公式手順)
 brew install rustup
 rustup default nightly
 
-# clone + build
+# clone + build (= 全 OS 共通、 cargo / npm が要る)
 git clone --recurse-submodules https://github.com/MrCreativ3001/moonlight-web-stream.git
 cd moonlight-web-stream
 cargo build --release   # 30 分くらい
