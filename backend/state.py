@@ -21,7 +21,6 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeSDKClient
@@ -185,7 +184,6 @@ class StreamState:
     buffer_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     complete: bool = True
     client: ClaudeSDKClient | None = None
-    client_session_id: str | None = None
     pending_question: asyncio.Future | None = None
     pending_question_tool_id: str | None = None
     # /stop や新ターン割り込みで tool_use が宙ぶらりんになった場合の id。
@@ -318,81 +316,5 @@ def reset_activity(session_id: str) -> None:
     agent_status[session_id]["subagent"] = None
 
 
-def update_shared_from_headers(headers) -> None:
-    """Anthropic API のレスポンスヘッダから rate-limit を吸い出して shared_status へ。
-
-    ヘッダ名は単数形 (= `anthropic-ratelimit-unified-5h-reset` / `-7d-reset`)。
-    旧コードは「-resets-at」 と複数形で書いていて両方取れず、 5h だけ偶然 SDK の
-    RateLimitEvent 経由で値が入っていた (2026-05-17 修正)。
-    """
-    five_h = headers.get("anthropic-ratelimit-unified-5h-utilization")
-    seven_d = headers.get("anthropic-ratelimit-unified-7d-utilization")
-    five_h_reset = headers.get("anthropic-ratelimit-unified-5h-reset")
-    seven_d_reset = headers.get("anthropic-ratelimit-unified-7d-reset")
-
-    if five_h is not None:
-        try:
-            shared_status["five_hour_pct"] = round(float(five_h) * 100)
-        except ValueError:
-            pass
-    if seven_d is not None:
-        try:
-            shared_status["seven_day_pct"] = round(float(seven_d) * 100)
-        except ValueError:
-            pass
-    # reset 値はサーバから unix epoch 数値文字列 (例 "1779015600") で来る。
-    # 念のため ISO 8601 文字列形式も両対応。
-    def _parse_reset(value):
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except (ValueError, TypeError):
-            pass
-        try:
-            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-            return int(dt.timestamp())
-        except Exception:
-            return None
-    if (v := _parse_reset(five_h_reset)) is not None:
-        shared_status["five_hour_resets_at"] = v
-    if (v := _parse_reset(seven_d_reset)) is not None:
-        shared_status["seven_day_resets_at"] = v
-
-
-def compute_ctx_pct(usage: dict, ctx_window: int = 1_000_000) -> int:
-    if not usage or ctx_window <= 0:
-        return 0
-    total = (
-        usage.get("input_tokens", 0)
-        + usage.get("cache_read_input_tokens", 0)
-        + usage.get("cache_creation_input_tokens", 0)
-    )
-    return min(round(total / ctx_window * 100), 100)
-
-
-def format_model_name(key: str) -> str:
-    key = key.replace("claude-", "")
-    parts = key.split("-")
-    if len(parts) >= 3:
-        name = parts[0].capitalize()
-        version = ".".join(parts[1:])
-        return f"{name} {version}"
-    return key.capitalize()
-
-
-def update_agent_from_result(session_id: str, model_usage: dict | None, last_assistant_usage: dict | None) -> None:
-    if not model_usage or session_id not in agent_status:
-        return
-    model_key = next(iter(model_usage), None)
-    if not model_key:
-        return
-    agent_status[session_id]["model"] = format_model_name(model_key)
-    ctx_window = (
-        model_usage[model_key].get("contextWindow")
-        or agent_status[session_id].get("ctx_window")
-        or 1_000_000
-    )
-    agent_status[session_id]["ctx_window"] = ctx_window
-    if last_assistant_usage:
-        agent_status[session_id]["ctx_pct"] = compute_ctx_pct(last_assistant_usage, ctx_window)
+# SDK レスポンス / HTTP header の解析と agent_status / shared_status の更新は
+# `usage.py` に分離した (2026-05-17)。 state.py は純粋に state の定義 / lifecycle に専念。

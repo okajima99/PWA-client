@@ -23,19 +23,23 @@ export function useStatus(activeSession) {
     if (!sid) { setStatus(null); return }
 
     let cancelled = false
+    let sseReceived = false
     let evt = null
 
     // 接続時に初期値を読みに行く (= EventSource の初回 data 到着前のチラ見せ防止)。
     // SSE 接続後はすぐに status snapshot が push されるので、 ここの fetch は補助。
+    // ただし fetch のレスポンスが SSE より遅れて返ると、 古い snapshot で SSE 値を
+    // 上書きしてしまう race があった。 sseReceived フラグで「SSE が先に来てたら捨てる」。
     fetch(`${API_BASE}/status/${sid}`)
       .then(r => r.ok ? r.json() : null)
-      .then(d => { if (!cancelled && d) setStatus(d) })
+      .then(d => { if (!cancelled && !sseReceived && d) setStatus(d) })
       .catch(() => {})
 
     try {
       evt = new EventSource(`${API_BASE}/status/${sid}/stream`)
       evt.onmessage = (e) => {
         if (cancelled) return
+        sseReceived = true
         try {
           const data = JSON.parse(e.data)
           setStatus(data)

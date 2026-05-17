@@ -149,53 +149,39 @@ export function useStreamReconnect({
     }
   }
 
-  const reconnectIfStreaming = async (sid) => {
-    // single-flight ガード: 既に reconnect 中なら、 自分が abort で踏みつぶさない (= 別経路の
-    // reconnect を kill する race を防ぐ)。 useChatStream の sendMessage finally と
-    // App.jsx の buffer_length watcher が同時発火するケースで顕在化していた。
+  // 「status を fetch → streaming/pending_question なら abort + reconnect」 の共通ロジック。
+  // single-flight ガードを 1 箇所に集約: 既に reconnect 中なら abort で踏みつぶさない。
+  // reconnectIfStreaming / checkAndReconnect / forceResyncAll はこの helper を呼ぶ薄ラッパー。
+  const _maybeReconnect = async (sid, { setLoadingOnStreaming = false } = {}) => {
     if (reconnectingRef.current[sid]) return false
+    let s = null
     try {
-      const s = await fetch(`${API_BASE}/status/${sid}`).then(r => r.json()).catch(() => null)
-      if (!s) return false
-      if (s.streaming || s.pending_question_tool_id) {
-        // 二重ガード: 上の await の間に他経路が reconnect を始めてる可能性
-        if (reconnectingRef.current[sid]) return false
-        // 既存の controller が iOS Safari で stuck してる場合があるので、 必ず abort
-        // してから再接続。 ただし single-flight なので自分以外の reconnect を踏むことはない。
-        if (abortControllers.current[sid]) {
-          abortControllers.current[sid].abort()
-          abortControllers.current[sid] = null
-        }
-        reconnectingRef.current[sid] = true
-        reconnectStream(sid).finally(() => {
-          reconnectingRef.current[sid] = false
-        })
-        return true
-      }
+      s = await fetch(`${API_BASE}/status/${sid}`).then(r => r.json()).catch(() => null)
     } catch { /* ignored */ }
-    return false
+    if (!s) return false
+    if (!(s.streaming || s.pending_question_tool_id)) return false
+    // await を挟んだので二重ガード
+    if (reconnectingRef.current[sid]) return false
+    if (setLoadingOnStreaming && s.streaming) {
+      setLoading(prev => ({ ...prev, [sid]: true }))
+    }
+    if (abortControllers.current[sid]) {
+      abortControllers.current[sid].abort()
+      abortControllers.current[sid] = null
+    }
+    reconnectingRef.current[sid] = true
+    reconnectStream(sid).finally(() => {
+      reconnectingRef.current[sid] = false
+    })
+    return true
   }
+
+  const reconnectIfStreaming = (sid) => _maybeReconnect(sid)
 
   const checkAndReconnect = async (forceReconnect = false) => {
     for (const sid of allSessionIds()) {
-      if (reconnectingRef.current[sid]) continue
       if (!forceReconnect && loadingRef.current[sid]) continue
-      try {
-        const s = await fetch(`${API_BASE}/status/${sid}`).then(r => r.json())
-        if (s.streaming) {
-          setLoading(prev => ({ ...prev, [sid]: true }))
-        }
-        if (s.streaming || s.pending_question_tool_id) {
-          if (abortControllers.current[sid]) {
-            abortControllers.current[sid].abort()
-            abortControllers.current[sid] = null
-          }
-          reconnectingRef.current[sid] = true
-          reconnectStream(sid).finally(() => {
-            reconnectingRef.current[sid] = false
-          })
-        }
-      } catch { /* ignored */ }
+      await _maybeReconnect(sid, { setLoadingOnStreaming: true })
     }
   }
 

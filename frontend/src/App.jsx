@@ -23,6 +23,20 @@ import {
 import { setBadge } from './utils/badge.js'
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
+// 公式 CLI が受け入れる短縮形 + effort 階層 (= module scope const、 毎 render 再生成を避ける)。
+const MODEL_OPTIONS = [
+  { value: 'opus', label: 'Opus' },
+  { value: 'sonnet', label: 'Sonnet' },
+  { value: 'haiku', label: 'Haiku' },
+]
+const EFFORT_OPTIONS = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'Extra High' },
+  { value: 'max', label: 'Max' },
+]
+
 const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
 const FileTreePanel = lazy(() => import('./FileTreePanel.jsx'))
 // SessionDrawer は drawerOpen=true の時のみ render = 遅延 load 妥当 (= 初回 paint 早く)
@@ -295,19 +309,6 @@ export default function App() {
     } catch { /* ignore */ }
   }, [activeSid])
 
-  // 公式 CLI が受け入れる短縮形 + effort 階層。 SDK に渡る値とラベルを併記。
-  const MODEL_OPTIONS = [
-    { value: 'opus', label: 'Opus' },
-    { value: 'sonnet', label: 'Sonnet' },
-    { value: 'haiku', label: 'Haiku' },
-  ]
-  const EFFORT_OPTIONS = [
-    { value: 'low', label: 'Low' },
-    { value: 'medium', label: 'Medium' },
-    { value: 'high', label: 'High' },
-    { value: 'xhigh', label: 'Extra High' },
-    { value: 'max', label: 'Max' },
-  ]
   // override 値が無ければ backend が返した default を ✓ 位置に使う。
   const activeModel = sessionConfig.model ?? sessionConfig.defaultModel
   const activeEffort = sessionConfig.effort ?? sessionConfig.defaultEffort
@@ -338,8 +339,20 @@ export default function App() {
       delete next[sid]
       return next
     })
-    // セッション削除で参照が一気に消えるので IndexedDB の orphan 画像も掃除する
-    gcRanRef.current = false
+    // セッション削除で参照が一気に消えるので IndexedDB の orphan 画像も掃除する。
+    // 削除後 messagesRefForGc が反映されるのを少し待ってから走らせる。
+    setTimeout(() => {
+      const cur = messagesRefForGc.current
+      const active = new Set()
+      for (const k of Object.keys(cur)) {
+        for (const m of cur[k] || []) {
+          if (m.imageRefs && Array.isArray(m.imageRefs)) {
+            for (const id of m.imageRefs) active.add(id)
+          }
+        }
+      }
+      gcImages([...active]).catch(() => {})
+    }, 300)
   }
 
   // Web Push
@@ -366,33 +379,25 @@ export default function App() {
     }
   }
 
-  // IndexedDB 画像の orphan GC: 起動時とセッション削除時に、 messages から参照されてない
-  // imageRef を IndexedDB から削除する。 起動時 1 回 + 削除トリガで増分掃除。
-  const gcRanRef = useRef(false)
+  // IndexedDB 画像の orphan GC: 起動時 1 回 + セッション削除トリガで増分掃除。
+  // dep は [] でよい (= 起動時 1 回しか走らせない、 起動から 5 秒待って messages 確定後に実行)。
+  const messagesRefForGc = useRef(messages)
+  useEffect(() => { messagesRefForGc.current = messages }, [messages])
   useEffect(() => {
-    if (gcRanRef.current) return
-    gcRanRef.current = true
-    const collect = () => {
+    const id = setTimeout(() => {
+      const cur = messagesRefForGc.current
       const active = new Set()
-      for (const sid of Object.keys(messages)) {
-        for (const m of messages[sid] || []) {
+      for (const sid of Object.keys(cur)) {
+        for (const m of cur[sid] || []) {
           if (m.imageRefs && Array.isArray(m.imageRefs)) {
             for (const id of m.imageRefs) active.add(id)
           }
         }
       }
-      return active
-    }
-    // 起動から少し待ってから (初回ロードで messages が確定するのを待つ)
-    const id = setTimeout(() => {
-      gcImages([...collect()]).catch(() => {})
+      gcImages([...active]).catch(() => {})
     }, 5000)
     return () => clearTimeout(id)
-  }, [messages])
-
-  // (A1 fix) /push/state は line 148-171 の useEffect で session_id + visible + client を
-  // 1 本の経路で送るよう統合。 ここの旧 visibility listener は重複で session_id 落ち
-  // race を起こしてたため削除済。
+  }, [])
 
   // 入力欄は active session が無い時だけ disabled。 loading[activeSid] (= 推論中) でも
   // ユーザーは次に送る文を編集しておけるように許可 — 送信ボタンは loading 中は停止ボタン

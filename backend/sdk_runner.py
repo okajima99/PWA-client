@@ -47,7 +47,6 @@ from push import broadcast_push, notification_title_for
 from session_logging import close_session_log, session_log
 from state import (
     agent_status,
-    compute_ctx_pct,
     flags,
     last_assistant_text,
     reset_activity,
@@ -55,8 +54,8 @@ from state import (
     sessions,
     shared_status,
     stream_states,
-    update_agent_from_result,
 )
+from usage import compute_ctx_pct, update_agent_from_result
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +330,6 @@ async def _process_message(state, session_id: str, msg: Any) -> None:
         if msg.session_id:
             sessions[session_id] = msg.session_id
             save_sessions()
-            state.client_session_id = msg.session_id
         update_agent_from_result(session_id, msg.model_usage, {})
 
         # ターン完了通知 (= フォアで見てないなら Web Push)
@@ -470,7 +468,6 @@ async def ensure_client(session_id: str) -> ClaudeSDKClient:
     client = ClaudeSDKClient(options=options)
     await client.connect()
     state.client = client
-    state.client_session_id = sessions.get(session_id)
     state._current_request_id = None  # type: ignore[attr-defined]
     # 持続 receive task 起動 (既に走ってないことを確認)
     if state.receive_task is None or state.receive_task.done():
@@ -505,7 +502,6 @@ async def disconnect_client(session_id: str) -> None:
         return
     # 先に参照を切る (この時点で並行 ensure_client は新 client を立て直す)
     state.client = None
-    state.client_session_id = None
     try:
         await client.disconnect()
     except Exception:

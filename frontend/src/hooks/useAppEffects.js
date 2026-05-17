@@ -119,12 +119,17 @@ export function useSessionActivity(messages, sessions) {
     try { localStorage.setItem(LS_SESSION_ACTIVITY, JSON.stringify(sessionActivity)) } catch { /* ignore */ }
   }, [sessionActivity])
 
-  // sort された session 一覧 (= 「最終活動時刻」 降順、 0 や未活動は created_at fallback)
-  const sortedSessions = [...sessions].sort((a, b) => {
-    const ta = (sessionActivity[a.id]?.ts) || ((a.created_at || 0) * 1000)
-    const tb = (sessionActivity[b.id]?.ts) || ((b.created_at || 0) * 1000)
-    return tb - ta
-  })
+  // sort された session 一覧 (= 「最終活動時刻」 降順、 0 や未活動は created_at fallback)。
+  // sessions / sessionActivity が変わらない限り同じ array を返す (= SessionDrawer 等の
+  // 下流が無駄に re-render しない)。
+  const sortedSessions = useMemo(
+    () => [...sessions].sort((a, b) => {
+      const ta = (sessionActivity[a.id]?.ts) || ((a.created_at || 0) * 1000)
+      const tb = (sessionActivity[b.id]?.ts) || ((b.created_at || 0) * 1000)
+      return tb - ta
+    }),
+    [sessions, sessionActivity]
+  )
 
   return { sessionActivity, sortedSessions }
 }

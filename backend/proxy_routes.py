@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 
 import http_client
 from config import ANTHROPIC_API_BASE
-from state import update_shared_from_headers
+from usage import update_shared_from_headers
 
 router = APIRouter()
 
