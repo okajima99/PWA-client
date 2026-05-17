@@ -38,6 +38,12 @@ export function useChatStream({
   // 直近 POST が発行した user_request_id を保持
   const pendingRequestIdRef = useRef({})
 
+  // 楽観的 pending: send ボタン押下 → POST 開始時点で短期 (= 1.5 秒) deadline を立てる。
+  // backend が state.complete=False に倒して status SSE で streaming=true を push してくるまで
+  // の数百 ms 間、 「送信ボタン → 一瞬送信ボタン → 停止ボタン」 のフラッシュを防ぐ。
+  // status.streaming=true / loading[sid]=true / pendingSendUntil > now の OR で停止ボタン表示。
+  const pendingSendUntilRef = useRef({})
+
   const buffer = useStreamBuffer({ setMessages })
 
   const onUserRequestId = (sid, request_id) => {
@@ -89,6 +95,9 @@ export function useChatStream({
     const myGen = (sendGenRef.current[sid] || 0) + 1
     sendGenRef.current[sid] = myGen
     const isCurrentGen = () => sendGenRef.current[sid] === myGen
+
+    // 楽観的 pending deadline: 1.5 秒間「停止ボタン」 を即出す。 backend status SSE 到達遅延を救済。
+    pendingSendUntilRef.current[sid] = Date.now() + 1500
 
     const imageItems = items.filter(item => item.url)
     const fileNames = items.filter(item => !item.url).map(item => item.file.name)
@@ -286,5 +295,9 @@ export function useChatStream({
     stopMessage,
     fetchLatest: reconnect.fetchLatest,
     endSession,
+    // visibility 復帰抑止の deadline (= App.jsx の buffer_length watcher が見る)
+    visibilitySuppressUntilRef: reconnect.visibilitySuppressUntilRef,
+    // 楽観的 pending deadline (= App.jsx の showStopButton 計算で OR 合成)
+    pendingSendUntilRef,
   }
 }

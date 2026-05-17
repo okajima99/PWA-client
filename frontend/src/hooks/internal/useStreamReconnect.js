@@ -29,6 +29,11 @@ export function useStreamReconnect({
   // (A4 fix) reconnect setTimeout の id を保持して unmount cleanup で clear する。
   // unmount 中に発火すると state 更新 warning + 二重接続。
   const reconnectTimerRef = useRef(null)
+  // visibility 復帰直後の N ms は外部 watcher (= App.jsx の buffer_length watcher) も
+  // reconnect 発火を控えてほしい。 visibilitychange リスナでここに deadline を書き込み、
+  // expose して watcher 側で参照する。 visibility 経路と buffer 経路の重複 reconnect race
+  // を防ぐ「単一の真実」 として hook 内に置く。
+  const visibilitySuppressUntilRef = useRef(0)
 
   const eventDeps = {
     setMessages,
@@ -61,7 +66,15 @@ export function useStreamReconnect({
     if (!res.ok) return false
 
     isAtBottomRef.current = true
-    setLoading(prev => ({ ...prev, [sid]: true }))
+    // backend が現在進行中 (= state.complete=False = streaming=true) の時のみ loading=true 化。
+    // forceResyncAll / visibility 復帰経由で「実は完了済みの buffer replay」 する場合に
+    // 「一瞬 停止ボタン → すぐ送信ボタン」 の flicker が起きてたのを防ぐ。
+    const statusNow = await fetch(`${API_BASE}/status/${sid}`)
+      .then(r => r.ok ? r.json() : null).catch(() => null)
+    const streamingNow = !!statusNow?.streaming
+    if (streamingNow) {
+      setLoading(prev => ({ ...prev, [sid]: true }))
+    }
     setMessages(prev => {
       const cur = prev[sid] || []
       // 直前の send が失敗して error bubble が末尾に積まれているケースでは、
@@ -112,7 +125,11 @@ export function useStreamReconnect({
       return true
     } finally {
       buffer.cancelAndFlush(sid)
-      setLoading(prev => ({ ...prev, [sid]: false }))
+      // setLoading(true) を冒頭で呼んでない場合は触らない (= visibility 復帰 flicker 防止)。
+      // 呼んでる場合 (= streamingNow=true だった時) のみ false に戻して終了処理する。
+      if (streamingNow) {
+        setLoading(prev => ({ ...prev, [sid]: false }))
+      }
       setMessages(prev => {
         const cur = prev[sid] || []
         const msgs = [...cur]
@@ -133,13 +150,18 @@ export function useStreamReconnect({
   }
 
   const reconnectIfStreaming = async (sid) => {
+    // single-flight ガード: 既に reconnect 中なら、 自分が abort で踏みつぶさない (= 別経路の
+    // reconnect を kill する race を防ぐ)。 useChatStream の sendMessage finally と
+    // App.jsx の buffer_length watcher が同時発火するケースで顕在化していた。
+    if (reconnectingRef.current[sid]) return false
     try {
       const s = await fetch(`${API_BASE}/status/${sid}`).then(r => r.json()).catch(() => null)
       if (!s) return false
       if (s.streaming || s.pending_question_tool_id) {
+        // 二重ガード: 上の await の間に他経路が reconnect を始めてる可能性
+        if (reconnectingRef.current[sid]) return false
         // 既存の controller が iOS Safari で stuck してる場合があるので、 必ず abort
-        // してから再接続 (= fetchLatest / checkAndReconnect と同じ振る舞い)。
-        // これが抜けてたために「最新を取得」 ボタンでしか復活しなかった。
+        // してから再接続。 ただし single-flight なので自分以外の reconnect を踏むことはない。
         if (abortControllers.current[sid]) {
           abortControllers.current[sid].abort()
           abortControllers.current[sid] = null
@@ -246,10 +268,14 @@ export function useStreamReconnect({
       const wasLong = hiddenAt != null && (Date.now() - hiddenAt) > 30_000
       hiddenAt = null
 
+      // 復帰直後 1.5s は外部の reconnect 経路 (= buffer_length watcher) を抑止する。
+      visibilitySuppressUntilRef.current = Date.now() + 1500
+
       for (const sid of allSessionIds()) buffer.cancelAndFlush(sid)
       if (wasLong) forceResyncAll()
       else checkAndReconnect(true)
-      setTimeout(() => { if (!document.hidden) checkAndReconnect(true) }, 800)
+      // 800ms 後の追加 checkAndReconnect は visibility 経路で既に走った reconnect と
+      // 重複する race の温床だったので撤廃 (= 初回 checkAndReconnect で十分)。
       requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
     }
 
@@ -286,5 +312,6 @@ export function useStreamReconnect({
     fetchLatest,
     forceResyncAll,
     eventDeps,
+    visibilitySuppressUntilRef,
   }
 }

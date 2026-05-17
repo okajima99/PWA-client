@@ -60,7 +60,7 @@ export default function App() {
     scrollToBottom,
     onScroll,
   } = useAutoScroll({ messages, activeSession })
-  const { loading, setLoading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession } = useChatStream({
+  const { loading, setLoading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession, visibilitySuppressUntilRef, pendingSendUntilRef } = useChatStream({
     activeSession,
     sessions,
     setMessages,
@@ -125,18 +125,8 @@ export default function App() {
   // length 比較を捨てて新 turn として fetch する。
   const lastSeenBufferRef = useRef({}) // { [sid]: { length, id } }
   const fetchDebounceRef = useRef(null)
-  const visibilitySuppressUntilRef = useRef(0)
-
-  // visibility 復帰直後の 1.5 秒は buffer_length watcher の fetchLatest を抑止する。
-  // useStreamReconnect の visibility リスナが forceResyncAll / checkAndReconnect(true) を
-  // 走らせるので、 watcher 側も同時発火すると二重 reconnect race を起こす。
-  useEffect(() => {
-    const onVis = () => {
-      if (!document.hidden) visibilitySuppressUntilRef.current = Date.now() + 1500
-    }
-    document.addEventListener('visibilitychange', onVis)
-    return () => document.removeEventListener('visibilitychange', onVis)
-  }, [])
+  // visibility 抑止の deadline は useStreamReconnect の hook 内に集約 (= 単一の真実)。
+  // visibilitychange リスナも reconnect 経路と同じ場所で 1 つだけ持たせる。
 
   useEffect(() => {
     if (!activeSid || !status) return
@@ -162,17 +152,51 @@ export default function App() {
     }, 250)
   }, [activeSid, status?.buffer_length, status?.buffer_id, loading, fetchLatest])
 
-  // ボタン UI 用の合成 loading 判定。
+  // backend 再起動検知: status.backend_start_time が変化したら backend が再起動された
+  // (= LaunchAgent KeepAlive で自動復活 or 手動 kickstart)。 中断された turn が
+  // 「永遠に推論中」 のまま見えないように、 全 session の最後の streaming bubble を
+  // 強制的に停止扱いに固定 + loading state を全 reset する。
+  const lastBackendStartRef = useRef(null)
+  useEffect(() => {
+    if (!status?.backend_start_time) return
+    const prev = lastBackendStartRef.current
+    lastBackendStartRef.current = status.backend_start_time
+    if (prev === null || prev === status.backend_start_time) return
+    // backend が再起動された
+    setLoading({})
+    setMessages(p => {
+      const next = {}
+      for (const sid of Object.keys(p)) {
+        const arr = p[sid] || []
+        if (arr.length === 0) { next[sid] = arr; continue }
+        const last = arr[arr.length - 1]
+        if (last?.streaming) {
+          next[sid] = [...arr.slice(0, -1), { ...last, streaming: false }]
+        } else {
+          next[sid] = arr
+        }
+      }
+      return next
+    })
+  }, [status?.backend_start_time, setLoading, setMessages])
+
+  // ボタン UI 用の合成 loading 判定。 3 source の OR:
+  //   - loading[sid]         : sendMessage / reconnectStream が触る local 状態
+  //   - status.streaming     : backend の state.complete の反転 (= 正規の真値、 SSE 経由)
+  //   - pendingSendUntilRef  : 送信直後の楽観的 deadline (= status SSE 到達まで救済)
   //
-  // 単純な `loading[activeSid]` だと、 sendMessage / reconnectStream / fetchLatest の
-  // setLoading 呼び出しが race して short proactive turn (= 1-3 秒で完結) では
-  // 「停止ボタンに切り替わる前に送信ボタンに戻る」 取りこぼしが起きていた。
-  //
-  // backend の `status.streaming` (= state.complete の反転) を OR で合成することで、
-  // 「backend が推論中と言っている間は必ず停止ボタン」 を保証する。 race の上書きが
-  // 何度起きても、 streaming=true の status push が 1 回でも届けば UI は止まる。
+  // race の経路が複数あっても、 いずれか 1 つでも true なら停止ボタンを保つ。 sendMessage
+  // 開始 → backend が state.complete=False に倒すまでの数百 ms 間、 pendingSendUntilRef が
+  // 停止ボタン表示を担保する。 backend からの真値が届いたら status.streaming に切り替わる。
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    // pendingSend の deadline 切れを反映するため軽い tick (= 500ms 間隔、 deadline 到達後は停止)
+    const id = setInterval(() => setNow(Date.now()), 500)
+    return () => clearInterval(id)
+  }, [])
   const isStreamingNow = !!(activeSid && status?.streaming)
-  const showStopButton = !!(activeSid && (loading[activeSid] || isStreamingNow))
+  const isPendingSend = !!(activeSid && (pendingSendUntilRef.current[activeSid] || 0) > now)
+  const showStopButton = !!(activeSid && (loading[activeSid] || isStreamingNow || isPendingSend))
 
   // SW からの「push-received」 メッセージで即座に fetchLatest を発火させる。
   // status polling (idle 30 秒) の隙間で proactive turn が完了/進行してても、
