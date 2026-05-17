@@ -223,6 +223,10 @@ async def ensure_client(session_id: str) -> ClaudeSDKClient:
     await client.connect()
     state.client = client
     state.client_session_id = sessions.get(session_id)
+    # proactive watcher 起動: SDK queue を 5 秒間隔で poll、 Monitor / CronCreate 等の
+    # idle 自発応答を拾って buffer に積む。 既に走ってる場合は再起動しない。
+    if state.idle_watcher_task is None or state.idle_watcher_task.done():
+        state.idle_watcher_task = asyncio.create_task(proactive_watcher_loop(session_id))
     return client
 
 
@@ -234,6 +238,14 @@ async def disconnect_client(session_id: str) -> None:
     if state is None:
         return
     client = state.client
+    # proactive watcher 停止 (= client なしの状態で receive_nowait 呼ばないため)
+    if state.idle_watcher_task is not None and not state.idle_watcher_task.done():
+        state.idle_watcher_task.cancel()
+        try:
+            await state.idle_watcher_task
+        except (Exception, asyncio.CancelledError):
+            pass
+    state.idle_watcher_task = None
     if client is None:
         return
     # 先に参照を切る (この時点で並行 ensure_client は新 client を立て直す)
@@ -292,6 +304,166 @@ async def idle_disconnect_loop():
             raise
         except Exception:
             logger.exception("idle_disconnect_loop iteration failed")
+
+
+# --- proactive watcher (= Monitor / CronCreate 等 idle 中の自発応答を拾う) ---
+# 5 秒間隔で SDK queue を非ブロッキング peek。 hits があれば proactive turn として
+# 処理 (= state.complete=False に倒して buffer に積む)、 frontend は status polling +
+# auto-reconnect で SSE 接続して受信する。
+#
+# 設計のキモ:
+#   - 持続 receive_response を避けて fd 消費を抑える (= 過去の persistent loop は fd leak と
+#     state.complete flicker を起こした)
+#   - poll は receive_nowait のみ、 ブロックしない → fd 持続消費ゼロ
+#   - run_sdk_background (= user turn) と干渉しないよう、 state.complete=False 中は skip
+#   - 1 ターンの message 群が連続して queue に居れば全部消費、 ResultMessage で新 proactive_id
+PROACTIVE_POLL_INTERVAL_SEC = 5.0
+
+
+async def _process_proactive_msg(state, session_id: str, msg: Any, current_request_id: str) -> str:
+    """proactive turn の 1 メッセージ処理。 run_sdk_background のメッセージ処理ロジックの
+    軽量版 (= ステータス更新 + buffer 積み + Web Push 通知)。 戻り値は次に使う
+    request_id (= ResultMessage 後は新 proactive_xxx に切替)。"""
+    wire = serialize_sdk_message(msg)
+
+    if isinstance(msg, AssistantMessage):
+        is_subagent = msg.parent_tool_use_id is not None
+        if not is_subagent and msg.usage:
+            ctx_window = agent_status[session_id].get("ctx_window") or 1_000_000
+            agent_status[session_id]["ctx_pct"] = compute_ctx_pct(msg.usage, ctx_window)
+        if not is_subagent:
+            for block in msg.content:
+                if isinstance(block, ToolUseBlock):
+                    agent_status[session_id]["current_tool"] = {
+                        "name": block.name, "id": block.id, "started_at": time.time(),
+                    }
+                    if block.name == "TodoWrite":
+                        todos = block.input.get("todos")
+                        if todos is not None:
+                            agent_status[session_id]["todos"] = todos
+                    elif block.name == "ExitPlanMode":
+                        agent_status[session_id]["plan_mode"] = False
+            text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
+            if text_parts:
+                last_assistant_text[session_id] = "\n".join(text_parts)
+    elif isinstance(msg, UserMessage):
+        is_subagent = msg.parent_tool_use_id is not None
+        if not is_subagent and isinstance(msg.content, list):
+            for block in msg.content:
+                if isinstance(block, ToolResultBlock):
+                    cur = agent_status[session_id].get("current_tool")
+                    if cur and cur.get("id") == block.tool_use_id:
+                        agent_status[session_id]["current_tool"] = None
+    elif isinstance(msg, SystemMessage):
+        sub = msg.subtype
+        if sub == "task_started":
+            agent_status[session_id]["subagent"] = {
+                "description": msg.data.get("description", ""),
+                "last_tool": "",
+                "task_id": msg.data.get("task_id", ""),
+            }
+        elif sub == "task_progress":
+            cur = agent_status[session_id].get("subagent")
+            task_id = msg.data.get("task_id", "")
+            if cur and cur.get("task_id") == task_id:
+                last_tool = msg.data.get("last_tool_name")
+                if last_tool:
+                    cur["last_tool"] = last_tool
+        elif sub == "task_notification":
+            cur = agent_status[session_id].get("subagent")
+            task_id = msg.data.get("task_id", "")
+            if cur and cur.get("task_id") == task_id:
+                agent_status[session_id]["subagent"] = None
+    elif isinstance(msg, ResultMessage):
+        if msg.session_id:
+            sessions[session_id] = msg.session_id
+            save_sessions()
+            state.client_session_id = msg.session_id
+        update_agent_from_result(session_id, msg.model_usage, {})
+        # proactive 完了で Web Push (= PWA を wake、 idle のユーザーに proactive 応答を通知)
+        turn_text = last_assistant_text.get(session_id, "").strip()
+        if turn_text and not flags["user_visible"]:
+            body = turn_text if len(turn_text) <= 140 else (turn_text[:140] + "…")
+            asyncio.create_task(broadcast_push(body, notification_title_for(session_id), session_id))
+        last_assistant_text[session_id] = ""
+
+    if wire is not None:
+        wire["request_id"] = current_request_id
+        state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
+        state.buffer_event.set()
+        session_log(session_id, f"[wire-proactive] type={wire.get('type')} request_id={current_request_id}")
+
+    if isinstance(msg, ResultMessage):
+        import uuid as _uuid
+        return f"proactive_{_uuid.uuid4().hex[:8]}"
+    return current_request_id
+
+
+async def _drain_proactive(state, session_id: str) -> None:
+    """SDK queue を非ブロッキングで全消費。 proactive turn(s) の messages を buffer に積む。"""
+    import uuid as _uuid
+    client = state.client
+    if client is None:
+        return
+    drain_stream = client._query._message_receive
+    current_request_id = f"proactive_{_uuid.uuid4().hex[:8]}"
+    received_any = False
+
+    while True:
+        try:
+            data = drain_stream.receive_nowait()
+        except WouldBlock:
+            break
+        except Exception:
+            logger.exception("proactive drain receive_nowait failed for %s", session_id)
+            break
+        if not isinstance(data, dict):
+            continue
+        t = data.get("type")
+        if t in ("end", "error"):
+            continue
+
+        # 最初の有効メッセージで state.complete=False に倒して frontend 起こす
+        if not received_any:
+            state.complete = False
+            state.buffer_event.set()
+            state.last_activity_at = time.time()
+            received_any = True
+            session_log(session_id, "[proactive] turn started via idle watcher")
+
+        msg = parse_message(data)
+        if msg is None:
+            continue
+        current_request_id = await _process_proactive_msg(state, session_id, msg, current_request_id)
+
+    if received_any:
+        # turn 群消費完了 → idle に戻す
+        state.complete = True
+        state.buffer_event.set()
+        state.last_activity_at = time.time()
+        session_log(session_id, "[proactive] turn completed")
+
+
+async def proactive_watcher_loop(session_id: str) -> None:
+    """SDK client が active な間、 5 秒間隔で proactive メッセージを poll する。
+    ensure_client で起動、 disconnect_client で cancel。"""
+    while True:
+        try:
+            await asyncio.sleep(PROACTIVE_POLL_INTERVAL_SEC)
+        except asyncio.CancelledError:
+            return
+        state = stream_states.get(session_id)
+        if state is None or state.client is None:
+            return
+        # User turn 中は skip (= receive_response が動いてるので干渉禁止)
+        if not state.complete:
+            continue
+        try:
+            await _drain_proactive(state, session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("proactive_watcher_loop error for %s", session_id)
 
 
 # --- バックグラウンドで SDK ストリームを読む ---

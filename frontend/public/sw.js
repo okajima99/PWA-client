@@ -40,7 +40,18 @@ self.addEventListener('push', (event) => {
   if (typeof data.unread_count === 'number' && self.navigator && self.navigator.setAppBadge) {
     try { self.navigator.setAppBadge(data.unread_count) } catch { /* ignore */ }
   }
-  event.waitUntil(self.registration.showNotification(data.title || 'Notification', options))
+  event.waitUntil((async () => {
+    // PWA が開いてる時は postMessage で「proactive turn 来た、 fetchLatest しろ」 を通知。
+    // status polling (idle 30 秒間隔) の隙間で起きた proactive turn を即時 SSE 接続で取りに行く。
+    // PWA が完全終了してる時は client 無しで no-op、 OS 通知だけ残る。
+    try {
+      const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      for (const c of all) {
+        try { c.postMessage({ type: 'push-received', sid: data.sid || null }) } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
+    return self.registration.showNotification(data.title || 'Notification', options)
+  })())
 })
 
 self.addEventListener('notificationclick', (event) => {

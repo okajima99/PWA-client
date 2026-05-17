@@ -208,6 +208,10 @@ class StreamState:
     # 受信側は wait_for(timeout=15) で待ち、 タイムアウト時は keep-alive ping を yield。
     # event.set() を漏らしても最大 15 秒遅延、 ハングはしない (= timeout が保険)。
     buffer_event: asyncio.Event = field(default_factory=asyncio.Event)
+    # idle 中も SDK queue を継続的に消費して、 Monitor / CronCreate 等の proactive 応答を
+    # リアルタイムで buffer に積むためのバックグラウンドタスク。
+    # ensure_client で起動、 disconnect_client で cancel。
+    idle_watcher_task: asyncio.Task | None = None
 
 
 def _make_agent_status(agent_id: str) -> dict:

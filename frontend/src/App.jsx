@@ -60,7 +60,7 @@ export default function App() {
     scrollToBottom,
     onScroll,
   } = useAutoScroll({ messages, activeSession })
-  const { loading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession } = useChatStream({
+  const { loading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, reconnectIfStreaming, endSession } = useChatStream({
     activeSession,
     sessions,
     setMessages,
@@ -109,6 +109,31 @@ export default function App() {
   useReadOnSessionOpen(activeSid)
   useBadgeSync()
   useDeepLink(setActiveId)
+
+  // proactive turn (= Monitor / CronCreate 等) の検知: useStatus の polling 結果が
+  // streaming=true なのに local loading[sid]=false の時は、 backend で proactive turn が
+  // idle 中に始まったケース → SSE 接続して受信開始。
+  useEffect(() => {
+    if (!activeSid) return
+    if (status?.streaming && !loading[activeSid]) {
+      reconnectIfStreaming(activeSid).catch(() => {})
+    }
+  }, [activeSid, status?.streaming, loading, reconnectIfStreaming])
+
+  // SW からの「push-received」 メッセージで即座に fetchLatest を発火させる。
+  // status polling (idle 30 秒) の隙間で proactive turn が完了/進行してても、
+  // Web Push 受信 → SW postMessage → ここで fetchLatest → SSE 接続で取得、 のフローで
+  // 取りこぼしを防ぐ。
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+    const onMessage = (event) => {
+      if (event.data?.type === 'push-received') {
+        fetchLatest()
+      }
+    }
+    navigator.serviceWorker.addEventListener('message', onMessage)
+    return () => navigator.serviceWorker.removeEventListener('message', onMessage)
+  }, [fetchLatest])
 
   const handleOpenPath = useCallback((path) => {
     if (path.endsWith('/')) {

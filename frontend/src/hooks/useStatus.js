@@ -2,7 +2,12 @@ import { useState, useEffect } from 'react'
 import { API_BASE } from '../constants.js'
 
 const INTERVAL_BUSY = 2000
-const INTERVAL_IDLE = 30000
+// idle 中の polling 間隔: 30 秒 → 5 秒に短縮。
+// Monitor / CronCreate 等の proactive turn は 5 秒間隔で開始されうるので、
+// 30 秒だと検知漏れが起こる (= push 通知は届くが UI 反映には 「最新を取得」 が必要)。
+// 5 秒にすれば最悪 5 秒で proactive turn を検知 → SSE 自動接続 → リアルタイム表示。
+// status endpoint は cheap (= dict lookup) なので 6 倍に増えても backend 負荷は無視可。
+const INTERVAL_IDLE = 5000
 
 function isBusy(s) {
   return !!(s && (s.streaming || s.plan_mode || s.current_tool || s.subagent))
