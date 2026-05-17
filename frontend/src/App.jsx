@@ -16,11 +16,11 @@ import { useStorageQuota } from './hooks/useStorageQuota.js'
 import {
   usePushState,
   useReadOnSessionOpen,
-  useBadgeSync,
   useDeepLink,
   useSessionActivity,
   useSessionBadges,
 } from './hooks/useAppEffects.js'
+import { setBadge } from './utils/badge.js'
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
 const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
@@ -108,7 +108,6 @@ export default function App() {
   // backend / 通知 / deep link 系の effect を hook に集約 (= useAppEffects.js)
   usePushState(activeSid)
   useReadOnSessionOpen(activeSid)
-  useBadgeSync()
   useDeepLink(setActiveId)
 
   // proactive turn (= Monitor / CronCreate 等) の検知: status SSE で push される
@@ -125,6 +124,20 @@ export default function App() {
   // state.buffer_id = uuid を振り直すタイミング (= buffer reset)。 id が変わったら
   // length 比較を捨てて新 turn として fetch する。
   const lastSeenBufferRef = useRef({}) // { [sid]: { length, id } }
+  const fetchDebounceRef = useRef(null)
+  const visibilitySuppressUntilRef = useRef(0)
+
+  // visibility 復帰直後の 1.5 秒は buffer_length watcher の fetchLatest を抑止する。
+  // useStreamReconnect の visibility リスナが forceResyncAll / checkAndReconnect(true) を
+  // 走らせるので、 watcher 側も同時発火すると二重 reconnect race を起こす。
+  useEffect(() => {
+    const onVis = () => {
+      if (!document.hidden) visibilitySuppressUntilRef.current = Date.now() + 1500
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
+
   useEffect(() => {
     if (!activeSid || !status) return
     const cur = lastSeenBufferRef.current[activeSid] || { length: 0, id: null }
@@ -137,7 +150,16 @@ export default function App() {
     // ターン中 (= user 送信直後の POST /chat/stream SSE が直接流してる) は reconnect 不要、
     // むしろ進行中の POST controller を abort してしまうと turn が切れる。
     if (loading[activeSid]) return
-    fetchLatest()
+    // visibility 復帰直後は useStreamReconnect 側で resync するので watcher は黙る
+    if (Date.now() < visibilitySuppressUntilRef.current) return
+    // デバウンス 250ms: status SSE は backend 側で wire ごとに status_event.set されるため
+    // 短時間に複数 push 来ることがある (= 1 turn の各 AssistantMessage で連続発火)。
+    // 連続 progress を 1 回の fetchLatest にまとめ、 reconnect の重複呼び出しを避ける。
+    if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current)
+    fetchDebounceRef.current = setTimeout(() => {
+      fetchDebounceRef.current = null
+      fetchLatest()
+    }, 250)
   }, [activeSid, status?.buffer_length, status?.buffer_id, loading, fetchLatest])
 
   // ボタン UI 用の合成 loading 判定。
@@ -194,7 +216,14 @@ export default function App() {
   const currentAttachments = (activeSid && attachments[activeSid]) || []
 
   // session ごとの新着 / 処理中 / 質問待ちバッジ計算 (= active session は常に既読)
-  const { sessionBadges, markAsSeen } = useSessionBadges({ sids, activeSid, messages, loading })
+  const { sessionBadges, unreadCount, markAsSeen } = useSessionBadges({ sids, activeSid, messages, loading })
+
+  // アプリアイコンのバッジ数字 = サイドバーで赤丸が立ってる session 数 と同期。
+  // frontend が真理 (= backend の unread_count は SW push 経由の近似値、 起動後は
+  // frontend が即座に正値で上書き)。
+  useEffect(() => {
+    setBadge(unreadCount)
+  }, [unreadCount])
   // session を tap した時に activeSid 切替と同時に markAsSeen を呼ぶことで、
   // useEffect の遅延を待たずに「赤丸が確実に消える」 状態を作る。
   const selectSession = useCallback((sid) => {

@@ -1,7 +1,6 @@
 // App.jsx から責務分離した小粒 hook 群 (= push 状態同期、 既読化、 バッジ、 deep link 等)。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { API_BASE, LS_SESSION_ACTIVITY } from '../constants.js'
-import { syncBadgeFromServer } from '../utils/badge.js'
 
 
 // --- /push/state を可視状態 + active session で backend に申告 ---
@@ -30,32 +29,18 @@ export function usePushState(activeSid) {
 }
 
 
-// --- session を開いた時に既読化 + バッジ再同期 ---
+// --- session を開いた時に既読化 (= backend 側の通知履歴を消す) ---
+// アプリバッジ数字は App.jsx で useSessionBadges.unreadCount → setBadge 経路で
+// 同期するので、 ここでは backend の read-all を投げるだけ (= push 通知センター用)。
 export function useReadOnSessionOpen(activeSid) {
   useEffect(() => {
     if (!activeSid) return
-    ;(async () => {
-      try {
-        await fetch(`${API_BASE}/notifications/read-all`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: activeSid }),
-        })
-      } catch { /* ignore */ }
-      try { await syncBadgeFromServer() } catch { /* ignore */ }
-    })()
+    fetch(`${API_BASE}/notifications/read-all`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: activeSid }),
+    }).catch(() => { /* ignore */ })
   }, [activeSid])
-}
-
-
-// --- 起動 + フォア復帰でバッジ再同期 ---
-export function useBadgeSync() {
-  useEffect(() => {
-    syncBadgeFromServer().catch(() => {})
-    const onVis = () => { if (!document.hidden) syncBadgeFromServer().catch(() => {}) }
-    document.addEventListener('visibilitychange', onVis)
-    return () => document.removeEventListener('visibilitychange', onVis)
-  }, [])
 }
 
 
@@ -198,6 +183,7 @@ export function useSessionBadges({ sids, activeSid, messages, loading }) {
   }, [sids, messages])
 
   const sessionBadges = {}
+  let unreadCount = 0
   for (const sid of sids) {
     if (sid === activeSid) { sessionBadges[sid] = null; continue }
     const arr = messages[sid] || []
@@ -205,10 +191,12 @@ export function useSessionBadges({ sids, activeSid, messages, loading }) {
     if (pending) { sessionBadges[sid] = { kind: 'pending', label: '?' }; continue }
     if (loading[sid]) { sessionBadges[sid] = { kind: 'processing', label: '●' }; continue }
     const lastSeen = lastSeenLen[sid] ?? arr.length
-    if (arr.length > lastSeen) { sessionBadges[sid] = { kind: 'new', label: '●' }; continue }
+    // unreadCount はアプリアイコンバッジ数字用 = 「新着 (= 赤丸)」 のみカウント。
+    // 処理中 (= 青丸) や質問待ち (= ?) はバッジに含めない仕様。
+    if (arr.length > lastSeen) { sessionBadges[sid] = { kind: 'new', label: '●' }; unreadCount++; continue }
     sessionBadges[sid] = null
   }
-  return { sessionBadges, markAsSeen }
+  return { sessionBadges, unreadCount, markAsSeen }
 }
 
 
