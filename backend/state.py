@@ -42,6 +42,12 @@ def atomic_write_text(path: Path, content: str) -> None:
 SESSIONS_PATH = Path(__file__).parent / "sessions.json"
 SESSION_META_PATH = Path(__file__).parent / "session_meta.json"
 
+# SDK が ResultMessage.model_usage で contextWindow を返してくれない / agent_status にもまだ
+# 入ってない初回の fallback 値。 Sonnet / Opus の最大コンテキスト相当 (= 1M tokens)。
+# usage.py からも参照されるが、 依存方向は usage → state に固定する (= state は usage を import しない)
+# ことで module init 時の循環 import を回避する。
+DEFAULT_CTX_WINDOW = 1_000_000
+
 
 # --- セッション定義 (= UI 上の 1 タブ) ---
 @dataclass
@@ -227,7 +233,6 @@ class StreamState:
 
 
 def _make_agent_status(agent_id: str) -> dict:
-    from usage import DEFAULT_CTX_WINDOW  # lazy import で循環回避 (usage は state を import しない)
     cfg = AGENTS.get(agent_id) or {}
     return {
         "ctx_pct": 0,
