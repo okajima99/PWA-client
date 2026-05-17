@@ -16,6 +16,7 @@
 - GET  /agents                        agent 種別一覧 (作成時の選択肢)
 """
 import asyncio
+import json
 import logging
 import uuid
 from typing import List
@@ -226,6 +227,7 @@ async def chat_stream(
         # 新規 append ぶんを通知 (= replay 側が即 wake して先頭イベントを受け取れる)。
         state.buffer_event.clear()
         state.buffer_event.set()
+        state.status_event.set()  # /status SSE に「turn 開始 = streaming true」 を即通知
         state.task = asyncio.create_task(run_sdk_background(session_id, content, user_request_id))
 
     return StreamingResponse(
@@ -309,10 +311,8 @@ async def end_session(session_id: str):
     return {"status": "ok", "session_id": session_id}
 
 
-@router.get("/status/{session_id}")
-def get_status(session_id: str):
-    if session_id not in sessions_meta:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+def _build_status(session_id: str) -> dict:
+    """/status と /status/.../stream で共有する status payload 生成。"""
     a = agent_status[session_id]
     state = stream_states[session_id]
     return {
@@ -331,6 +331,44 @@ def get_status(session_id: str):
         "buffer_id": state.buffer_id,
         "pending_question_tool_id": state.pending_question_tool_id,
     }
+
+
+@router.get("/status/{session_id}")
+def get_status(session_id: str):
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return _build_status(session_id)
+
+
+@router.get("/status/{session_id}/stream")
+async def status_stream(session_id: str):
+    """状態変化を即時 push する SSE。 frontend は EventSource で subscribe して
+    polling 撤廃。 state.status_event が set されるたびに最新 status を yield。
+    timeout で keep-alive ping、 タブ閉じれば接続が切れて自然終了。"""
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+    state = stream_states[session_id]
+
+    async def gen():
+        # 接続直後に snapshot を 1 chunk で送る (= retry + initial data を結合し、
+        # Starlette の小チャンク buffering を回避)。
+        initial = f"retry: 3000\n\ndata: {json.dumps(_build_status(session_id))}\n\n"
+        yield initial
+        while True:
+            try:
+                # 20 秒待っても変化無ければ keep-alive ping (= proxy idle 切断対策)
+                await asyncio.wait_for(state.status_event.wait(), timeout=20.0)
+                state.status_event.clear()
+                yield f"data: {json.dumps(_build_status(session_id))}\n\n"
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/chat/{session_id}/reconnect")

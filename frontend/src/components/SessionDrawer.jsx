@@ -157,9 +157,9 @@ export default function SessionDrawer({
                 <button
                   onClick={() => { setGlobalMenuOpen(false); handleReset() }}
                   disabled={resetBusy}
-                  title="SW / cache を削除して最新コードを再読込 (履歴・通知許可は保持)"
+                  title="最新コードに更新 (履歴・通知許可は保持)"
                 >
-                  ↺ リセット (cache クリア)
+                  ↺ アプリを更新
                 </button>
               </div>
             )}

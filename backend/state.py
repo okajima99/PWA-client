@@ -212,6 +212,11 @@ class StreamState:
     # リアルタイムで buffer に積むためのバックグラウンドタスク。
     # ensure_client で起動、 disconnect_client で cancel。
     idle_watcher_task: asyncio.Task | None = None
+    # 状態変化シグナル (= /status/{sid}/stream SSE が wait する event)。
+    # state.complete 切替 / current_tool 変化 / todos 更新等で set、 SSE 受信側は
+    # 現状 status JSON を yield して event.clear() する。 polling を撤廃して
+    # backend→frontend を「即時 push」 にする。
+    status_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 def _make_agent_status(agent_id: str) -> dict:

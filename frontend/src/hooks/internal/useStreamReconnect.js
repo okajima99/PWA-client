@@ -45,8 +45,18 @@ export function useStreamReconnect({
 
   // reconnect: T1 移行で常に from=0 で全 buffer 再生する
   // - 204 なら false、データあり(ストリーミング完了)なら true を返す
+  //
+  // 注意点 (2026-05-17 fix):
+  //   1. AbortController を必ず登録 (= 「最新を取得」 / 新 user POST で abort できる)
+  //   2. cache-bust query を付ける (= iOS Safari の GET キャッシュバグ回避)
+  //   3. cache: 'no-store' で念押し
+  // sendMessage は POST + signal なので普通に動く、 reconnect は GET なので iOS が
+  // 古いレスポンスを再利用してハングする報告あり。
   const reconnectStream = async (sid) => {
-    const res = await fetch(`${API_BASE}/chat/${sid}/reconnect?from=0`)
+    const controller = new AbortController()
+    abortControllers.current[sid] = controller
+    const url = `${API_BASE}/chat/${sid}/reconnect?from=0&_t=${Date.now()}`
+    const res = await fetch(url, { cache: 'no-store', signal: controller.signal })
     if (res.status === 204) return false
     if (!res.ok) return false
 
@@ -127,6 +137,13 @@ export function useStreamReconnect({
       const s = await fetch(`${API_BASE}/status/${sid}`).then(r => r.json()).catch(() => null)
       if (!s) return false
       if (s.streaming || s.pending_question_tool_id) {
+        // 既存の controller が iOS Safari で stuck してる場合があるので、 必ず abort
+        // してから再接続 (= fetchLatest / checkAndReconnect と同じ振る舞い)。
+        // これが抜けてたために「最新を取得」 ボタンでしか復活しなかった。
+        if (abortControllers.current[sid]) {
+          abortControllers.current[sid].abort()
+          abortControllers.current[sid] = null
+        }
         reconnectingRef.current[sid] = true
         reconnectStream(sid).finally(() => {
           reconnectingRef.current[sid] = false

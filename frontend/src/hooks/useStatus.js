@@ -1,50 +1,56 @@
 import { useState, useEffect } from 'react'
 import { API_BASE } from '../constants.js'
 
-const INTERVAL_BUSY = 2000
-// idle 中の polling 間隔: 30 秒 → 5 秒に短縮。
-// Monitor / CronCreate 等の proactive turn は 5 秒間隔で開始されうるので、
-// 30 秒だと検知漏れが起こる (= push 通知は届くが UI 反映には 「最新を取得」 が必要)。
-// 5 秒にすれば最悪 5 秒で proactive turn を検知 → SSE 自動接続 → リアルタイム表示。
-// status endpoint は cheap (= dict lookup) なので 6 倍に増えても backend 負荷は無視可。
-const INTERVAL_IDLE = 5000
+// 現在 active なセッションの status を backend からリアルタイム受信する。
+//
+// 仕様 (2026-05-17 改修):
+//   - polling 撤廃、 backend が `/status/{sid}/stream` で SSE push する形に統一
+//   - backend 側で state.complete / current_tool / todos 等が変化するたびに
+//     `status_event.set()` が呼ばれて即時 push される (= ms 単位)
+//   - frontend は EventSource で subscribe するだけ、 fetch interval は無し
+//   - 電池消費: 持続 SSE 接続 1 本 (= 接続維持コスト、 idle 時 fetch ゼロ)
+//
+// fallback:
+//   - SSE 接続失敗時は EventSource が auto-reconnect (= retry 3 秒)
+//   - 接続できない間は最後に受信した status が残る (= 表示が古くなる可能性あるが
+//     visibilitychange 復帰で再接続が走るのでフォアでは数秒で復旧)
 
-function isBusy(s) {
-  return !!(s && (s.streaming || s.plan_mode || s.current_tool || s.subagent))
-}
-
-// 現在 active なセッションの status を polling する。
 export function useStatus(activeSession) {
   const [status, setStatus] = useState(null)
 
   useEffect(() => {
-    let cancelled = false
-    let timerId = null
     const sid = activeSession?.id
+    if (!sid) { setStatus(null); return }
 
-    const schedule = (ms) => {
-      if (cancelled) return
-      timerId = setTimeout(tick, ms)
+    let cancelled = false
+    let evt = null
+
+    // 接続時に初期値を読みに行く (= EventSource の初回 data 到着前のチラ見せ防止)。
+    // SSE 接続後はすぐに status snapshot が push されるので、 ここの fetch は補助。
+    fetch(`${API_BASE}/status/${sid}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled && d) setStatus(d) })
+      .catch(() => {})
+
+    try {
+      evt = new EventSource(`${API_BASE}/status/${sid}/stream`)
+      evt.onmessage = (e) => {
+        if (cancelled) return
+        try {
+          const data = JSON.parse(e.data)
+          setStatus(data)
+        } catch { /* ignore parse error */ }
+      }
+      // onerror: EventSource は自動 reconnect する。 接続切断時は status を null に
+      // しない (= 古い値を保持してフォア復帰時の見た目を維持)。
+    } catch {
+      /* EventSource not supported, leave status as initial fetch result */
     }
 
-    const tick = async () => {
-      if (cancelled) return
-      if (!sid) { setStatus(null); return }
-      if (document.hidden) { schedule(INTERVAL_IDLE); return }
-      try {
-        const res = await fetch(`${API_BASE}/status/${sid}`)
-        if (res.ok) {
-          const data = await res.json()
-          if (!cancelled) setStatus(data)
-          schedule(isBusy(data) ? INTERVAL_BUSY : INTERVAL_IDLE)
-          return
-        }
-      } catch { /* ignored */ }
-      schedule(INTERVAL_IDLE)
+    return () => {
+      cancelled = true
+      if (evt) { try { evt.close() } catch { /* ignore */ } }
     }
-
-    tick()
-    return () => { cancelled = true; if (timerId) clearTimeout(timerId) }
   }, [activeSession?.id])
 
   return status

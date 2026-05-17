@@ -391,6 +391,7 @@ async def _process_proactive_msg(state, session_id: str, msg: Any, current_reque
         wire["request_id"] = current_request_id
         state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
         state.buffer_event.set()
+        state.status_event.set()  # /status SSE 側に push
         session_log(session_id, f"[wire-proactive] type={wire.get('type')} request_id={current_request_id}")
 
     if isinstance(msg, ResultMessage):
@@ -427,6 +428,7 @@ async def _drain_proactive(state, session_id: str) -> None:
         if not received_any:
             state.complete = False
             state.buffer_event.set()
+            state.status_event.set()  # status SSE に「turn 開始」 を即通知
             state.last_activity_at = time.time()
             received_any = True
             session_log(session_id, "[proactive] turn started via idle watcher")
@@ -440,6 +442,7 @@ async def _drain_proactive(state, session_id: str) -> None:
         # turn 群消費完了 → idle に戻す
         state.complete = True
         state.buffer_event.set()
+        state.status_event.set()  # status SSE に「turn 完了 = idle」 を即通知
         state.last_activity_at = time.time()
         session_log(session_id, "[proactive] turn completed")
 
@@ -675,6 +678,8 @@ async def run_sdk_background(session_id: str, content: list, user_request_id: st
                 wire["request_id"] = current_request_id
                 state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
                 state.buffer_event.set()
+                # status SSE 受信側 (= /status/.../stream) に「変化あり」 を通知
+                state.status_event.set()
                 # 検証ログ: メッセージ種別 + request_id を 1 行で残す
                 _suffix = " (user-turn-end)" if (isinstance(msg, ResultMessage) and current_request_id == user_request_id) else ""
                 session_log(
@@ -703,6 +708,7 @@ async def run_sdk_background(session_id: str, content: list, user_request_id: st
         )
         state.complete = True
         state.buffer_event.set()  # replay 側を必ず wake (= 残り 0 件 + complete で break する)
+        state.status_event.set()  # /status SSE に「turn 終了 = streaming false」 を即通知
         # ターン完了時刻を活動時刻として記録 (アイドル GC の起点)
         state.last_activity_at = time.time()
         reset_activity(session_id)
