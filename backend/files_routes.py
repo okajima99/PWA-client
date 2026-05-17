@@ -1,10 +1,12 @@
 """ホームディレクトリ配下のファイル閲覧・編集 / ディレクトリツリー取得。"""
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
 from config import FILE_SIZE_LIMIT, HOME
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -26,8 +28,11 @@ def get_file(path: str = Query(...)):
         raise HTTPException(status_code=413, detail="ファイルが大きすぎます（上限 1MB）")
     try:
         content = resolved.read_text(errors="replace")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # exception message にファイルパスや OS error が露出しないよう汎用 detail に統一。
+        # 詳細は server log に残るので運用時の調査はそちらで。
+        logger.exception("failed to read file: %s", resolved)
+        raise HTTPException(status_code=500, detail="Internal error")
     return {"path": str(resolved), "content": content}
 
 
@@ -38,8 +43,9 @@ def put_file(path: str = Body(...), content: str = Body(...)):
         raise HTTPException(status_code=400, detail="Not a file")
     try:
         resolved.write_text(content, encoding="utf-8")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("failed to write file: %s", resolved)
+        raise HTTPException(status_code=500, detail="Internal error")
     return {"ok": True}
 
 

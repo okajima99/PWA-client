@@ -17,6 +17,7 @@ import 越しに mutate できる形にしている。
 """
 import asyncio
 import json
+import logging
 import os
 import time
 import uuid
@@ -26,6 +27,8 @@ from pathlib import Path
 from claude_agent_sdk import ClaudeSDKClient
 
 from config import AGENTS
+
+logger = logging.getLogger(__name__)
 
 
 def atomic_write_text(path: Path, content: str) -> None:
@@ -98,6 +101,10 @@ def _load_sessions_meta_and_claude_sessions() -> tuple[dict[str, SessionDef], di
             title = entry.get("title") or aid or "session"
             created = entry.get("created_at") or int(time.time())
             if not sid or aid not in AGENTS:
+                # agent_id が config から消えてる (= 過去 session のまま config 更新で消失)、
+                # その session は UI に出せないので skip。 観測のため warn を残す。
+                if sid:
+                    logger.warning("session %s skipped: agent_id %r not in AGENTS", sid, aid)
                 continue
             sessions_meta[sid] = SessionDef(
                 id=sid, agent_id=aid, title=title, created_at=int(created)
@@ -220,10 +227,11 @@ class StreamState:
 
 
 def _make_agent_status(agent_id: str) -> dict:
+    from usage import DEFAULT_CTX_WINDOW  # lazy import で循環回避 (usage は state を import しない)
     cfg = AGENTS.get(agent_id) or {}
     return {
         "ctx_pct": 0,
-        "ctx_window": 1_000_000,
+        "ctx_window": DEFAULT_CTX_WINDOW,
         "model": cfg.get("model", ""),
         "plan_mode": False,
         "current_tool": None,

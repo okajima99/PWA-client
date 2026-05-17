@@ -11,6 +11,7 @@
 - proxy_routes.py  Anthropic プロキシ
 - push.py          Web Push 配信 + エンドポイント
 """
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -78,7 +79,8 @@ async def lifespan(app: FastAPI):
     idle_gc_task.cancel()
     try:
         await idle_gc_task
-    except (Exception, BaseException):
+    except (asyncio.CancelledError, Exception):
+        # cancel 後の CancelledError は想定通り、 それ以外の例外は無視 (= shutdown 続行)。
         pass
     for session_id in list(stream_states.keys()):
         await disconnect_client(session_id)
@@ -135,4 +137,12 @@ if FRONTEND_DIST.exists():
         "/",
         CacheControlledStaticFiles(directory=str(FRONTEND_DIST), html=True),
         name="frontend",
+    )
+else:
+    # frontend をビルドしてない状態で backend を立てると静的配信が無効、 ブラウザから
+    # PWA を開けない (= API だけ生きる)。 起動ログに残して原因特定を早める。
+    logging.getLogger(__name__).warning(
+        "frontend dist not found at %s; PWA assets will not be served. "
+        "Run `cd frontend && npm run build`.",
+        FRONTEND_DIST,
     )

@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -33,6 +34,9 @@ SUBSCRIPTIONS_PATH = Path(__file__).parent / "subscriptions.json"
 # 未読カウンタ: broadcast_push のたびに +1、 PWA を開いた時 (= /push/state visible) や
 # /notifications/read-all で 0 リセット。 通知履歴本体は保持しない (= 2026-05-16 改修で
 # 通知センター UI を撤去したため、 アプリバッジ同期に必要な int 1 個だけ残す)。
+# broadcast_push は async、 mark_all_read / sync_unread_count / get_unread_count は sync handler
+# (= FastAPI thread pool 上で並行実行) なので、 +1 と read-write を atomic にするための lock。
+_unread_count_lock = threading.Lock()
 unread_count: int = 0
 
 # client visible 状態: 該当 session を見てる時の通知抑制判定用
@@ -189,8 +193,10 @@ async def broadcast_push(
     notif_title = title or NOTIFICATION_TITLE_DEFAULT
 
     # 未読カウンタを +1 して payload に載せる (= sw.js が setAppBadge に使う、 端末側で
-    # 再 fetch せずに badge 更新できる)
-    unread_count += 1
+    # 再 fetch せずに badge 更新できる)。 sync handler との race を避けるため lock 配下で atomic に。
+    with _unread_count_lock:
+        unread_count += 1
+        snapshot_count = unread_count
 
     if not _HAS_WEBPUSH or not vapid_config or not subscriptions:
         return
@@ -202,7 +208,7 @@ async def broadcast_push(
     payload_dict = {
         "title": notif_title,
         "body": body_clean,
-        "unread_count": unread_count,
+        "unread_count": snapshot_count,
     }
     if session_id:
         payload_dict["sid"] = session_id
@@ -271,7 +277,8 @@ def push_state(payload: dict = Body(...)):
 @router.get("/notifications/unread-count")
 def get_unread_count():
     """未読数を返す。 app badge 同期 / 起動時 fetch 用。"""
-    return {"unread_count": unread_count}
+    with _unread_count_lock:
+        return {"unread_count": unread_count}
 
 
 @router.post("/notifications/read-all")
@@ -279,9 +286,31 @@ def mark_all_read(payload: dict = Body(default={})):
     """未読カウンタを 0 にリセット。 PWA を開いた時 / session を開いた時に呼ばれる。
     payload の session_id は legacy 互換で受け取るが、 履歴を持たないので無視する。"""
     global unread_count
-    before = unread_count
-    unread_count = 0
+    with _unread_count_lock:
+        before = unread_count
+        unread_count = 0
     return {"ok": True, "count": before}
+
+
+@router.post("/notifications/sync")
+def sync_unread_count(payload: dict = Body(default={})):
+    """未読カウンタを frontend から渡された現存数で上書きする。
+
+    iOS PWA の通知センターに残ってる通知数 (= `registration.getNotifications()` の length)
+    を frontend が visibility 復帰時に POST する。 push のたびに +1 してきた累積カウンタが
+    PWA 起動時の見た目と乖離するのを防ぐ (= push 通知をユーザが一括消去した時の同期)。"""
+    global unread_count
+    try:
+        count = int(payload.get("count", 0))
+    except (TypeError, ValueError):
+        count = 0
+    if count < 0:
+        count = 0
+    with _unread_count_lock:
+        before = unread_count
+        unread_count = count
+        new_value = unread_count
+    return {"ok": True, "before": before, "count": new_value}
 
 
 @router.get("/push/vapid-public-key")

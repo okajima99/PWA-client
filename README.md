@@ -14,6 +14,12 @@ Claude Code をスマートフォンから操作するための PWA クライア
 - **バックグラウンド継続**: 画面閉じても Mac 側で処理継続、 復帰時に自動再接続して
   バッファ受信
 - **Web Push 通知**: AskUserQuestion 等で proactive に iOS / Android に通知
+- **Proactive 自動配信**: Monitor / cron / ScheduleWakeup 等で agent が自発した turn を
+  持続 SSE で即時表示 (= 「最新を取得」 を押さなくても自動で流れる)
+- **Model & Effort 切替**: ⋯ メニュー → Model & Effort ダイアログで session 単位に
+  model (opus / sonnet / haiku) × effort (low / medium / high / xhigh / max) を変更
+- **通知センター自動掃除**: PWA を開く / フォアグラウンド復帰のタイミングで OS 通知
+  センター + アプリバッジ + backend 未読カウンタを 3 点同期掃除
 - **ファイルプレビュー**: チャット内のパスをタップ → Markdown / シンタックスハイライト
 - **ファイルツリー**: サーバ上のディレクトリをパネルで閲覧
 - **画像 / テキスト添付**: マルチパートで送信、 履歴に永続化

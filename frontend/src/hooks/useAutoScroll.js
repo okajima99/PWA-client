@@ -1,5 +1,16 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 
+// column-reverse 配置で「最新が見えてる」 と判定する scrollTop 上限 (= px)。 viewport 高さに
+// 比例しない固定値だが、 数 px の指の振動を許容する目的で 30px。 ユーザがメッセージを
+// 戻し読みする時は最低でも 1 段スクロール (= 数十 px) するので識別可能。
+const AT_BOTTOM_TOP_THRESHOLD_PX = 30
+// onScroll の showScrollBtn 更新の throttle 間隔。 60fps で十分、 過剰更新を抑える。
+const SCROLL_THROTTLE_MS = 150
+// scrollToBottom 実行後、 自前 scroll を「ユーザ操作」 と誤検知させないための猶予時間。
+// この間の onScroll は無視する。 短いと render 遅延中の onScroll を拾い、 長いと
+// ユーザ反応に対する反映が遅れる。
+const PROGRAMMATIC_SCROLL_GUARD_MS = 200
+
 // 起動時に最新メッセージが見える」 を最速化するため、 .messages を
 // flex-direction: column-reverse にして「scrollTop=0 = 最新表示の状態」 にする。
 // この hook はその前提で書かれている:
@@ -42,7 +53,7 @@ export function useAutoScroll({ messages, activeSession }) {
     clearTimeout(scrollEndTimerRef.current)
     scrollEndTimerRef.current = setTimeout(() => {
       programmaticScrollRef.current = false
-    }, 200)
+    }, PROGRAMMATIC_SCROLL_GUARD_MS)
   }, [])
 
   // 起動 / タブ切替: paint 前に scrollTop=0 を強制 (= 前 session の scroll 残留防止)
@@ -85,11 +96,11 @@ export function useAutoScroll({ messages, activeSession }) {
     const el = scrollerDomRef.current
     if (!el) return
     // column-reverse: scrollTop が 0 に近い = 最新が見えてる
-    const atBottom = el.scrollTop <= 30
+    const atBottom = el.scrollTop <= AT_BOTTOM_TOP_THRESHOLD_PX
     isAtBottomRef.current = atBottom
     if (atBottom) setHasNew(false)
     const now = Date.now()
-    if (now - scrollThrottleRef.current >= 150) {
+    if (now - scrollThrottleRef.current >= SCROLL_THROTTLE_MS) {
       scrollThrottleRef.current = now
       setShowScrollBtn(!atBottom)
     }

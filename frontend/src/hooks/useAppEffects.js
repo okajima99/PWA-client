@@ -1,6 +1,7 @@
 // App.jsx から責務分離した小粒 hook 群 (= push 状態同期、 既読化、 バッジ、 deep link 等)。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE, LS_SESSION_ACTIVITY } from '../constants.js'
+import { clearAllNotifications } from '../utils/badge.js'
 
 
 // --- /push/state を可視状態 + active session で backend に申告 ---
@@ -41,6 +42,47 @@ export function useReadOnSessionOpen(activeSid) {
       body: JSON.stringify({ session_id: activeSid }),
     }).catch(() => { /* ignore */ })
   }, [activeSid])
+}
+
+
+// --- 画面共有 (= moonlight-web-stream) が利用可能かをマウント時に検出 ---
+// Path B (= Sunshine + moonlight-web-stream セットアップ済) のユーザだけ
+// 🖥 ボタンを表示する。 backend に対して `/moonlight/` への HEAD を 1 回投げて
+// 2xx なら有効、 404 / network error なら無効と判定。 結果をマウント中保持。
+export function useMoonlightAvailable() {
+  const [available, setAvailable] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/moonlight/`, { method: 'HEAD', credentials: 'same-origin' })
+        if (!cancelled) setAvailable(res.ok)
+      } catch {
+        if (!cancelled) setAvailable(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+  return available
+}
+
+
+// --- PWA 起動時 / visibility 復帰時に通知センター + バッジ + backend カウンタを掃除 ---
+// iOS PWA は通知センターに通知が残ってる間アプリバッジを「未読通知数」 で上書きする
+// 挙動があるので、 通知本体を能動的に close しないとバッジが消えない。 backend の
+// `unread_count` global も累積され続ける (= push のたびに +1) ため、 ここで sync で 0 に
+// 上書きする。 backend が新たに push を飛ばすと再度カウントが立つ。
+export function useNotificationClear() {
+  useEffect(() => {
+    // mount 時 1 回
+    clearAllNotifications()
+    // visibility 復帰時にも
+    const onVis = () => {
+      if (!document.hidden) clearAllNotifications()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
 }
 
 

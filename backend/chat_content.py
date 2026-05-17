@@ -9,7 +9,6 @@ import logging
 import mimetypes
 import uuid
 from pathlib import Path
-from typing import List
 
 from fastapi import UploadFile
 
@@ -19,7 +18,7 @@ from state import session_tmp_files
 logger = logging.getLogger(__name__)
 
 
-async def save_to_tmp(files: List[UploadFile], session_id: str) -> List[dict]:
+async def save_to_tmp(files: list[UploadFile], session_id: str) -> list[dict]:
     """アップロードされたファイルを uploads/tmp に保存、 セッションごとに追跡。"""
     UPLOADS_TMP.mkdir(parents=True, exist_ok=True)
     saved = []
@@ -39,7 +38,7 @@ async def save_to_tmp(files: List[UploadFile], session_id: str) -> List[dict]:
     return saved
 
 
-def build_content(message: str, saved_files: List[dict]) -> list:
+def build_content(message: str, saved_files: list[dict]) -> list:
     """Anthropic API の content 配列を組み立てる。 画像は base64 image、 テキストは
     fenced code、 最後にユーザのメッセージを text で。"""
     content = []

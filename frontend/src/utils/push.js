@@ -29,7 +29,11 @@ function setEnabledFlag(on) {
   try {
     if (on) localStorage.setItem(ENABLED_KEY, '1')
     else localStorage.removeItem(ENABLED_KEY)
-  } catch { /* ignore */ }
+  } catch (e) {
+    // quota exceed 等で失敗した場合、 次回起動時に「push 未有効」 扱いになる。
+    // 観測のため console に残す (= silent ignore より診断容易)。
+    console.warn('[push] failed to persist enabled flag:', e)
+  }
 }
 
 // VAPID 公開鍵 (base64url) → Uint8Array (applicationServerKey 形式)

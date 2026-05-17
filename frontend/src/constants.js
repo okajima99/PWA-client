@@ -1,7 +1,11 @@
-// VITE_API_BASE が未設定 (undefined) のときだけ localhost フォールバック。
+// VITE_API_BASE が未設定 (undefined) のときだけ環境別フォールバック。
 // 空文字 ('') を明示すると同一オリジン相対 (= PWA を配信したホスト) になる。
 // 同一オリジン相対にしておくと http/https 両方の URL から問題なく API が叩ける。
-export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
+//   - 開発時 (vite dev): localhost:8000 (= backend がローカル別ポート起動の前提)
+//   - 本番 (vite build): 同一オリジン相対 (= backend が dist を配信、 .env で明示しなくても安全)
+export const API_BASE =
+  import.meta.env.VITE_API_BASE ??
+  (import.meta.env.PROD ? '' : 'http://localhost:8000')
 
 export const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 export const MAX_MESSAGES = 200

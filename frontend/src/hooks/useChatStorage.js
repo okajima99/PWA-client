@@ -21,6 +21,11 @@ function dropLegacyKeys(obj) {
 // マーカーが N 個以上あれば、 末尾から (KEEP_PREV_SESSIONS) 個目のマーカーより前を全部捨てる。
 const KEEP_PREV_SESSIONS = 1 // 「1 個前の終了済みセッション」 まで保持
 
+// quota 超過時に各 session の messages 先頭を切る割合 (= 10%)。 小さすぎると 10 回 retry で
+// 解消せず、 大きすぎると保持メッセージが急減する。 10 回 × 10% = 累計 ~65% カット限度。
+const QUOTA_RETRY_TRIM_RATIO = 0.1
+const QUOTA_RETRY_MAX = 10
+
 function pruneOldSessions(arr) {
   if (!Array.isArray(arr) || arr.length === 0) return arr
   // 末尾から走査して N+1 個目のマーカーの位置を探す (= そこ以前を捨てる)
@@ -114,8 +119,8 @@ export function useChatStorage(sessions) {
         const arr = pruneOldSessions(messages[sid] || [])
         toSave[sid] = arr.slice(-MAX_MESSAGES)
       }
-      // quota 超過時は古い方から 10% ずつ削って再試行 (画像で膨らんだ時の救済)
-      for (let attempt = 0; attempt < 10; attempt++) {
+      // quota 超過時は古い方から N% ずつ削って再試行 (画像で膨らんだ時の救済)
+      for (let attempt = 0; attempt < QUOTA_RETRY_MAX; attempt++) {
         try {
           localStorage.setItem(LS_MESSAGES, compressToUTF16(JSON.stringify(toSave)))
           return
@@ -124,7 +129,7 @@ export function useChatStorage(sessions) {
           for (const sid of sids) {
             const arr = toSave[sid]
             if (!arr || arr.length === 0) continue
-            const cut = Math.max(1, Math.floor(arr.length * 0.1))
+            const cut = Math.max(1, Math.floor(arr.length * QUOTA_RETRY_TRIM_RATIO))
             toSave[sid] = arr.slice(cut)
             reduced = true
           }

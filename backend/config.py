@@ -23,10 +23,11 @@ ANTHROPIC_API_BASE = "https://api.anthropic.com"
 CLAUDE_PATH = config.get("claude_path")
 
 # --- CORS ---
-# CORS で許可するオリジン (= 空リストなら CORS middleware 自体を有効化しない、
-# つまり同一オリジン (= backend 配信の frontend) からのアクセスのみ通る)。
-# Vite dev server から叩く時は `["http://localhost:5173"]` 等を設定する。
-CORS_ALLOW_ORIGINS: list = config.get("cors_allow_origins", ["http://localhost:5173"])
+# CORS で許可するオリジン。 未設定 ( = config.json に cors_allow_origins キー無し) なら
+# 空リストで CORS middleware を有効化しない、 つまり同一オリジン (= backend 配信の frontend)
+# からのアクセスのみ通る (= 本番デフォルト)。 Vite dev server から叩く時は
+# config.json で `["http://localhost:5173"]` 等を明示して dev 環境だけ開く。
+CORS_ALLOW_ORIGINS: list = config.get("cors_allow_origins", [])
 
 # --- Web Push 関連 ---
 # VAPID claim の sub (連絡先)。デフォルトは汎用 mailto。

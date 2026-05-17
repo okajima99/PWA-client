@@ -20,7 +20,6 @@ import json
 import logging
 import time
 import uuid
-from typing import List
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -152,7 +151,7 @@ async def chat_stream(
     # message は空でも OK (= 画像 / ファイル単独送信)。 frontend は attachment があれば
     # text 空でも送信ボタンを enable する設計に合わせる。
     message: str = Form(default=""),
-    files: List[UploadFile] = File(default=[]),
+    files: list[UploadFile] = File(default=[]),
 ):
     if session_id not in sessions_meta:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
@@ -370,11 +369,13 @@ async def status_stream(session_id: str):
 
 
 @router.get("/chat/{session_id}/reconnect")
-async def reconnect_stream(session_id: str, from_pos: int = Query(default=0, alias="from")):
+async def reconnect_stream(session_id: str, from_pos: int = Query(default=0, ge=0, alias="from")):
     if session_id not in sessions_meta:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
 
     state = stream_states[session_id]
+    # from_pos > len(buffer) (= 既に超えてる位置) は新着なし扱いで早期 204、 _sse_replay の
+    # max(0, ...) guard と併せて二重防御
     if state.complete and from_pos >= len(state.buffer):
         return Response(status_code=204)
 

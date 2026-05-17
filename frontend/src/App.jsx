@@ -19,6 +19,8 @@ import {
   useDeepLink,
   useSessionActivity,
   useSessionBadges,
+  useNotificationClear,
+  useMoonlightAvailable,
 } from './hooks/useAppEffects.js'
 import { setBadge } from './utils/badge.js'
 import { nextNextFrame } from './utils/raf.js'
@@ -37,6 +39,27 @@ const EFFORT_OPTIONS = [
   { value: 'xhigh', label: 'Extra High' },
   { value: 'max', label: 'Max' },
 ]
+// status SSE で buffer_length / buffer_id が連続 push された時の fetchLatest 集約間隔。
+// 1 turn 中の各 AssistantMessage で連続発火するのを 1 回にまとめる。 これより短くすると
+// 同 turn の中で複数 reconnect が走り、 長くすると proactive の見た目反映が遅れる。
+const STATUS_FETCH_DEBOUNCE_MS = 250
+// session 削除後の IndexedDB orphan 画像掃除を遅延する時間 (= setMessages の state 反映を待つ)。
+const IMAGE_GC_AFTER_DELETE_MS = 300
+// 起動時の初回 GC 遅延 (= localStorage 復元 + 初期 fetch の messages 確定を待つ)。
+const IMAGE_GC_INITIAL_MS = 5000
+
+// messages dict から全 imageRefs を抽出するヘルパ (= IndexedDB GC で active 集合作成に使う)。
+function collectActiveImageIds(msgDict) {
+  const active = new Set()
+  for (const sid of Object.keys(msgDict)) {
+    for (const m of msgDict[sid] || []) {
+      if (m.imageRefs && Array.isArray(m.imageRefs)) {
+        for (const id of m.imageRefs) active.add(id)
+      }
+    }
+  }
+  return active
+}
 
 const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
 const FileTreePanel = lazy(() => import('./FileTreePanel.jsx'))
@@ -124,6 +147,8 @@ export default function App() {
   usePushState(activeSid)
   useReadOnSessionOpen(activeSid)
   useDeepLink(setActiveId)
+  useNotificationClear()
+  const moonlightAvailable = useMoonlightAvailable()
 
   // proactive turn (= Monitor / CronCreate 等) の検知: status SSE で push される
   // buffer_length / buffer_id を観測し、 前回より進んでたら fetchLatest で buffer を引取る。
@@ -157,14 +182,14 @@ export default function App() {
     if (loading[activeSid]) return
     // visibility 復帰直後は useStreamReconnect 側で resync するので watcher は黙る
     if (Date.now() < visibilitySuppressUntilRef.current) return
-    // デバウンス 250ms: status SSE は backend 側で wire ごとに status_event.set されるため
+    // デバウンス: status SSE は backend 側で wire ごとに status_event.set されるため
     // 短時間に複数 push 来ることがある (= 1 turn の各 AssistantMessage で連続発火)。
     // 連続 progress を 1 回の fetchLatest にまとめ、 reconnect の重複呼び出しを避ける。
     if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current)
     fetchDebounceRef.current = setTimeout(() => {
       fetchDebounceRef.current = null
       fetchLatest()
-    }, 250)
+    }, STATUS_FETCH_DEBOUNCE_MS)
   }, [activeSid, status?.buffer_length, status?.buffer_id, loading, fetchLatest])
 
   // backend 再起動検知: status.backend_start_time が変化したら backend が再起動された
@@ -208,10 +233,17 @@ export default function App() {
   // 開始 → backend が state.complete=False に倒すまでの数百 ms 間、 pendingSendUntilRef が
   // 停止ボタン表示を担保する。 backend からの真値が届いたら status.streaming に切り替わる。
   const [now, setNow] = useState(Date.now())
+  // pendingSend の deadline 切れを反映するため軽い tick (= 500ms 間隔)。 hidden 中は止める
+  // (= UI 見えてないので無駄、 iOS の background 帯で setInterval が電力を食う要因)。
   useEffect(() => {
-    // pendingSend の deadline 切れを反映するため軽い tick (= 500ms 間隔、 deadline 到達後は停止)
-    const id = setInterval(() => setNow(Date.now()), 500)
-    return () => clearInterval(id)
+    let id = null
+    const tick = () => setNow(Date.now())
+    const start = () => { if (id == null) { tick(); id = setInterval(tick, 500) } }
+    const stop = () => { if (id != null) { clearInterval(id); id = null } }
+    if (!document.hidden) start()
+    const onVis = () => { document.hidden ? stop() : start() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { stop(); document.removeEventListener('visibilitychange', onVis) }
   }, [])
   const isStreamingNow = !!(activeSid && status?.streaming)
   const isPendingSend = !!(activeSid && (pendingSendUntilRef.current[activeSid] || 0) > now)
@@ -352,17 +384,8 @@ export default function App() {
     // セッション削除で参照が一気に消えるので IndexedDB の orphan 画像も掃除する。
     // 削除後 messagesRefForGc が反映されるのを少し待ってから走らせる。
     setTimeout(() => {
-      const cur = messagesRefForGc.current
-      const active = new Set()
-      for (const k of Object.keys(cur)) {
-        for (const m of cur[k] || []) {
-          if (m.imageRefs && Array.isArray(m.imageRefs)) {
-            for (const id of m.imageRefs) active.add(id)
-          }
-        }
-      }
-      gcImages([...active]).catch(() => {})
-    }, 300)
+      gcImages([...collectActiveImageIds(messagesRefForGc.current)]).catch(() => {})
+    }, IMAGE_GC_AFTER_DELETE_MS)
   }
 
   // Web Push
@@ -395,17 +418,8 @@ export default function App() {
   useEffect(() => { messagesRefForGc.current = messages }, [messages])
   useEffect(() => {
     const id = setTimeout(() => {
-      const cur = messagesRefForGc.current
-      const active = new Set()
-      for (const sid of Object.keys(cur)) {
-        for (const m of cur[sid] || []) {
-          if (m.imageRefs && Array.isArray(m.imageRefs)) {
-            for (const id of m.imageRefs) active.add(id)
-          }
-        }
-      }
-      gcImages([...active]).catch(() => {})
-    }, 5000)
+      gcImages([...collectActiveImageIds(messagesRefForGc.current)]).catch(() => {})
+    }, IMAGE_GC_INITIAL_MS)
     return () => clearTimeout(id)
   }, [])
 
@@ -430,21 +444,23 @@ export default function App() {
         </button>
         <span className="topbar-title">{activeSession?.title || '会話なし'}</span>
         {/* 画面共有 (= moonlight-web-stream を iframe で埋め込み) ON/OFF。
-            ボタン位置はネイティブ実装と同じ「topbar 右端」、 トグルで chat 上部に
-            16:9 box が現れる。 */}
-        <button
-          className={`screen-toggle ${desktopOpen ? 'active' : ''}`}
-          onClick={() => setDesktopOpen(prev => !prev)}
-          aria-label="画面共有"
-          title={desktopOpen ? '画面共有を閉じる' : '画面共有を開く (Sunshine 経由、 ペア済前提)'}
-        >
-          🖥
-        </button>
+            backend で /moonlight/ プロキシが有効な場合 (= Path B セットアップ済) だけ
+            表示。 chat + 通知だけのユーザにはアイコン自体出さない (= 押しても 404)。 */}
+        {moonlightAvailable && (
+          <button
+            className={`screen-toggle ${desktopOpen ? 'active' : ''}`}
+            onClick={() => setDesktopOpen(prev => !prev)}
+            aria-label="画面共有"
+            title={desktopOpen ? '画面共有を閉じる' : '画面共有を開く (Sunshine 経由、 ペア済前提)'}
+          >
+            🖥
+          </button>
+        )}
       </header>
 
       {/* 画面共有 iframe (= moonlight-web-stream を埋め込み、 Mac の Sunshine と
-          連携)。 desktopOpen=true の時だけ render。 */}
-      {desktopOpen && (
+          連携)。 desktopOpen=true かつ moonlightAvailable の時だけ render。 */}
+      {desktopOpen && moonlightAvailable && (
         <Suspense fallback={null}>
           <MoonlightFrame />
         </Suspense>
@@ -488,7 +504,7 @@ export default function App() {
         </div>
 
         {showScrollBtn && (
-          <button className="scroll-btn" onClick={() => scrollToBottom()}>
+          <button className="scroll-btn" onClick={() => scrollToBottom()} aria-label="最新メッセージへ">
             ↓
             {hasNew && <span className="scroll-dot" />}
           </button>
@@ -504,7 +520,7 @@ export default function App() {
               ) : (
                 <span className="attach-name">📄 {item.file.name}</span>
               )}
-              <button className="attach-remove" onClick={() => removeAttachment(activeSid, i)}>×</button>
+              <button className="attach-remove" onClick={() => removeAttachment(activeSid, i)} aria-label="添付を削除">×</button>
             </div>
           ))}
         </div>
@@ -560,16 +576,18 @@ export default function App() {
           <button
             onClick={() => setMenuOpen(prev => !prev)}
             className={`more ${menuOpen ? 'active' : ''}`}
+            aria-label="メニュー"
           >
             ⋯
           </button>
           {showStopButton ? (
-            <button onClick={() => setConfirmStop(true)} className="stop">■</button>
+            <button onClick={() => setConfirmStop(true)} className="stop" aria-label="停止">■</button>
           ) : (
             <button
               onClick={sendMessage}
               disabled={!activeSession || (!(input[activeSid] || '').trim() && currentAttachments.length === 0)}
               className="send"
+              aria-label="送信"
             >
               送信
             </button>

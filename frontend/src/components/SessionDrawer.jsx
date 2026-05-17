@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import './SessionDrawer.css'
 
+// ⋯ メニューを押した時、 viewport 下端からどれくらい離れていれば「上方向に展開する」 と
+// 判定するか (= px)。 近すぎると下に展開した popup が画面外に出るので flip-up に切替。
+const MENU_FLIP_UP_THRESHOLD_PX = 140
+
 // 左サイドからスライドインする会話一覧ドロワー (ChatGPT 風)。
 // - 上部: 「+ 新規会話」 → agent を選ぶ → createSession
 // - リスト: 会話項目をタップで activeSession 切替、 ⋯ メニューでリネーム / 削除
@@ -235,10 +239,10 @@ export default function SessionDrawer({
                         setMenuFor(null)
                         return
                       }
-                      // 画面下端 (残り 140px 未満) なら上方向に展開する
+                      // 画面下端に近い場合は上方向に展開
                       const rect = e.currentTarget.getBoundingClientRect()
                       const spaceBelow = window.innerHeight - rect.bottom
-                      setMenuFlipUp(spaceBelow < 140)
+                      setMenuFlipUp(spaceBelow < MENU_FLIP_UP_THRESHOLD_PX)
                       setMenuFor(s.id)
                     }}
                     aria-label="メニュー"

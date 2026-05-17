@@ -55,7 +55,7 @@ from state import (
     shared_status,
     stream_states,
 )
-from usage import compute_ctx_pct, update_agent_from_result
+from usage import DEFAULT_CTX_WINDOW, compute_ctx_pct, update_agent_from_result
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +227,7 @@ def _open_turn(state, session_id: str, current_request_id: str | None) -> str:
         current_request_id = state.user_request_id
         session_log(session_id, f"[turn-start] USER user_request_id={current_request_id}")
     else:
-        current_request_id = f"proactive_{uuid.uuid4().hex[:8]}"
+        current_request_id = f"proactive_{uuid.uuid4().hex[:12]}"
         session_log(session_id, f"[turn-start] PROACTIVE request_id={current_request_id}")
     return current_request_id
 
@@ -250,7 +250,7 @@ def _on_assistant_msg(session_id: str, msg: AssistantMessage, is_subagent: bool)
     if is_subagent:
         return
     if msg.usage:
-        ctx_window = agent_status[session_id].get("ctx_window") or 1_000_000
+        ctx_window = agent_status[session_id].get("ctx_window") or DEFAULT_CTX_WINDOW
         agent_status[session_id]["ctx_pct"] = compute_ctx_pct(msg.usage, ctx_window)
     for block in msg.content:
         if isinstance(block, ToolUseBlock):
@@ -322,7 +322,7 @@ def _append_wire(state, session_id: str, msg: Any, wire: dict, current_request_i
     """wire 1 件を buffer に積み、 buffer_event / status_event を set、 セッションログに残す。
     current_request_id が未確定なら proactive_xxx で初期化して返す。"""
     if current_request_id is None:
-        current_request_id = f"proactive_{uuid.uuid4().hex[:8]}"
+        current_request_id = f"proactive_{uuid.uuid4().hex[:12]}"
     wire["request_id"] = current_request_id
     state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
     state.buffer_event.set()

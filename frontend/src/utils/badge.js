@@ -1,5 +1,5 @@
-// アプリバッジ (ホーム画面アイコン右上の未読数) ヘルパ。
-// iOS 16.4+ PWA で Badging API が動く。 SW + window 両方から呼ばれる。
+// アプリバッジ (ホーム画面アイコン右上の未読数) + 通知センター掃除ヘルパ。
+// iOS 16.4+ PWA で Badging API + getNotifications が動く。
 import { API_BASE } from '../constants.js'
 
 /** 数値 N をバッジに反映。 0 は clearAppBadge と等価 (iOS では非表示)。 */
@@ -16,12 +16,41 @@ export function setBadge(count) {
   } catch { /* ignore */ }
 }
 
-/** backend から最新未読数を取って setBadge する。 起動時 / フォアグラウンド復帰時に。 */
-export async function syncBadgeFromServer() {
+/**
+ * 通知センター + アプリバッジ + backend カウンタの 3 点同期掃除。
+ *
+ * 呼ぶタイミング: PWA 起動時 / visibility=visible 復帰時。
+ *
+ * 1. SW 経由で `registration.getNotifications()` を全 close (= iOS 通知センターから消す)
+ * 2. `navigator.clearAppBadge()` (= ホーム画面アイコンのバッジを 0)
+ * 3. POST `/notifications/sync` で backend `unread_count` を残存数 (= 通常 0) に上書き
+ *
+ * iOS PWA は通知センターに通知が残ってる間アプリバッジを「未読通知数」 として上書きする
+ * 挙動があるので、 通知本体を消さないと clearAppBadge() が効かない。
+ */
+export async function clearAllNotifications() {
+  let remaining = 0
   try {
-    const res = await fetch(`${API_BASE}/notifications/unread-count`)
-    if (!res.ok) return
-    const j = await res.json()
-    if (typeof j.unread_count === 'number') setBadge(j.unread_count)
+    if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
+      const reg = await navigator.serviceWorker.ready
+      if (reg && typeof reg.getNotifications === 'function') {
+        const notifs = await reg.getNotifications()
+        for (const n of notifs) {
+          try { n.close() } catch { /* ignore */ }
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clearAppBadge) {
+      await navigator.clearAppBadge().catch(() => { /* ignore */ })
+    }
+  } catch { /* ignore */ }
+  try {
+    await fetch(`${API_BASE}/notifications/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: remaining }),
+    })
   } catch { /* ignore */ }
 }

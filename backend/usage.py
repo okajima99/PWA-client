@@ -53,7 +53,12 @@ def _parse_reset(value):
         return None
 
 
-def compute_ctx_pct(usage: dict, ctx_window: int = 1_000_000) -> int:
+# SDK が ResultMessage.model_usage で contextWindow を返してくれない / agent_status にもまだ
+# 入ってない初回の fallback 値。 Sonnet / Opus の最大コンテキスト相当 (= 1M tokens)。
+DEFAULT_CTX_WINDOW = 1_000_000
+
+
+def compute_ctx_pct(usage: dict, ctx_window: int = DEFAULT_CTX_WINDOW) -> int:
     """AssistantMessage.usage 辞書から context 使用率 % を計算。"""
     if not usage or ctx_window <= 0:
         return 0
@@ -85,10 +90,11 @@ def update_agent_from_result(session_id: str, model_usage: dict | None, last_ass
     if not model_key:
         return
     agent_status[session_id]["model"] = format_model_name(model_key)
+    # ctx_window 解決優先順: ResultMessage の正確値 → agent_status 前回値 → default。
     ctx_window = (
         model_usage[model_key].get("contextWindow")
         or agent_status[session_id].get("ctx_window")
-        or 1_000_000
+        or DEFAULT_CTX_WINDOW
     )
     agent_status[session_id]["ctx_window"] = ctx_window
     if last_assistant_usage:

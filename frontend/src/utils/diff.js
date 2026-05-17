@@ -27,11 +27,15 @@ function lcsTable(a, b) {
   return dp
 }
 
+// LCS 計算の DP テーブル上限 (= cells)。 これを超えると UI が固まる体感が出るので
+// 全削除 / 全追加に手抜きしてフリーズを防ぐ。 1414 x 1414 行程度まで対応。
+const DIFF_LCS_CELL_LIMIT = 2_000_000
+
 export function diffLines(oldText, newText) {
   const a = splitLines(oldText)
   const b = splitLines(newText)
   // 大きすぎる場合は全削除/全追加で手抜き（UIが固まるのを防ぐ）
-  if (a.length * b.length > 2_000_000) {
+  if (a.length * b.length > DIFF_LCS_CELL_LIMIT) {
     const out = []
     for (const line of a) out.push({ type: 'del', text: line })
     for (const line of b) out.push({ type: 'add', text: line })
