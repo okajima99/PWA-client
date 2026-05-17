@@ -129,8 +129,13 @@ export function formatTool(block) {
       label = lines.join('\n')
       break
     }
-    case 'Agent': {
-      // input: { description, prompt, subagent_type, model, isolation, run_in_background }
+    case 'Agent':
+    case 'Task': {
+      // 旧 SDK は 'Agent'、 現行 SDK (Claude Code) は 'Task' で来る。 同じ input schema:
+      //   { description, prompt, subagent_type, model?, isolation?, run_in_background? }
+      // 名前差異だけ吸収して同じ表示にする。 = サブエージェントへの依頼内容 (description /
+      // prompt) を tool-log で「ちゃんと投げた」 が一目で分かるように、 詳細展開で全 prompt
+      // も見られる形に揃える。
       const desc = input?.description ?? ''
       const sub = input?.subagent_type ?? 'general-purpose'
       shortLabel = `🤖 agent[${sub}]: ${truncate(desc, SHORT_LABEL_MAX - sub.length - 12)}`
