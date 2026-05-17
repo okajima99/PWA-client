@@ -19,27 +19,6 @@
   flex-direction: column-reverse;
 }
 
-/* pull-to-refresh インジケータ (= 最新位置 = column-reverse の見た目「下端」 で出すので
-   bottom 基準で配置)。 引っ張り中は pullDistance に応じて opacity がフェードイン、
-   閾値超え (= .ready) で「離して」 表示、 fetch 中 (= .refreshing) は「読み込み中…」。 */
-.pull-indicator {
-  position: absolute;
-  left: 50%;
-  bottom: 12px;
-  transform: translateX(-50%);
-  padding: 6px 12px;
-  border-radius: 14px;
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: 13px;
-  pointer-events: none;
-  z-index: 9;
-  transition: opacity 120ms ease;
-}
-.pull-indicator.ready { color: var(--accent); border-color: var(--accent); }
-.pull-indicator.refreshing { color: var(--text); }
-
 /* ↓ スクロールボタン */
 .scroll-btn {
   position: absolute;
