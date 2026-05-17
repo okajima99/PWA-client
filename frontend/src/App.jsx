@@ -13,6 +13,7 @@ import { useAutoScroll } from './hooks/useAutoScroll.js'
 import { useChatStream } from './hooks/useChatStream.js'
 import { useSessions } from './hooks/useSessions.js'
 import { useStorageQuota } from './hooks/useStorageQuota.js'
+import { usePullToRefresh } from './hooks/usePullToRefresh.js'
 import {
   usePushState,
   useReadOnSessionOpen,
@@ -23,7 +24,6 @@ import {
   useMoonlightAvailable,
 } from './hooks/useAppEffects.js'
 import { setBadge } from './utils/badge.js'
-import { nextNextFrame } from './utils/raf.js'
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
 // 公式 CLI が受け入れる短縮形 + effort 階層 (= module scope const、 毎 render 再生成を避ける)。
@@ -108,6 +108,11 @@ export default function App() {
   })
 
   const storageInfo = useStorageQuota()
+
+  // 「下に引っ張って最新を取得」 ジェスチャ (= column-reverse の上端から下方向にスワイプ)。
+  // メニューの「最新を取得」 ボタンの代替 (= 2026-05-17 撤廃)。
+  const { pullDistance, isRefreshing, pullThreshold } = usePullToRefresh(scrollerDomRef, fetchLatest)
+  const pullReady = pullDistance >= pullThreshold
 
   // ドロワー並び順 / session 活動時刻
   const { sortedSessions } = useSessionActivity(messages, sessions)
@@ -489,8 +494,19 @@ export default function App() {
 
       {/* メッセージ一覧。 .messages は flex-direction: column-reverse (App.css)、
         起動時に scroll 操作なしで最新メッセージが下に見える構造。 displayMessages を
-        逆順 render することで column-reverse と相殺し「古い→新しい (上→下)」 配置になる。 */}
+        逆順 render することで column-reverse と相殺し「古い→新しい (上→下)」 配置になる。
+        上端で下方向スワイプ (= pull-to-refresh) で fetchLatest() を発火する。 */}
       <div className="messages-container">
+        {/* pull-to-refresh インジケータ: 引っ張り中 / 実行中だけ表示。 column-reverse 上端の
+            裏側 (= bottom) に出すので bottom 基準で配置、 pullDistance を opacity に反映。 */}
+        {(pullDistance > 0 || isRefreshing) && (
+          <div
+            className={`pull-indicator ${pullReady ? 'ready' : ''} ${isRefreshing ? 'refreshing' : ''}`}
+            style={{ opacity: isRefreshing ? 1 : Math.min(pullDistance / pullThreshold, 1) }}
+          >
+            {isRefreshing ? '読み込み中…' : pullReady ? '離して最新を取得' : '↓ 引いて最新を取得'}
+          </div>
+        )}
         <div ref={scrollerDomRef} className="messages" onScroll={onScroll}>
           {[...displayMessages].reverse().map((msg) => (
             <MessageItem
@@ -499,6 +515,7 @@ export default function App() {
               onOpenFile={handleOpenPath}
               onAnswer={handleAnswer}
               apiKeySource={activeSid ? apiKeySource[activeSid] : null}
+              activeSubagent={status?.subagent || null}
             />
           ))}
         </div>
@@ -552,9 +569,6 @@ export default function App() {
               </button>
               <button onClick={() => { setTreeOpen('~'); setMenuOpen(false) }} className="menu-item">
                 ファイルツリー
-              </button>
-              <button onClick={() => { fetchLatest(); nextNextFrame(scrollToBottom); setMenuOpen(false) }} className="menu-item">
-                最新を取得
               </button>
               {activeSession && (
                 <button

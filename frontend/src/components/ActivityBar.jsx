@@ -24,8 +24,10 @@ function ActivityBar({ status }) {
 
   if (!status) return null
 
-  const { plan_mode, subagent } = status
-  const hasLine = plan_mode || subagent
+  // subagent (= Task tool 進行中) は MessageItem の Task tool に inline 表示するので
+  // ActivityBar には出さない (= 2026-05-17 改修)。 ここは plan_mode + todos のみ担当。
+  const { plan_mode } = status
+  const hasLine = plan_mode
   const hasTodos = hasTodosRaw && !(allDone && hideDone)
   if (!hasLine && !hasTodos) return null
 
@@ -38,12 +40,6 @@ function ActivityBar({ status }) {
       {hasLine && (
         <div className="ab-line">
           {plan_mode && <span className="ab-chip ab-plan">PLAN</span>}
-          {subagent && (
-            <span className="ab-chip ab-sub">
-              ↳ {subagent.description || 'Subagent'}
-              {subagent.last_tool ? ` · ${subagent.last_tool}` : ''}
-            </span>
-          )}
         </div>
       )}
       {hasTodos && (

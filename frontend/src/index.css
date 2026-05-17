@@ -15,6 +15,7 @@
   --green: #4ade80;
   --yellow: #facc15;
   --red: #f87171;
+  --cyan: #22d3ee;   /* file mutation 系 tool (Edit / Write / NotebookEdit) */
 
   font-family: system-ui, sans-serif;
   font-size: 15px;

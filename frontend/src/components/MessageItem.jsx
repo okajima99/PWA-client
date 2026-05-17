@@ -226,7 +226,7 @@ function CompactBanner({ msg }) {
   )
 }
 
-const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKeySource }) {
+const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKeySource, activeSubagent }) {
   if (msg.role === 'system' && msg.kind === 'compact') {
     return <CompactBanner msg={msg} />
   }
@@ -307,6 +307,12 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
                       {t.result?.is_error && <span className="tool-err-mark"> ⚠</span>}
                       {resultText && showResult && (
                         <span className="tool-meta"> · {resultText.length}文字</span>
+                      )}
+                      {/* Task tool が進行中 (= result 未受信) でかつ status.subagent が active なら、
+                          subagent 内で今動いてる sub-tool 名を inline 併記する。 これで「Task が
+                          何をやってるか」 が普通の tool 行として観察可能 (= ActivityBar 撤去の代替)。 */}
+                      {t.name === 'Task' && !t.result && activeSubagent?.last_tool && (
+                        <span className="tool-meta"> · ↳ {activeSubagent.last_tool}</span>
                       )}
                     </summary>
                     {hasMore && (
