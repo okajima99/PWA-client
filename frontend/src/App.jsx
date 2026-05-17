@@ -60,7 +60,7 @@ export default function App() {
     scrollToBottom,
     onScroll,
   } = useAutoScroll({ messages, activeSession })
-  const { loading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, reconnectIfStreaming, endSession } = useChatStream({
+  const { loading, setLoading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession } = useChatStream({
     activeSession,
     sessions,
     setMessages,
@@ -82,6 +82,7 @@ export default function App() {
   const [treeOpen, setTreeOpen] = useState(null)
   const [confirmEnd, setConfirmEnd] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(null) // 削除確認中の session_id
+  const [confirmStop, setConfirmStop] = useState(false)
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
   // 30 秒ごとに時刻表示を更新。 ただし hidden 中は止める (= 見えてないので無駄、 iOS は
   // background でも setInterval が呼ばれる時間帯があり電力消費要因になる)。
@@ -110,15 +111,46 @@ export default function App() {
   useBadgeSync()
   useDeepLink(setActiveId)
 
-  // proactive turn (= Monitor / CronCreate 等) の検知: useStatus の polling 結果が
-  // streaming=true なのに local loading[sid]=false の時は、 backend で proactive turn が
-  // idle 中に始まったケース → SSE 接続して受信開始。
+  // proactive turn (= Monitor / CronCreate 等) の検知: status SSE で push される
+  // buffer_length / buffer_id を観測し、 前回より進んでたら fetchLatest で buffer を引取る。
+  //
+  // なぜ streaming flag ではなく buffer_length を見るか:
+  //   short proactive turn (= 1-2 秒で完結する Monitor 1 行出力) では、 backend で
+  //   complete=False→True の flip が連続して status_event.set される。 status SSE は
+  //   両方 push するが、 React の setState batching で「false → false」 に潰れて
+  //   watcher が走らない race が起きていた。 buffer_length は単調増加なので絶対に
+  //   取りこぼさない (= 前回 sent 位置と比較するだけ)。
+  //
+  // buffer_id が変わるのは backend の chat_routes.py で新 turn 開始時に
+  // state.buffer_id = uuid を振り直すタイミング (= buffer reset)。 id が変わったら
+  // length 比較を捨てて新 turn として fetch する。
+  const lastSeenBufferRef = useRef({}) // { [sid]: { length, id } }
   useEffect(() => {
-    if (!activeSid) return
-    if (status?.streaming && !loading[activeSid]) {
-      reconnectIfStreaming(activeSid).catch(() => {})
-    }
-  }, [activeSid, status?.streaming, loading, reconnectIfStreaming])
+    if (!activeSid || !status) return
+    const cur = lastSeenBufferRef.current[activeSid] || { length: 0, id: null }
+    const bufLen = status.buffer_length ?? 0
+    const bufId = status.buffer_id ?? null
+    const progressed = (bufId !== cur.id) || (bufLen > cur.length)
+    if (!progressed) return
+    // 二重発火防止: ref を先に更新してから fetch
+    lastSeenBufferRef.current[activeSid] = { length: bufLen, id: bufId }
+    // ターン中 (= user 送信直後の POST /chat/stream SSE が直接流してる) は reconnect 不要、
+    // むしろ進行中の POST controller を abort してしまうと turn が切れる。
+    if (loading[activeSid]) return
+    fetchLatest()
+  }, [activeSid, status?.buffer_length, status?.buffer_id, loading, fetchLatest])
+
+  // ボタン UI 用の合成 loading 判定。
+  //
+  // 単純な `loading[activeSid]` だと、 sendMessage / reconnectStream / fetchLatest の
+  // setLoading 呼び出しが race して short proactive turn (= 1-3 秒で完結) では
+  // 「停止ボタンに切り替わる前に送信ボタンに戻る」 取りこぼしが起きていた。
+  //
+  // backend の `status.streaming` (= state.complete の反転) を OR で合成することで、
+  // 「backend が推論中と言っている間は必ず停止ボタン」 を保証する。 race の上書きが
+  // 何度起きても、 streaming=true の status push が 1 回でも届けば UI は止まる。
+  const isStreamingNow = !!(activeSid && status?.streaming)
+  const showStopButton = !!(activeSid && (loading[activeSid] || isStreamingNow))
 
   // SW からの「push-received」 メッセージで即座に fetchLatest を発火させる。
   // status polling (idle 30 秒) の隙間で proactive turn が完了/進行してても、
@@ -463,8 +495,8 @@ export default function App() {
           >
             ⋯
           </button>
-          {activeSid && loading[activeSid] ? (
-            <button onClick={stopMessage} className="stop">■</button>
+          {showStopButton ? (
+            <button onClick={() => setConfirmStop(true)} className="stop">■</button>
           ) : (
             <button
               onClick={sendMessage}
@@ -522,6 +554,12 @@ export default function App() {
         text="このセッションを終了しますか?"
         onCancel={() => setConfirmEnd(false)}
         onConfirm={handleEndSession}
+      />
+      <ConfirmDialog
+        open={confirmStop}
+        text="推論を停止しますか?"
+        onCancel={() => setConfirmStop(false)}
+        onConfirm={() => { setConfirmStop(false); stopMessage() }}
       />
       <ConfirmDialog
         open={!!confirmDelete}

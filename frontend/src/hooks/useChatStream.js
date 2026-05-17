@@ -279,14 +279,12 @@ export function useChatStream({
 
   return {
     loading,
+    setLoading,  // App.jsx から status.streaming を直接反映するために expose
     apiKeySource,
     sendMessage,
     sendAnswer,
     stopMessage,
     fetchLatest: reconnect.fetchLatest,
-    // proactive 検知 (= App.jsx の useStatus 連動) 用に reconnectIfStreaming も expose。
-    // status polling で streaming=true & local loading=false を見つけたら呼び出す。
-    reconnectIfStreaming: reconnect.reconnectIfStreaming,
     endSession,
   }
 }

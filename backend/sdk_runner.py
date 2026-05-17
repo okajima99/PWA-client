@@ -1,15 +1,30 @@
 """Claude Agent SDK を駆動して SSE wire イベントを buffer に積む層。
 
-run_sdk_background が中心。各メッセージ種別ごとの状態更新と
-ターン完了時の Web Push 発火もここで行う。
+設計 (2026-05-17 改修、 持続 receive 型):
+    1 セッションあたり 1 個の **persistent_receive_loop** task が SDK の全 message を
+    `client._query.receive_messages()` で持続的に受信する。 user POST 経由のターンも
+    proactive (Monitor / CronCreate / ScheduleWakeup 等) のターンも、 全部この 1 本の
+    async for で拾う。 receive_messages は内部で anyio memory stream を await でブロック
+    するので、 メッセージが来ない間は CPU / fd を消費しない (= 前回 fd leak バグの
+    「outer while + receive_response 即 return」 を構造的に回避)。
+
+turn ownership 判定:
+    UserMessage の content と直近 POST の `state.pending_user_input` を照合し、
+    一致なら `state.user_request_id` を current にセット (= user turn 開始)、
+    そうでなければ proactive_xxx を current にセット (= 自発 turn 開始)。
+    ResultMessage 受信で current = None、 state.complete = True。
+
+main 公開関数:
+    - ensure_client(session_id): SDK client 接続 + persistent_receive_loop 起動
+    - disconnect_client(session_id): receive task cancel + SDK client disconnect
+    - idle_disconnect_loop(): N 秒ごとに idle session を GC
 """
 import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Any
-
-from anyio import WouldBlock
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -162,6 +177,9 @@ def make_permission_handler(session_id: str):
             }) + "\n\n"
         )
         state.buffer_event.set()
+        # status SSE 受信側にも「buffer 増えた」 を通知 (= App.jsx の buffer_length watcher が
+        # 質問待ちで止まる直前の最終 append を取りこぼさないため)。
+        state.status_event.set()
 
         # Web Push: アプリが前面表示されてないなら、 質問テキストを通知に流す
         # (回答待ちでロックされるので、 ターン完了まで待つと体感が悪い)
@@ -191,6 +209,217 @@ def make_permission_handler(session_id: str):
         return PermissionResultDeny(message=f"ユーザーの回答: {answer}", interrupt=False)
 
     return handler
+
+
+# --- 1 メッセージの処理 (= 旧 run_sdk_background の inner loop と等価) ---
+async def _process_message(state, session_id: str, msg: Any) -> None:
+    """SDK から受信した 1 メッセージを処理:
+    - turn ownership (= current request_id) を判定 / 更新
+    - state.complete を turn 境界で切替
+    - agent_status の各種フィールド更新
+    - wire 形式に変換して state.buffer に積む
+    - ターン完了 (ResultMessage) で Web Push 配信
+
+    state.current_request_id は state に持たず、 ローカル変数で持つのが本来だが、
+    persistent loop は単一 task で巻いてるので関数間で持ち回す必要なし。 ただし
+    複数 message にまたがる current ID 維持のため、 state に generic 属性で保持
+    (= setattr で動的に持たせる)。
+    """
+    # current request_id を state に乗せて関数を跨ぐ
+    current_request_id = getattr(state, "_current_request_id", None)
+
+    wire = serialize_sdk_message(msg)
+
+    # --- turn 開始判定 (= 全 message 種共通) ---
+    # complete=True の状態で何らかのメッセージ受信 = 新ターン開始シグナル。
+    # ResultMessage は turn 終了マーカーなので除外、 subagent 配下のメッセージも除外
+    # (= subagent は親 turn の続きとして扱う)。
+    #
+    # UserMessage を待たずに「最初のメッセージ」 で complete=False に倒す理由:
+    # Monitor / CronCreate 等は最初に SystemMessage (= task_notification) で来る、
+    # 私の応答が短いと AssistantMessage + ResultMessage が ms 単位で続いて
+    # UserMessage が出現しない turn もある。 UserMessage 待ちだと streaming=true 状態が
+    # 観測されずに送信ボタンが切り替わらない。
+    parent_id = getattr(msg, "parent_tool_use_id", None) if not isinstance(msg, SystemMessage) else None
+    is_subagent = parent_id is not None
+    is_result = isinstance(msg, ResultMessage)
+    # turn 開始判定: 以下のいずれかなら新 turn 扱い
+    #   - state.complete=True (= 前 turn 完了、 通常の新 turn)
+    #   - current_request_id is None (= persistent_receive_loop 新規起動直後 or
+    #     POST ハンドラで state.complete=False に倒した直後)
+    # ResultMessage と subagent message は turn 開始判定の対象外。
+    if (state.complete or current_request_id is None) and not is_result and not is_subagent:
+        # turn 開始: state.user_request_id がセット済み (= POST 直後で未消費) なら user ターン、
+        # そうでなければ自発 (Monitor / CronCreate / ScheduleWakeup 等)。
+        # SDK の receive_messages は claude API の応答だけを yield、 POST で投入した user
+        # input そのものは yield しない (= UserMessage content と照合する旧設計は不可)。
+        # 「POST 後の最初のメッセージで user_request_id を current にセット、 ResultMessage で
+        # reset」 という生き方で turn ownership を判定する。
+        state.complete = False
+        state.last_activity_at = time.time()
+        state.status_event.set()
+        if state.user_request_id is not None and current_request_id is None:
+            current_request_id = state.user_request_id
+            session_log(
+                session_id,
+                f"[turn-start] USER user_request_id={current_request_id}",
+            )
+        else:
+            current_request_id = f"proactive_{uuid.uuid4().hex[:8]}"
+            session_log(
+                session_id,
+                f"[turn-start] PROACTIVE request_id={current_request_id}",
+            )
+
+    if isinstance(msg, UserMessage):
+        # tool_result wrap UserMessage の current_tool 解放処理 (= turn 境界判定は冒頭で済み)
+        if not is_subagent and isinstance(msg.content, list):
+            for block in msg.content:
+                if isinstance(block, ToolResultBlock):
+                    cur = agent_status[session_id].get("current_tool")
+                    if cur and cur.get("id") == block.tool_use_id:
+                        agent_status[session_id]["current_tool"] = None
+
+    elif isinstance(msg, AssistantMessage):
+        is_subagent = msg.parent_tool_use_id is not None
+        if msg.usage and not is_subagent:
+            ctx_window = agent_status[session_id].get("ctx_window") or 1_000_000
+            agent_status[session_id]["ctx_pct"] = compute_ctx_pct(msg.usage, ctx_window)
+        if not is_subagent:
+            for block in msg.content:
+                if isinstance(block, ToolUseBlock):
+                    agent_status[session_id]["current_tool"] = {
+                        "name": block.name,
+                        "id": block.id,
+                        "started_at": time.time(),
+                    }
+                    if block.name == "TodoWrite":
+                        todos = block.input.get("todos")
+                        if todos is not None:
+                            agent_status[session_id]["todos"] = todos
+                    elif block.name == "ExitPlanMode":
+                        agent_status[session_id]["plan_mode"] = False
+            text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
+            if text_parts:
+                last_assistant_text[session_id] = "\n".join(text_parts)
+
+    elif isinstance(msg, SystemMessage):
+        sub = msg.subtype
+        if sub == "init":
+            perm = msg.data.get("permissionMode") if isinstance(msg.data, dict) else None
+            agent_status[session_id]["plan_mode"] = (perm == "plan")
+        elif sub == "task_started":
+            agent_status[session_id]["subagent"] = {
+                "description": msg.data.get("description", "") if isinstance(msg.data, dict) else "",
+                "last_tool": "",
+                "task_id": msg.data.get("task_id", "") if isinstance(msg.data, dict) else "",
+            }
+        elif sub == "task_progress":
+            cur = agent_status[session_id].get("subagent")
+            task_id = msg.data.get("task_id", "") if isinstance(msg.data, dict) else ""
+            if cur and cur.get("task_id") == task_id:
+                last_tool = msg.data.get("last_tool_name") if isinstance(msg.data, dict) else None
+                if last_tool:
+                    cur["last_tool"] = last_tool
+        elif sub == "task_notification":
+            cur = agent_status[session_id].get("subagent")
+            task_id = msg.data.get("task_id", "") if isinstance(msg.data, dict) else ""
+            if cur and cur.get("task_id") == task_id:
+                agent_status[session_id]["subagent"] = None
+
+    elif isinstance(msg, ResultMessage):
+        if msg.session_id:
+            sessions[session_id] = msg.session_id
+            save_sessions()
+            state.client_session_id = msg.session_id
+        update_agent_from_result(session_id, msg.model_usage, {})
+
+        # ターン完了通知 (= フォアで見てないなら Web Push)
+        turn_text = last_assistant_text.get(session_id, "").strip()
+        if turn_text and not flags["user_visible"]:
+            body = turn_text if len(turn_text) <= 140 else (turn_text[:140] + "…")
+            asyncio.create_task(broadcast_push(body, notification_title_for(session_id), session_id))
+        last_assistant_text[session_id] = ""
+
+    elif isinstance(msg, RateLimitEvent):
+        info = msg.rate_limit_info
+        if info.resets_at:
+            if info.rate_limit_type and "five_hour" in info.rate_limit_type:
+                shared_status["five_hour_resets_at"] = info.resets_at
+            elif info.rate_limit_type and "seven_day" in info.rate_limit_type:
+                shared_status["seven_day_resets_at"] = info.resets_at
+
+    # --- wire を buffer に積む ---
+    if wire is not None:
+        # current_request_id がまだ無い場合は proactive で初期化 (= 安全策、 通常は
+        # UserMessage で決まる)
+        if current_request_id is None:
+            current_request_id = f"proactive_{uuid.uuid4().hex[:8]}"
+        wire["request_id"] = current_request_id
+        state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
+        state.buffer_event.set()
+        state.status_event.set()
+        _suffix = (
+            " (user-turn-end)"
+            if (isinstance(msg, ResultMessage) and current_request_id == state.user_request_id)
+            else ""
+        )
+        session_log(
+            session_id,
+            f"[wire] type={wire.get('type')} request_id={current_request_id}{_suffix}",
+        )
+
+    # ResultMessage の後は turn 終了 → complete=True、 current ID クリア
+    if isinstance(msg, ResultMessage):
+        state.complete = True
+        state.last_activity_at = time.time()
+        state.buffer_event.set()
+        state.status_event.set()
+        reset_activity(session_id)
+        if current_request_id == state.user_request_id:
+            state.user_request_id = None
+        current_request_id = None  # 次の UserMessage で再決定
+
+    # current を state に書き戻す (= 次のメッセージで使う)
+    state._current_request_id = current_request_id
+
+
+# --- 持続 receive task (= 1 セッション 1 個) ---
+async def persistent_receive_loop(session_id: str) -> None:
+    """SDK の `receive_messages` で全 message を持続受信する。
+
+    receive_messages は内部で anyio MemoryObjectStream の `async for` を回しているので、
+    メッセージが来ない間は `await` でブロック (= tight loop は構造的に起きない)。
+    `client.disconnect()` → `query.close()` で stream が閉じられると async for が
+    自然に終了する。
+    """
+    state = stream_states.get(session_id)
+    if state is None or state.client is None:
+        return
+    client = state.client
+    session_log(session_id, "[persistent-receive] started")
+    try:
+        async for raw in client._query.receive_messages():
+            if not isinstance(raw, dict):
+                continue
+            msg = parse_message(raw)
+            if msg is None:
+                continue
+            try:
+                await _process_message(state, session_id, msg)
+            except Exception:
+                logger.exception("_process_message failed for session=%s", session_id)
+    except asyncio.CancelledError:
+        session_log(session_id, "[persistent-receive] cancelled")
+        raise
+    except Exception:
+        logger.exception("persistent_receive_loop crashed for session=%s", session_id)
+    finally:
+        # 終了時は必ず complete=True に倒して UI 解放 + status push
+        state.complete = True
+        state.buffer_event.set()
+        state.status_event.set()
+        session_log(session_id, "[persistent-receive] ended")
 
 
 # --- SDK クライアントの生成/接続 ---
@@ -223,29 +452,27 @@ async def ensure_client(session_id: str) -> ClaudeSDKClient:
     await client.connect()
     state.client = client
     state.client_session_id = sessions.get(session_id)
-    # proactive watcher 起動: SDK queue を 5 秒間隔で poll、 Monitor / CronCreate 等の
-    # idle 自発応答を拾って buffer に積む。 既に走ってる場合は再起動しない。
-    if state.idle_watcher_task is None or state.idle_watcher_task.done():
-        state.idle_watcher_task = asyncio.create_task(proactive_watcher_loop(session_id))
+    state._current_request_id = None  # type: ignore[attr-defined]
+    # 持続 receive task 起動 (既に走ってないことを確認)
+    if state.receive_task is None or state.receive_task.done():
+        state.receive_task = asyncio.create_task(persistent_receive_loop(session_id))
     return client
 
 
 async def disconnect_client(session_id: str) -> None:
-    """SDK client を切断する。 race-safe: state.client = None を await の前に
-    確定させて、 切断中に来た新規 ensure_client が古い (closing) client を
-    返さないようにする。"""
+    """SDK client を切断する。 持続 receive task も cancel + await。"""
     state = stream_states.get(session_id)
     if state is None:
         return
     client = state.client
-    # proactive watcher 停止 (= client なしの状態で receive_nowait 呼ばないため)
-    if state.idle_watcher_task is not None and not state.idle_watcher_task.done():
-        state.idle_watcher_task.cancel()
+    # 持続 receive task 停止
+    if state.receive_task is not None and not state.receive_task.done():
+        state.receive_task.cancel()
         try:
-            await state.idle_watcher_task
+            await state.receive_task
         except (Exception, asyncio.CancelledError):
             pass
-    state.idle_watcher_task = None
+    state.receive_task = None
     if client is None:
         return
     # 先に参照を切る (この時点で並行 ensure_client は新 client を立て直す)
@@ -304,418 +531,3 @@ async def idle_disconnect_loop():
             raise
         except Exception:
             logger.exception("idle_disconnect_loop iteration failed")
-
-
-# --- proactive watcher (= Monitor / CronCreate 等 idle 中の自発応答を拾う) ---
-# 5 秒間隔で SDK queue を非ブロッキング peek。 hits があれば proactive turn として
-# 処理 (= state.complete=False に倒して buffer に積む)、 frontend は status polling +
-# auto-reconnect で SSE 接続して受信する。
-#
-# 設計のキモ:
-#   - 持続 receive_response を避けて fd 消費を抑える (= 過去の persistent loop は fd leak と
-#     state.complete flicker を起こした)
-#   - poll は receive_nowait のみ、 ブロックしない → fd 持続消費ゼロ
-#   - run_sdk_background (= user turn) と干渉しないよう、 state.complete=False 中は skip
-#   - 1 ターンの message 群が連続して queue に居れば全部消費、 ResultMessage で新 proactive_id
-PROACTIVE_POLL_INTERVAL_SEC = 5.0
-
-
-async def _process_proactive_msg(state, session_id: str, msg: Any, current_request_id: str) -> str:
-    """proactive turn の 1 メッセージ処理。 run_sdk_background のメッセージ処理ロジックの
-    軽量版 (= ステータス更新 + buffer 積み + Web Push 通知)。 戻り値は次に使う
-    request_id (= ResultMessage 後は新 proactive_xxx に切替)。"""
-    wire = serialize_sdk_message(msg)
-
-    if isinstance(msg, AssistantMessage):
-        is_subagent = msg.parent_tool_use_id is not None
-        if not is_subagent and msg.usage:
-            ctx_window = agent_status[session_id].get("ctx_window") or 1_000_000
-            agent_status[session_id]["ctx_pct"] = compute_ctx_pct(msg.usage, ctx_window)
-        if not is_subagent:
-            for block in msg.content:
-                if isinstance(block, ToolUseBlock):
-                    agent_status[session_id]["current_tool"] = {
-                        "name": block.name, "id": block.id, "started_at": time.time(),
-                    }
-                    if block.name == "TodoWrite":
-                        todos = block.input.get("todos")
-                        if todos is not None:
-                            agent_status[session_id]["todos"] = todos
-                    elif block.name == "ExitPlanMode":
-                        agent_status[session_id]["plan_mode"] = False
-            text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
-            if text_parts:
-                last_assistant_text[session_id] = "\n".join(text_parts)
-    elif isinstance(msg, UserMessage):
-        is_subagent = msg.parent_tool_use_id is not None
-        if not is_subagent and isinstance(msg.content, list):
-            for block in msg.content:
-                if isinstance(block, ToolResultBlock):
-                    cur = agent_status[session_id].get("current_tool")
-                    if cur and cur.get("id") == block.tool_use_id:
-                        agent_status[session_id]["current_tool"] = None
-    elif isinstance(msg, SystemMessage):
-        sub = msg.subtype
-        if sub == "task_started":
-            agent_status[session_id]["subagent"] = {
-                "description": msg.data.get("description", ""),
-                "last_tool": "",
-                "task_id": msg.data.get("task_id", ""),
-            }
-        elif sub == "task_progress":
-            cur = agent_status[session_id].get("subagent")
-            task_id = msg.data.get("task_id", "")
-            if cur and cur.get("task_id") == task_id:
-                last_tool = msg.data.get("last_tool_name")
-                if last_tool:
-                    cur["last_tool"] = last_tool
-        elif sub == "task_notification":
-            cur = agent_status[session_id].get("subagent")
-            task_id = msg.data.get("task_id", "")
-            if cur and cur.get("task_id") == task_id:
-                agent_status[session_id]["subagent"] = None
-    elif isinstance(msg, ResultMessage):
-        if msg.session_id:
-            sessions[session_id] = msg.session_id
-            save_sessions()
-            state.client_session_id = msg.session_id
-        update_agent_from_result(session_id, msg.model_usage, {})
-        # proactive 完了で Web Push (= PWA を wake、 idle のユーザーに proactive 応答を通知)
-        turn_text = last_assistant_text.get(session_id, "").strip()
-        if turn_text and not flags["user_visible"]:
-            body = turn_text if len(turn_text) <= 140 else (turn_text[:140] + "…")
-            asyncio.create_task(broadcast_push(body, notification_title_for(session_id), session_id))
-        last_assistant_text[session_id] = ""
-
-    if wire is not None:
-        wire["request_id"] = current_request_id
-        state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
-        state.buffer_event.set()
-        state.status_event.set()  # /status SSE 側に push
-        session_log(session_id, f"[wire-proactive] type={wire.get('type')} request_id={current_request_id}")
-
-    if isinstance(msg, ResultMessage):
-        import uuid as _uuid
-        return f"proactive_{_uuid.uuid4().hex[:8]}"
-    return current_request_id
-
-
-async def _drain_proactive(state, session_id: str) -> None:
-    """SDK queue を非ブロッキングで全消費。 proactive turn(s) の messages を buffer に積む。"""
-    import uuid as _uuid
-    client = state.client
-    if client is None:
-        return
-    drain_stream = client._query._message_receive
-    current_request_id = f"proactive_{_uuid.uuid4().hex[:8]}"
-    received_any = False
-
-    while True:
-        try:
-            data = drain_stream.receive_nowait()
-        except WouldBlock:
-            break
-        except Exception:
-            logger.exception("proactive drain receive_nowait failed for %s", session_id)
-            break
-        if not isinstance(data, dict):
-            continue
-        t = data.get("type")
-        if t in ("end", "error"):
-            continue
-
-        # 最初の有効メッセージで state.complete=False に倒して frontend 起こす
-        if not received_any:
-            state.complete = False
-            state.buffer_event.set()
-            state.status_event.set()  # status SSE に「turn 開始」 を即通知
-            state.last_activity_at = time.time()
-            received_any = True
-            session_log(session_id, "[proactive] turn started via idle watcher")
-
-        msg = parse_message(data)
-        if msg is None:
-            continue
-        current_request_id = await _process_proactive_msg(state, session_id, msg, current_request_id)
-
-    if received_any:
-        # turn 群消費完了 → idle に戻す
-        state.complete = True
-        state.buffer_event.set()
-        state.status_event.set()  # status SSE に「turn 完了 = idle」 を即通知
-        state.last_activity_at = time.time()
-        session_log(session_id, "[proactive] turn completed")
-
-
-async def proactive_watcher_loop(session_id: str) -> None:
-    """SDK client が active な間、 5 秒間隔で proactive メッセージを poll する。
-    ensure_client で起動、 disconnect_client で cancel。"""
-    while True:
-        try:
-            await asyncio.sleep(PROACTIVE_POLL_INTERVAL_SEC)
-        except asyncio.CancelledError:
-            return
-        state = stream_states.get(session_id)
-        if state is None or state.client is None:
-            return
-        # User turn 中は skip (= receive_response が動いてるので干渉禁止)
-        if not state.complete:
-            continue
-        try:
-            await _drain_proactive(state, session_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("proactive_watcher_loop error for %s", session_id)
-
-
-# --- バックグラウンドで SDK ストリームを読む ---
-async def run_sdk_background(session_id: str, content: list, user_request_id: str | None = None):
-    state = stream_states[session_id]
-    # アイドル GC が「進行中ターンを誤って disconnect」 しないよう、 開始時に活動時刻を更新
-    state.last_activity_at = time.time()
-    # ターンの所有者を識別する request_id。ユーザー起点ターンには user_request_id を、
-    # 自発ターン (CronCreate / ScheduleWakeup でキューされたもの) には毎回別の
-    # proactive_xxx を付与する。
-    # SDK は ユーザー POST と同じ receive_response 内に、キュー済みの自発ターンを
-    # 先または後に混ぜて流すことがある。各 UserMessage の content を ユーザーの
-    # 入力 text と照合して所有者を切り替える。
-    import uuid as _uuid
-
-    def _extract_user_text(content_obj) -> str:
-        """user content (list of blocks or str) から text 部分を抽出して結合。"""
-        if isinstance(content_obj, str):
-            return content_obj.strip()
-        if not isinstance(content_obj, list):
-            return ""
-        parts = []
-        for b in content_obj:
-            if isinstance(b, dict):
-                if b.get("type") == "text":
-                    parts.append(b.get("text", ""))
-            elif isinstance(b, TextBlock):
-                parts.append(b.text)
-        return "\n".join(parts).strip()
-
-    user_input_text = _extract_user_text(content)
-
-    current_request_id = f"proactive_{_uuid.uuid4().hex[:8]}"
-    user_turn_done = False
-    session_log(
-        session_id,
-        f"[run_sdk] === START user_request_id={user_request_id} user_text={user_input_text[:80]!r} ===",
-    )
-    try:
-        client = await ensure_client(session_id)
-
-        # ---- 過去ターン応答の非ブロッキング drain ----
-        # SDK の _message_receive に wakeup / Monitor 由来の応答が溜まっている可能性がある
-        # (ユーザー POST より前に runtime がそれらのターンを処理して buffer に積んでいる場合)。
-        # query 送信前に取り出して proactive_id でタグ付けし、wire に流す。
-        # 受信は receive_nowait で時間待ちなし、buffer 空になったら即抜ける。
-        drain_stream = client._query._message_receive
-        drained_count = 0
-        proactive_id_drain = f"proactive_{_uuid.uuid4().hex[:8]}"
-        while True:
-            try:
-                data = drain_stream.receive_nowait()
-            except WouldBlock:
-                break
-            if not isinstance(data, dict):
-                continue
-            t = data.get("type")
-            if t in ("end", "error"):
-                continue
-            drained_count += 1
-            msg = parse_message(data)
-            if msg is None:
-                continue
-            wire = serialize_sdk_message(msg)
-            if wire is None:
-                continue
-            # ResultMessage 検出で proactive_id を更新 (turn 境界)
-            wire["request_id"] = proactive_id_drain
-            state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
-            state.buffer_event.set()
-            session_log(
-                session_id,
-                f"[drain] type={wire.get('type')} request_id={proactive_id_drain}",
-            )
-            if isinstance(msg, ResultMessage):
-                proactive_id_drain = f"proactive_{_uuid.uuid4().hex[:8]}"
-        session_log(session_id, f"[drain] total={drained_count} before query")
-
-        # drain 後の最初のターン = ユーザーのターン。user_request_id でタグする。
-        if user_request_id:
-            current_request_id = user_request_id
-
-        async def _single_msg():
-            yield {
-                "type": "user",
-                "message": {"role": "user", "content": content},
-                "parent_tool_use_id": None,
-                "session_id": "default",
-            }
-
-        await client.query(_single_msg())
-
-        last_assistant_usage: dict = {}
-
-        async for msg in client.receive_response():
-            wire = serialize_sdk_message(msg)
-            is_subagent = False
-
-            # --- メッセージ単位の詳細ログ ---
-            if isinstance(msg, AssistantMessage):
-                _text_preview = "".join(b.text for b in msg.content if isinstance(b, TextBlock))[:80]
-                _tools = [b.name for b in msg.content if isinstance(b, ToolUseBlock)]
-                session_log(
-                    session_id,
-                    f"[msg] AssistantMessage stop_reason={msg.stop_reason} parent_tool={msg.parent_tool_use_id} text={_text_preview!r} tools={_tools}",
-                )
-            elif isinstance(msg, ResultMessage):
-                session_log(
-                    session_id,
-                    f"[msg] ResultMessage subtype={msg.subtype} is_error={msg.is_error} claude_session={msg.session_id} num_turns={msg.num_turns} stop_reason={msg.stop_reason}",
-                )
-            elif isinstance(msg, UserMessage):
-                _text = _extract_user_text(msg.content)[:80]
-                _has_tr = isinstance(msg.content, list) and any(isinstance(b, ToolResultBlock) for b in msg.content)
-                session_log(
-                    session_id,
-                    f"[msg] UserMessage parent_tool={msg.parent_tool_use_id} tool_result={_has_tr} text={_text!r}",
-                )
-            elif isinstance(msg, SystemMessage):
-                session_log(session_id, f"[msg] SystemMessage subtype={msg.subtype}")
-
-            # --- ステータス更新（送出前に済ます） ---
-            if isinstance(msg, AssistantMessage):
-                is_subagent = msg.parent_tool_use_id is not None
-                # サブエージェントは親とは別コンテキストで走るので ctx_pct を汚染させない
-                if msg.usage and not is_subagent:
-                    last_assistant_usage = msg.usage
-                    ctx_window = agent_status[session_id].get("ctx_window") or 1_000_000
-                    agent_status[session_id]["ctx_pct"] = compute_ctx_pct(msg.usage, ctx_window)
-                if not is_subagent:
-                    for block in msg.content:
-                        if isinstance(block, ToolUseBlock):
-                            agent_status[session_id]["current_tool"] = {
-                                "name": block.name,
-                                "id": block.id,
-                                "started_at": time.time(),
-                            }
-                            if block.name == "TodoWrite":
-                                todos = block.input.get("todos")
-                                if todos is not None:
-                                    agent_status[session_id]["todos"] = todos
-                            elif block.name == "ExitPlanMode":
-                                agent_status[session_id]["plan_mode"] = False
-                    # ターン完了通知のために assistant text を蓄積する。
-                    # 各 AssistantMessage は完結した発話単位 (tool_use を挟むと
-                    # 1 ターン内に複数飛んでくる) なので、最後の text を保持して
-                    # 「仕上げの返信」を通知 body にする。
-                    text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
-                    if text_parts:
-                        last_assistant_text[session_id] = "\n".join(text_parts)
-
-            elif isinstance(msg, UserMessage):
-                is_subagent = msg.parent_tool_use_id is not None
-                if not is_subagent and isinstance(msg.content, list):
-                    for block in msg.content:
-                        if isinstance(block, ToolResultBlock):
-                            cur = agent_status[session_id].get("current_tool")
-                            if cur and cur.get("id") == block.tool_use_id:
-                                agent_status[session_id]["current_tool"] = None
-
-            elif isinstance(msg, SystemMessage):
-                sub = msg.subtype
-                if sub == "init":
-                    perm = msg.data.get("permissionMode")
-                    agent_status[session_id]["plan_mode"] = (perm == "plan")
-                elif sub == "task_started":
-                    agent_status[session_id]["subagent"] = {
-                        "description": msg.data.get("description", "") or getattr(msg, "description", ""),
-                        "last_tool": "",
-                        "task_id": msg.data.get("task_id", "") or getattr(msg, "task_id", ""),
-                    }
-                elif sub == "task_progress":
-                    cur = agent_status[session_id].get("subagent")
-                    task_id = msg.data.get("task_id", "") or getattr(msg, "task_id", "")
-                    if cur and cur.get("task_id") == task_id:
-                        last_tool = msg.data.get("last_tool_name") or getattr(msg, "last_tool_name", None)
-                        if last_tool:
-                            cur["last_tool"] = last_tool
-                elif sub == "task_notification":
-                    cur = agent_status[session_id].get("subagent")
-                    task_id = msg.data.get("task_id", "") or getattr(msg, "task_id", "")
-                    if cur and cur.get("task_id") == task_id:
-                        agent_status[session_id]["subagent"] = None
-
-            elif isinstance(msg, ResultMessage):
-                if msg.session_id:
-                    sessions[session_id] = msg.session_id
-                    save_sessions()
-                    state.client_session_id = msg.session_id
-                update_agent_from_result(session_id, msg.model_usage, last_assistant_usage)
-
-                # ターン完了通知: PWA をフォアで見ていない時のみ Web Push で届ける。
-                # 直前ターンの assistant text を冒頭 140 文字に切って body に。
-                turn_text = last_assistant_text.get(session_id, "").strip()
-                if turn_text and not flags["user_visible"]:
-                    body = turn_text if len(turn_text) <= 140 else (turn_text[:140] + "…")
-                    asyncio.create_task(broadcast_push(body, notification_title_for(session_id), session_id))
-
-            elif isinstance(msg, RateLimitEvent):
-                info = msg.rate_limit_info
-                if info.resets_at:
-                    if info.rate_limit_type and "five_hour" in info.rate_limit_type:
-                        shared_status["five_hour_resets_at"] = info.resets_at
-                    elif info.rate_limit_type and "seven_day" in info.rate_limit_type:
-                        shared_status["seven_day_resets_at"] = info.resets_at
-
-            # --- SSE バッファへ積む (request_id 付与) ---
-            if wire is not None:
-                wire["request_id"] = current_request_id
-                state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
-                state.buffer_event.set()
-                # status SSE 受信側 (= /status/.../stream) に「変化あり」 を通知
-                state.status_event.set()
-                # 検証ログ: メッセージ種別 + request_id を 1 行で残す
-                _suffix = " (user-turn-end)" if (isinstance(msg, ResultMessage) and current_request_id == user_request_id) else ""
-                session_log(
-                    session_id,
-                    f"[wire] type={wire.get('type')} request_id={current_request_id}{_suffix}",
-                )
-
-            # ResultMessage 通過後はターン終了。次に来るメッセージは別ターン (自発)
-            # として扱うため、いったん proactive_id に切り替えて待機する。
-            # (続く UserMessage の content 照合で再度切り替わる)
-            if isinstance(msg, ResultMessage):
-                if current_request_id == user_request_id:
-                    user_turn_done = True
-                current_request_id = f"proactive_{_uuid.uuid4().hex[:8]}"
-
-    except asyncio.CancelledError:
-        session_log(session_id, f"[run_sdk] CANCELLED user_request_id={user_request_id}")
-        raise
-    except Exception:
-        logger.exception("Error in run_sdk_background for session=%s", session_id)
-        session_log(session_id, f"[run_sdk] EXCEPTION user_request_id={user_request_id}")
-    finally:
-        session_log(
-            session_id,
-            f"[run_sdk] === END user_request_id={user_request_id} user_turn_done={user_turn_done} ===",
-        )
-        state.complete = True
-        state.buffer_event.set()  # replay 側を必ず wake (= 残り 0 件 + complete で break する)
-        state.status_event.set()  # /status SSE に「turn 終了 = streaming false」 を即通知
-        # ターン完了時刻を活動時刻として記録 (アイドル GC の起点)
-        state.last_activity_at = time.time()
-        reset_activity(session_id)
-        # ターン中に蓄積した assistant text を必ずクリアする。
-        # 例外 / interrupt / stop で ResultMessage を経由しなかった場合に
-        # 古い text が次ターンの通知 body に混入するのを防ぐ。
-        last_assistant_text[session_id] = ""
-        # 回答待ちが残っていたらキャンセル
-        if state.pending_question is not None and not state.pending_question.done():
-            state.pending_question.cancel()

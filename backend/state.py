@@ -183,7 +183,6 @@ class StreamState:
     agent_id: str = ""  # どの AGENTS 設定 (cwd / notification_title) を参照するか
     buffer: list[str] = field(default_factory=list)
     buffer_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    task: asyncio.Task | None = None
     complete: bool = True
     client: ClaudeSDKClient | None = None
     client_session_id: str | None = None
@@ -194,6 +193,7 @@ class StreamState:
     orphaned_tool_use_id: str | None = None
     # 直近 POST が発行した user_request_id。wire イベントに付与してフロントが
     # 「ユーザー起点 ResultMessage」と「自発 ResultMessage」を区別できるようにする。
+    # POST でセット、 ResultMessage 受信で reset (= 次の turn は自発扱い)。
     user_request_id: str | None = None
     # アイドル GC 用: 直近のターン活動時刻 (ターン開始 / 完了時に更新)。
     # 0.0 = まだ一度も発話してない (= GC 対象にしない)
@@ -208,10 +208,12 @@ class StreamState:
     # 受信側は wait_for(timeout=15) で待ち、 タイムアウト時は keep-alive ping を yield。
     # event.set() を漏らしても最大 15 秒遅延、 ハングはしない (= timeout が保険)。
     buffer_event: asyncio.Event = field(default_factory=asyncio.Event)
-    # idle 中も SDK queue を継続的に消費して、 Monitor / CronCreate 等の proactive 応答を
-    # リアルタイムで buffer に積むためのバックグラウンドタスク。
-    # ensure_client で起動、 disconnect_client で cancel。
-    idle_watcher_task: asyncio.Task | None = None
+    # SDK の全 message を持続的に受信する task (= 1 セッション 1 個)。
+    # ensure_client で起動、 disconnect_client で cancel + await。
+    # user POST 経由のターンも proactive (= Monitor / CronCreate 等) のターンも、
+    # 全部この 1 本の async for で受信する。 turn ownership は UserMessage の content と
+    # state.pending_user_input の照合で判定。
+    receive_task: asyncio.Task | None = None
     # 状態変化シグナル (= /status/{sid}/stream SSE が wait する event)。
     # state.complete 切替 / current_tool 変化 / todos 更新等で set、 SSE 受信側は
     # 現状 status JSON を yield して event.clear() する。 polling を撤廃して

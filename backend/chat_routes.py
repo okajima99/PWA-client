@@ -18,6 +18,7 @@
 import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import List
 
@@ -26,7 +27,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from chat_content import build_content, save_to_tmp
 from config import AGENTS
-from sdk_runner import disconnect_client, run_sdk_background
+from sdk_runner import disconnect_client, ensure_client
 from session_logging import (
     delete_session_log,
     mark_session_end,
@@ -65,17 +66,6 @@ async def _interrupt_and_mark_orphan(state, session_id: str, log_context: str):
     cur = agent_status[session_id].get("current_tool")
     if cur and cur.get("id"):
         state.orphaned_tool_use_id = cur["id"]
-
-
-async def _await_task_cancellation(state):
-    """state.task をキャンセルして完全終了を待つ。 Python 3.8+ の CancelledError は
-    BaseException 直系なので明示で握り潰す。"""
-    if state.task and not state.task.done():
-        state.task.cancel()
-        try:
-            await state.task
-        except (Exception, asyncio.CancelledError):
-            pass
 
 
 # --- SSE replay generator (chat_stream / reconnect_stream で共有) ---
@@ -140,18 +130,8 @@ def patch_session(session_id: str, payload: dict = Body(...)):
 async def delete_session(session_id: str):
     if session_id not in sessions_meta:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
-    # SDK client を切断してから state を破棄
+    # SDK client + persistent receive task を切断してから state を破棄
     await disconnect_client(session_id)
-    # 残タスクがあればキャンセル
-    state = stream_states.get(session_id)
-    if state and state.task and not state.task.done():
-        state.task.cancel()
-        try:
-            await state.task
-        except (Exception, asyncio.CancelledError):
-            # CancelledError は Python 3.8+ で BaseException 直系なので Exception では取れない。
-            # 並行 cleanup を継続するため明示的に握り潰す。
-            pass
     # 一時ファイルをクリーンアップ
     for p in session_tmp_files.pop(session_id, []):
         try:
@@ -178,57 +158,72 @@ async def chat_stream(
 
     state = stream_states[session_id]
 
-    # 新ターン開始: 直前のタスクが残っていれば完全にキャンセル・待機する
-    # （割り込まれた tool_use は orphan として記録し、下で tool_result を合成して閉じる）
-    if not state.complete and state.task and not state.task.done():
+    # 新ターン開始: 直前ターンが in-flight なら interrupt + orphan mark。
+    # 持続 receive task は cancel しない (= 中断後も次のメッセージ受信を継続)。
+    if not state.complete:
         await _interrupt_and_mark_orphan(state, session_id, "during new-stream")
         agent_status[session_id]["current_tool"] = None
-        await _await_task_cancellation(state)
 
-    if state.complete or state.task is None or state.task.done():
-        saved_files = await save_to_tmp(files, session_id)
-        content = build_content(message, saved_files)
+    saved_files = await save_to_tmp(files, session_id)
+    content = build_content(message, saved_files)
 
-        # 孤児 tool_use が残っていれば synthetic tool_result を先頭に差し込んで履歴を閉じる
-        # （これをしないと Anthropic API が "tool_use ids without tool_result" で 400 を返し、
-        #  以降のターンの推論が空になって表示が 1 ターンずれる）
-        if state.orphaned_tool_use_id:
-            content = [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": state.orphaned_tool_use_id,
-                    "content": "User cancelled the previous turn.",
-                    "is_error": True,
-                },
-                *content,
-            ]
-            state.orphaned_tool_use_id = None
+    # 孤児 tool_use が残っていれば synthetic tool_result を先頭に差し込んで履歴を閉じる
+    # （これをしないと Anthropic API が "tool_use ids without tool_result" で 400 を返し、
+    #  以降のターンの推論が空になって表示が 1 ターンずれる）
+    if state.orphaned_tool_use_id:
+        content = [
+            {
+                "type": "tool_result",
+                "tool_use_id": state.orphaned_tool_use_id,
+                "content": "User cancelled the previous turn.",
+                "is_error": True,
+            },
+            *content,
+        ]
+        state.orphaned_tool_use_id = None
 
-        # user_request_id: この POST 起点ターンを識別する ID。
-        # SDK が同じ receive_response で自発ターン (CronCreate/ScheduleWakeup 由来) の
-        # ResultMessage を追加で吐くケースがある。ID で送信ボタン解放を ユーザーターンの
-        # ResultMessage 1 個に限定し、自発の Result でロックが外れないようにする。
-        user_request_id = uuid.uuid4().hex[:12]
-        state.user_request_id = user_request_id
-        session_log(
-            session_id,
-            f"[POST /chat/stream] user_request_id={user_request_id} text={message[:80]!r} files={len(saved_files)}",
-        )
+    # user_request_id: この POST 起点ターンを識別する ID。
+    # SDK queue には Monitor / CronCreate 由来の自発ターンが先後に混ざる可能性があるが、
+    # persistent_receive_loop は「POST 直後で state.user_request_id がセット済み = まだ
+    # 消費されてない turn 開始」 として user_request_id を current にセットする。
+    # ResultMessage 受信で state.user_request_id は None に reset (= 次の turn は自発扱い)。
+    user_request_id = uuid.uuid4().hex[:12]
+    state.user_request_id = user_request_id
+    session_log(
+        session_id,
+        f"[POST /chat/stream] user_request_id={user_request_id} text={message[:80]!r} files={len(saved_files)}",
+    )
 
-        state.buffer = []
-        state.buffer_id = str(uuid.uuid4())
-        # SSE 先頭で request_id をフロントに通知
-        import json as _json
-        state.buffer.append(
-            "data: " + _json.dumps({"type": "request_id", "request_id": user_request_id}) + "\n\n"
-        )
-        state.complete = False
-        # 新 turn 開始: 前 turn の complete=True で set された event を一旦落としてから、
-        # 新規 append ぶんを通知 (= replay 側が即 wake して先頭イベントを受け取れる)。
-        state.buffer_event.clear()
-        state.buffer_event.set()
-        state.status_event.set()  # /status SSE に「turn 開始 = streaming true」 を即通知
-        state.task = asyncio.create_task(run_sdk_background(session_id, content, user_request_id))
+    state.buffer = []
+    state.buffer_id = str(uuid.uuid4())
+    # SSE 先頭で request_id をフロントに通知
+    state.buffer.append(
+        "data: " + json.dumps({"type": "request_id", "request_id": user_request_id}) + "\n\n"
+    )
+    state.complete = False
+    state.last_activity_at = time.time()
+    # persistent loop が前 turn の current_request_id を抱えたまま新 POST に入る race を防ぐ
+    # (= ResultMessage で None リセットされてるはずだが、 stop 直後の disconnect → 新 task
+    # 再起動シーケンスで残ることがあるので明示リセット)。 _process_message の turn 開始
+    # 判定で「current=None かつ user_request_id がセット済 → USER ターン」 が走る。
+    state._current_request_id = None
+    # 新 turn 開始: 前 turn の complete=True で set された event を一旦落としてから、
+    # 新規 append ぶんを通知 (= replay 側が即 wake して先頭イベントを受け取れる)。
+    state.buffer_event.clear()
+    state.buffer_event.set()
+    state.status_event.set()  # /status SSE に「turn 開始 = streaming true」 を即通知
+
+    # SDK 接続を確保 (= 持続 receive task もここで起動される)
+    client = await ensure_client(session_id)
+    # query() で SDK に投入。 receive は persistent_receive_loop が拾う。
+    async def _msg_stream():
+        yield {
+            "type": "user",
+            "message": {"role": "user", "content": content},
+            "parent_tool_use_id": None,
+            "session_id": "default",
+        }
+    await client.query(_msg_stream())
 
     return StreamingResponse(
         _sse_replay(state, 0),
@@ -262,25 +257,19 @@ async def chat_stop(session_id: str):
     state = stream_states[session_id]
     await _interrupt_and_mark_orphan(state, session_id, "from /stop")
 
-    if state.task and not state.task.done():
-        # SDK の interrupt で receive_response が終了するはずだが、念のためキャンセルもトリガー
-        state.task.cancel()
-
     if state.pending_question is not None and not state.pending_question.done():
         state.pending_question.cancel()
-
-    # ここでタスクが完全に終わるまで await する。 await しないと、 stop のすぐ後に
-    # 次ターンが来た際に古いタスクの finally と新ターンの初期化が race する。
-    await _await_task_cancellation(state)
 
     # interrupt 後の SDK client は内部状態が壊れている可能性があり、再利用すると
     # 次ターンの ResultMessage が is_error=true で帰ってきて「⚠ エラーで停止」
     # チップが出たり、以降のターンで挙動がおかしくなる。明示的に disconnect して
-    # 新 send で ensure_client が新しい client を建て直すようにする。
+    # (= 持続 receive task も cancel される)、 次 send で ensure_client が新しい
+    # client + 新しい持続 task を建て直すようにする。
     await disconnect_client(session_id)
 
     state.complete = True
     state.buffer_event.set()  # replay 側を wake (= /stop 時の SSE クローズを即時化)
+    state.status_event.set()  # /status SSE にも即時通知
     reset_activity(session_id)
 
     return {"status": "stopped"}
