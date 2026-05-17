@@ -555,7 +555,7 @@ export default function App() {
                 ファイルツリー
               </button>
               <button onClick={() => { fetchLatest(); nextNextFrame(scrollToBottom); setMenuOpen(false) }} className="menu-item">
-                最新を取得
+                会話を最新にする
               </button>
               {activeSession && (
                 <button
