@@ -1,5 +1,5 @@
 // App.jsx から責務分離した小粒 hook 群 (= push 状態同期、 既読化、 バッジ、 deep link 等)。
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE, LS_SESSION_ACTIVITY } from '../constants.js'
 
 
@@ -77,32 +77,43 @@ export function useSessionActivity(messages, sessions) {
     return {}
   })
 
+  // messages dict は streaming flush で rAF 毎に新 reference になるが、 各 sid の
+  // length が変化しない限りこの effect は走らせたくない。 length signature を計算して
+  // dep にすることで、 reference 変化だけの再発火を抑える。
+  const messagesLenSig = useMemo(
+    () => Object.entries(messages).map(([sid, arr]) => `${sid}:${(arr || []).length}`).join('|'),
+    [messages]
+  )
+  const messagesRef = useRef(messages)
+  useEffect(() => { messagesRef.current = messages }, [messages])
+
   useEffect(() => {
+    const cur = messagesRef.current
     setSessionActivity(prev => {
       let changed = false
       const next = { ...prev }
       const now = Date.now()
-      for (const sid of Object.keys(messages)) {
-        const arr = messages[sid] || []
-        const cur = next[sid]
-        if (!cur) {
+      for (const sid of Object.keys(cur)) {
+        const arr = cur[sid] || []
+        const curEntry = next[sid]
+        if (!curEntry) {
           if (arr.length > 0) {
             next[sid] = { length: arr.length, ts: 0 }
             changed = true
           }
           continue
         }
-        if (arr.length > cur.length) {
+        if (arr.length > curEntry.length) {
           next[sid] = { length: arr.length, ts: now }
           changed = true
-        } else if (arr.length < cur.length) {
-          next[sid] = { length: arr.length, ts: cur.ts }
+        } else if (arr.length < curEntry.length) {
+          next[sid] = { length: arr.length, ts: curEntry.ts }
           changed = true
         }
       }
       return changed ? next : prev
     })
-  }, [messages])
+  }, [messagesLenSig])
 
   useEffect(() => {
     try { localStorage.setItem(LS_SESSION_ACTIVITY, JSON.stringify(sessionActivity)) } catch { /* ignore */ }
@@ -156,15 +167,25 @@ export function useSessionBadges({ sids, activeSid, messages, loading }) {
     setLastSeenLen(prev => (prev[sid] === len ? prev : { ...prev, [sid]: len }))
   }, [])
 
-  // active 会話: messages 変化のたびに lastSeen を最新化
+  // length signature: messages reference 変化ではなく、 実際に length が変わった時だけ
+  // 下の useEffect を発火させる。 streaming flush で rAF 毎に messages reference が変わる
+  // のを吸収するためのキー。
+  const activeMsgLen = activeSid ? (messages[activeSid] || []).length : 0
+  const messagesLenSig = useMemo(
+    () => sids.map(sid => `${sid}:${(messages[sid] || []).length}`).join('|'),
+    [sids, messages]
+  )
+
+  // active 会話: 表示中セッションの length が変わった時だけ lastSeen を最新化
   useEffect(() => {
     if (!activeSid) return
-    const len = (messages[activeSid] || []).length
-    setLastSeenLen(prev => (prev[activeSid] === len ? prev : { ...prev, [activeSid]: len }))
-  }, [activeSid, messages])
+    setLastSeenLen(prev => (prev[activeSid] === activeMsgLen ? prev : { ...prev, [activeSid]: activeMsgLen }))
+  }, [activeSid, activeMsgLen])
 
-  // 削除された session の lastSeen 掃除 + 新規 / 未初期化 sid は現在 length で seed
+  // 削除された session の lastSeen 掃除 + 新規 / 未初期化 sid は現在 length で seed。
+  // messagesRef 経由で最新値を読み取り (= dep に messages 直接置かない)。
   useEffect(() => {
+    const cur = messagesRef.current
     setLastSeenLen(prev => {
       const sidSet = new Set(sids)
       const next = { ...prev }
@@ -174,28 +195,47 @@ export function useSessionBadges({ sids, activeSid, messages, loading }) {
       }
       for (const sid of sids) {
         if (next[sid] == null) {
-          next[sid] = (messages[sid] || []).length
+          next[sid] = (cur[sid] || []).length
           changed = true
         }
       }
       return changed ? next : prev
     })
-  }, [sids, messages])
+  }, [sids, messagesLenSig])
 
-  const sessionBadges = {}
-  let unreadCount = 0
-  for (const sid of sids) {
-    if (sid === activeSid) { sessionBadges[sid] = null; continue }
-    const arr = messages[sid] || []
-    const pending = arr.some(m => m.askUserQuestion && !m.askUserQuestion.answered)
-    if (pending) { sessionBadges[sid] = { kind: 'pending', label: '?' }; continue }
-    if (loading[sid]) { sessionBadges[sid] = { kind: 'processing', label: '●' }; continue }
-    const lastSeen = lastSeenLen[sid] ?? arr.length
-    // unreadCount はアプリアイコンバッジ数字用 = 「新着 (= 赤丸)」 のみカウント。
-    // 処理中 (= 青丸) や質問待ち (= ?) はバッジに含めない仕様。
-    if (arr.length > lastSeen) { sessionBadges[sid] = { kind: 'new', label: '●' }; unreadCount++; continue }
-    sessionBadges[sid] = null
-  }
+  // 各 session の表示状態 signature: length + pending question 有無 + loading 状態を
+  // 1 つの string に圧縮。 messages dict reference が rAF 毎に変わっても、 実効状態が
+  // 変わらない限り signature は同値 → 下の useMemo は dep 不変判定で同じ object を返し、
+  // SessionDrawer 等下流の不要な re-render を抑える。
+  const sessionStateSig = useMemo(
+    () => sids.map(sid => {
+      const arr = messages[sid] || []
+      const pending = arr.some(m => m.askUserQuestion && !m.askUserQuestion.answered)
+      return `${sid}:${arr.length}:${pending ? 'p' : ''}:${loading[sid] ? 'l' : ''}`
+    }).join('|'),
+    [sids, messages, loading]
+  )
+
+  // sessionBadges / unreadCount: signature が同じ間は同じ object を返す。
+  // unreadCount はアプリバッジ用 = 「新着 (= 赤丸)」 のみカウント。 処理中 (= 青丸) や
+  // 質問待ち (= ?) はバッジに含めない仕様。
+  const { sessionBadges, unreadCount } = useMemo(() => {
+    const cur = messagesRef.current
+    const badges = {}
+    let count = 0
+    for (const sid of sids) {
+      if (sid === activeSid) { badges[sid] = null; continue }
+      const arr = cur[sid] || []
+      const pending = arr.some(m => m.askUserQuestion && !m.askUserQuestion.answered)
+      if (pending) { badges[sid] = { kind: 'pending', label: '?' }; continue }
+      if (loading[sid]) { badges[sid] = { kind: 'processing', label: '●' }; continue }
+      const lastSeen = lastSeenLen[sid] ?? arr.length
+      if (arr.length > lastSeen) { badges[sid] = { kind: 'new', label: '●' }; count++; continue }
+      badges[sid] = null
+    }
+    return { sessionBadges: badges, unreadCount: count }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSid, sessionStateSig, lastSeenLen])
   return { sessionBadges, unreadCount, markAsSeen }
 }
 
