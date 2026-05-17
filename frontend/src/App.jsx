@@ -23,7 +23,6 @@ import {
   useMoonlightAvailable,
 } from './hooks/useAppEffects.js'
 import { setBadge } from './utils/badge.js'
-import { nextNextFrame } from './utils/raf.js'
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
 // 公式 CLI が受け入れる短縮形 + effort 階層 (= module scope const、 毎 render 再生成を避ける)。
@@ -553,9 +552,6 @@ export default function App() {
               </button>
               <button onClick={() => { setTreeOpen('~'); setMenuOpen(false) }} className="menu-item">
                 ファイルツリー
-              </button>
-              <button onClick={() => { fetchLatest(); nextNextFrame(scrollToBottom); setMenuOpen(false) }} className="menu-item">
-                会話を最新にする
               </button>
               {activeSession && (
                 <button
