@@ -4,10 +4,6 @@ Claude Code をスマートフォンから操作するための PWA クライア
 バックエンドに Tailscale 経由で iPhone / Android のブラウザから繋ぎ、 ホーム画面に
 追加すれば普通のチャットアプリのように使える。
 
-> ⚠️ **個人開発・自分用に作ってます**。 そのまま誰でも動くようには整えてません。
-> 使ってみたい人向けに手順は書いてあるけど、 サポートは無し、 issue / PR は基本見ません。
-> 動かなくても怒らないでね。
-
 ## できること
 
 - **チャット**: 複数のセッション (= 議題) を並走、 タブで切替。 SSE で逐次表示
@@ -37,16 +33,16 @@ Claude Code をスマートフォンから操作するための PWA クライア
 ```
 [スマートフォン]                  [Mac (= 開発機)]
                                 ┌──────────────────────┐
-   PWA (Safari/Chrome) ─────┐   │ FastAPI backend       │
-       │                     │   │   ├ Claude Code CLI   │
-       │                     ├─▶│   │   subprocess        │
-       │                     │   │   └ Web Push (VAPID)   │
-   ホーム画面追加で          │   │                       │
-   standalone 起動           │   │ moonlight-web-stream  │ ← 任意
-                              │   │   └ Sunshine          │ ← 任意
-                              │   └──────────────────────┘
-                              │              ↕ Tailscale
-                              └──────────────┘
+   PWA (Safari/Chrome) ─────┐   │ FastAPI backend      │
+       │                    │   │   ├ Claude Code CLI  │
+       │                    ├─▶ │   │   subprocess     │
+       │                    │   │   └ Web Push (VAPID) │
+   ホーム画面追加で            │   │                      │
+   standalone 起動           │   │ moonlight-web-stream │ ← 任意
+                            │   │   └ Sunshine         │ ← 任意
+                            │   └──────────────────────┘
+                            │              ↕ Tailscale
+                            └──────────────┘
 ```
 
 - バックエンドは Mac 上で常駐、 Claude Code CLI を subprocess として呼び出す
