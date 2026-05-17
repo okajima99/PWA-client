@@ -23,9 +23,23 @@ SESSION_END_PREFIX = "=== SESSION END "
 # 1 タブが「現在 + 1 個前」 の 2 セッションぶんまで保持する
 KEEP_SESSIONS = 2
 
+# 1 セッションログの上限 (= bytes)。 超えたら頭から N% を捨てて末尾を残す (= 直近を見たい
+# 用途に最適化)。 KEEP_SESSIONS = 2 と合わせて 1 タブあたりの最大容量を bound する
+# (= 上限 ~5MB / session × 2 = 10MB)。
+SESSION_LOG_MAX_BYTES = 5 * 1024 * 1024
+# 上限到達時に切り詰める割合 (= 0.5 なら前半 50% を捨てる)。 頻繁な trim を避けるため
+# 大きめに削る。
+SESSION_LOG_TRIM_RATIO = 0.5
+
 # session_id → 開きっぱなしの append-mode file handle
 # 同 backend プロセス (シングル) で使うので排他制御は不要、 GIL 内で逐次 write される
 _handles: dict[str, "object"] = {}
+# session_id → 直近サイズチェック以降に書いたバイト数 (= 毎 write で stat する代わりに、
+# 増分が一定を超えた時だけ実 stat を取って trim 判定する)
+_write_since_check: dict[str, int] = {}
+# stat を取るかを決める閾値 (= 100KB 書く毎に 1 回 stat)。 サイズ計算と open/close の
+# オーバーヘッドを抑えるための間引き。
+_STAT_CHECK_INTERVAL_BYTES = 100 * 1024
 
 
 def _path_for(session_id: str) -> Path:
@@ -49,6 +63,7 @@ def _get_handle(session_id: str):
 
 def _drop_handle(session_id: str) -> None:
     h = _handles.pop(session_id, None)
+    _write_since_check.pop(session_id, None)
     if h is None:
         return
     try:
@@ -57,11 +72,48 @@ def _drop_handle(session_id: str) -> None:
         pass
 
 
+def _maybe_trim(session_id: str) -> None:
+    """書き込み済バイト数が一定を超えたら実 stat を取り、 ファイルが SESSION_LOG_MAX_BYTES
+    を超えてたら頭から TRIM_RATIO 分を捨てる。 stat は毎 write で取らず間引く。"""
+    written = _write_since_check.get(session_id, 0)
+    if written < _STAT_CHECK_INTERVAL_BYTES:
+        return
+    _write_since_check[session_id] = 0
+    p = _path_for(session_id)
+    try:
+        size = p.stat().st_size
+    except Exception:
+        return
+    if size <= SESSION_LOG_MAX_BYTES:
+        return
+    # 上限超過: 頭から TRIM_RATIO 分を捨てる。 ハンドルを閉じてから一気に読み出して
+    # 末尾 (1 - TRIM_RATIO) を新 file に書き直す (= atomic に replace)。 行境界で
+    # 切るために最初の '\n' まで読み飛ばす。
+    _drop_handle(session_id)
+    try:
+        data = p.read_bytes()
+    except Exception:
+        logger.exception("session-log trim read failed for %s", session_id)
+        return
+    cut_at = int(len(data) * SESSION_LOG_TRIM_RATIO)
+    nl = data.find(b"\n", cut_at)
+    if nl >= 0:
+        cut_at = nl + 1
+    new_bytes = data[cut_at:]
+    try:
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_bytes(new_bytes)
+        tmp.replace(p)
+    except Exception:
+        logger.exception("session-log trim write failed for %s", session_id)
+
+
 def session_log(session_id: str, line: str) -> None:
     """1 行追記。 line に改行文字は含まない前提 (内部で 1 行 = 1 イベント)。
     open はキャッシュされたハンドル経由で行うので毎回の open/close コストは無い。
     `buffering=1` (line buffering) で 1 行ごとに flush されるため、
-    プロセス kill 時のロスは最大 1 行。"""
+    プロセス kill 時のロスは最大 1 行。
+    write 量を蓄積して一定バイトごとに _maybe_trim を呼び、 上限超えてたら頭を切り詰める。"""
     if not session_id:
         return
     h = _get_handle(session_id)
@@ -69,11 +121,15 @@ def session_log(session_id: str, line: str) -> None:
         return
     try:
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        h.write(f"{ts} {line}\n")
+        payload = f"{ts} {line}\n"
+        h.write(payload)
     except Exception:
         logger.exception("session_log write failed for session=%s", session_id)
         # 壊れたハンドルは捨てる (次回 open し直す)
         _drop_handle(session_id)
+        return
+    _write_since_check[session_id] = _write_since_check.get(session_id, 0) + len(payload.encode("utf-8"))
+    _maybe_trim(session_id)
 
 
 def mark_session_end(session_id: str) -> None:

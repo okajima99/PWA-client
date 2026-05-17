@@ -13,6 +13,7 @@
 """
 import asyncio
 import logging
+import logging.handlers
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,12 +23,48 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 # --- ロギング初期化 (各モジュール import より前) ---
-ERROR_LOG_PATH = Path(__file__).parent.parent / "logs" / "backend.error.log"
-logging.basicConfig(
-    filename=str(ERROR_LOG_PATH),
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
+# 全 logger は RotatingFileHandler で自動 rotate (= ファイルサイズ上限を 5MB、 過去 3 世代まで
+# 保持)。 backend を長時間稼働させても backend.error.log は最大 ~20MB で頭打ち。
+# 加えて uvicorn の access log (= 通常 stdout に流れて LaunchAgent の StandardOutPath で
+# backend.log に永続 append されてた、 過去 18MB まで膨らんだ実績) も同じ機構に流す
+# (= setup_uvicorn_access_log() で別 file に rotation 付きで投入)。
+LOG_DIR = Path(__file__).parent.parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+ERROR_LOG_PATH = LOG_DIR / "backend.error.log"
+ACCESS_LOG_PATH = LOG_DIR / "backend.access.log"
+LOG_MAX_BYTES = 5 * 1024 * 1024   # 5MB / file
+LOG_BACKUP_COUNT = 3              # 過去 3 世代 (= 合計 ~20MB 上限)
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+
+def _make_rotating_handler(path: Path) -> logging.Handler:
+    h = logging.handlers.RotatingFileHandler(
+        str(path), maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
+    )
+    h.setFormatter(logging.Formatter(_LOG_FORMAT))
+    return h
+
+
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+# basicConfig だと既設 handler があれば no-op になるので addHandler で明示
+_root.addHandler(_make_rotating_handler(ERROR_LOG_PATH))
+
+
+def setup_uvicorn_access_log() -> None:
+    """uvicorn の access logger を専用 rotating file に向ける。
+    LaunchAgent の StandardOutPath (= backend.log) に永続 append されてた経路を断つ。"""
+    access = logging.getLogger("uvicorn.access")
+    # propagate=False で root logger (= error.log) への二重出力を防ぐ
+    access.propagate = False
+    access.setLevel(logging.INFO)
+    # 既存 handler が居れば外す (= uvicorn が StreamHandler を default で付ける)
+    for h in list(access.handlers):
+        access.removeHandler(h)
+    access.addHandler(_make_rotating_handler(ACCESS_LOG_PATH))
+
+
+setup_uvicorn_access_log()
 logger = logging.getLogger(__name__)
 
 # --- アプリ内モジュール ---
@@ -60,11 +97,8 @@ async def lifespan(app: FastAPI):
                     f.unlink(missing_ok=True)
                 except Exception:
                     logger.debug("upload tmp unlink failed: %s", f, exc_info=True)
-    if ERROR_LOG_PATH.exists() and ERROR_LOG_PATH.stat().st_size > 10 * 1024 * 1024:
-        try:
-            ERROR_LOG_PATH.write_text("")
-        except Exception:
-            logger.debug("error log truncate failed", exc_info=True)
+    # backend.error.log / backend.access.log は RotatingFileHandler で自動 rotate するので
+    # 起動時 truncate は不要。
 
     # per-tab ログ: 既存セッションぶんの掃除を起動時に 1 回走らせる
     # (セッション終了で都度 prune する設計だが、 取りこぼし対策として保険で実行)
