@@ -259,6 +259,11 @@ last_assistant_text: dict[str, str] = {sid: "" for sid in sessions_meta}
 # --- グローバルフラグ (mutate 越し import 用に dict ラップ) ---
 flags: dict = {"user_visible": False}
 
+# backend プロセスの起動時刻 (= /status payload に含めて frontend が再起動を検知)。
+# LaunchAgent KeepAlive で自動再起動した場合に、 frontend 側で stale な streaming bubble を
+# 停止扱いに固定するためのシグナル。
+backend_start_time: float = time.time()
+
 
 # --- セッション操作ヘルパ ---
 def register_session(agent_id: str, title: str | None = None) -> SessionDef:

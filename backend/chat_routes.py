@@ -36,6 +36,7 @@ from session_logging import (
 )
 from state import (
     agent_status,
+    backend_start_time,
     register_session,
     rename_session,
     reset_activity,
@@ -284,6 +285,11 @@ async def end_session(session_id: str):
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
     # SDK クライアントを切断（再接続で新セッションになる）
     await disconnect_client(session_id)
+    # セッション終了は完全 reset、 orphan tool_use も持ち越さない (= 次 turn は新規 claude
+    # セッションなので前 turn の tool_use_id を参照しても無意味)。
+    state = stream_states.get(session_id)
+    if state is not None:
+        state.orphaned_tool_use_id = None
     sessions[session_id] = None
     save_sessions()
     agent_status[session_id]["todos"] = None
@@ -319,6 +325,9 @@ def _build_status(session_id: str) -> dict:
         "buffer_length": len(state.buffer),
         "buffer_id": state.buffer_id,
         "pending_question_tool_id": state.pending_question_tool_id,
+        # backend プロセスの起動時刻 (= frontend がこの値の変化で「再起動された」 と検知し、
+        # 古い streaming bubble を強制的に停止扱いに固定する)。
+        "backend_start_time": backend_start_time,
     }
 
 

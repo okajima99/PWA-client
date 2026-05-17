@@ -369,15 +369,34 @@ async def _process_message(state, session_id: str, msg: Any) -> None:
             f"[wire] type={wire.get('type')} request_id={current_request_id}{_suffix}",
         )
 
-    # ResultMessage の後は turn 終了 → complete=True、 current ID クリア
+    # ResultMessage の後は turn 終了 → complete=True、 current ID クリア。
+    # ただし「前ターンの遅延 ResultMessage が新ターン開始後に届く」 stale ケースは
+    # state.complete を上書きしない (= 新ターンの complete=False を守る)。
+    #
+    # stale 判定: current_request_id がユーザーターン由来 (user_xxx 形式 = proactive_ で
+    # 始まらない) かつ現在の state.user_request_id と異なる = chat_stream で既に新規
+    # user_request_id がセット済み → 自分は前ターン由来の遅延 wire。
     if isinstance(msg, ResultMessage):
-        state.complete = True
-        state.last_activity_at = time.time()
-        state.buffer_event.set()
-        state.status_event.set()
-        reset_activity(session_id)
-        if current_request_id == state.user_request_id:
-            state.user_request_id = None
+        is_stale = (
+            state.user_request_id is not None
+            and current_request_id is not None
+            and current_request_id != state.user_request_id
+            and not current_request_id.startswith("proactive_")
+        )
+        if not is_stale:
+            state.complete = True
+            state.last_activity_at = time.time()
+            state.buffer_event.set()
+            state.status_event.set()
+            reset_activity(session_id)
+            if current_request_id == state.user_request_id:
+                state.user_request_id = None
+        else:
+            session_log(
+                session_id,
+                f"[stale-result] dropped request_id={current_request_id} "
+                f"(current user_request_id={state.user_request_id})",
+            )
         current_request_id = None  # 次の UserMessage で再決定
 
     # current を state に書き戻す (= 次のメッセージで使う)
@@ -460,7 +479,9 @@ async def ensure_client(session_id: str) -> ClaudeSDKClient:
 
 
 async def disconnect_client(session_id: str) -> None:
-    """SDK client を切断する。 持続 receive task も cancel + await。"""
+    """SDK client を切断する。 持続 receive task も cancel + await。
+    turn 系の transient state (= user_request_id / orphan / current ID) も明示リセットして、
+    次の ensure_client → POST で前 turn の残骸が混入しないようにする。"""
     state = stream_states.get(session_id)
     if state is None:
         return
@@ -473,6 +494,13 @@ async def disconnect_client(session_id: str) -> None:
         except (Exception, asyncio.CancelledError):
             pass
     state.receive_task = None
+    # 切断時の transient state クリア (= 前 turn の user_request_id / current ID が残ってると
+    # 次 POST で 自発ターンが誤って USER ターン扱いされる race を防ぐ)。
+    # orphaned_tool_use_id は chat_stop 経路で「次 POST に synthetic tool_result を注入する」
+    # 用途で意図的に残す設計、 ここではクリアしない。 完全リセットしたい呼び出し側
+    # (= end_session / DELETE) は disconnect_client 後に明示クリアする。
+    state.user_request_id = None
+    state._current_request_id = None  # type: ignore[attr-defined]
     if client is None:
         return
     # 先に参照を切る (この時点で並行 ensure_client は新 client を立て直す)
