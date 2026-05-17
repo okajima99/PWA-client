@@ -247,6 +247,15 @@ def _on_user_msg(session_id: str, msg: UserMessage, is_subagent: bool) -> None:
 def _on_assistant_msg(session_id: str, msg: AssistantMessage, is_subagent: bool) -> None:
     """AssistantMessage を agent_status に反映: ctx_pct / current_tool / todos /
     plan_mode / last_assistant_text。 subagent 由来はメイン文脈を汚さないため skip。"""
+    # debug log: 同 uuid 重複 / text 抜け / partial 上書きを後で追跡するための足跡。
+    # b1da8d6 で消したが「中間出力反映されない」 regression 調査のため復活 (2026-05-18)。
+    text_preview = "".join(b.text for b in msg.content if isinstance(b, TextBlock))[:80]
+    tool_names = [b.name for b in msg.content if isinstance(b, ToolUseBlock)]
+    session_log(
+        session_id,
+        f"[msg] AssistantMessage uuid={msg.uuid} stop_reason={msg.stop_reason} "
+        f"parent={msg.parent_tool_use_id} text={text_preview!r} tools={tool_names}",
+    )
     if is_subagent:
         return
     if msg.usage:
