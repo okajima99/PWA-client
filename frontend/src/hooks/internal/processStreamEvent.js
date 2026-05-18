@@ -90,18 +90,26 @@ export function processStreamEvent(deps, sid, event) {
     return
   }
 
-  // AskUserQuestion バブル
+  // AskUserQuestion バブル。 reconnect 時に同じ event が replay されても
+  // 過去の (= 既に回答済の) AskUserQuestion を最新 agent message に上書きで
+  // 復活させないよう、 全履歴で tool_use_id を検査して既知ならスキップする。
+  // (旧実装は last だけ見ていたので、 回答済 → 新 agent message が来た後で
+  // 同じ event が replay されると last に answered:false で graft され、
+  // 「1 個前の?がアクティブに戻る / 会話タブ ? バッジが消えない」 を招いていた)
   if (event.type === 'ask_user_question') {
     const tool_use_id = event.tool_use_id
     const questions = event.input?.questions || []
     cancelAndFlush(sid)
     setMessages(prev => {
       const cur = prev[sid] || []
+      // 履歴全体で同じ tool_use_id が既に存在するなら何もしない (replay 防衛)
+      if (cur.some(m => m.askUserQuestion?.tool_use_id === tool_use_id)) return prev
       const msgs = [...cur]
       const last = msgs[msgs.length - 1]
       const aq = { tool_use_id, questions, answered: false, selectedAnswer: null }
-      if (last?.role === 'agent') {
-        if (last.askUserQuestion?.tool_use_id === tool_use_id) return prev
+      // last が「まだ AskUserQuestion を持ってない agent message」 なら同居、
+      // それ以外 (= user / 既に別の question を持ってる) は新 bubble で push
+      if (last?.role === 'agent' && !last.askUserQuestion) {
         msgs[msgs.length - 1] = { ...last, askUserQuestion: aq }
       } else {
         msgs.push({
@@ -164,11 +172,19 @@ export function processStreamEvent(deps, sid, event) {
   // 通常受信も replay も同じロジックで処理し、 バブル単位の重複は uuid で flush 時に dedup する。
   // (event.uuid = AssistantMessage の uuid。 同じものを 2 回 replay しても 1 つの bubble に収束)
   const buf = bufFor ? bufFor(sid) : streamBufRef.current[sid]
+  const eventUuid = event.uuid || null
+  // 異なる AssistantMessage uuid が来たら、 buf に居る前の AM を rAF 待たず先に flush する。
+  // (replay で連続して別 uuid が back-to-back に来た時、 同 rAF 窓内で上書きされて
+  // 中間 AssistantMessage が render されない regression を防ぐ。 同 uuid 連打 = 同じ
+  // bubble への streaming 更新は coalesce で OK)
+  if (buf.dirty && buf.uuid && eventUuid && buf.uuid !== eventUuid) {
+    cancelAndFlush(sid)
+  }
   buf.needsNewBubble = true
   buf.text = textContent
   buf.thinking = thinkingContent || null
   buf.newTools = newTools
-  buf.uuid = event.uuid || null
+  buf.uuid = eventUuid
   buf.dirty = true
   scheduleFlush(sid)
 }

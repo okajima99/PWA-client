@@ -498,7 +498,7 @@ export default function App() {
               onOpenFile={handleOpenPath}
               onAnswer={handleAnswer}
               apiKeySource={activeSid ? apiKeySource[activeSid] : null}
-              activeSubagent={status?.subagent || null}
+              activeSubagentTool={status?.subagent?.last_tool || null}
             />
           ))}
         </div>

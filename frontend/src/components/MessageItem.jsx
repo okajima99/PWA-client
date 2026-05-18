@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import MessageRenderer from '../MessageRenderer.jsx'
 import AskUserQuestionBubble from './AskUserQuestionBubble.jsx'
 import AttachedImages from './AttachedImages.jsx'
@@ -107,12 +107,19 @@ function DiffView({ diffInput }) {
     return () => ctrl.abort()
   }, [diffInput])
 
+  // LCS は重いので diffInput 単位でキャッシュ。 親の rAF flush で
+  // MessageItem が再 render されても recompute しない (= 大きな Edit/Write で
+  // main thread が固まらない)。
+  const rawOps = useMemo(() => {
+    if (!diffInput || diffInput.kind !== 'edit') return null
+    return compactDiff(diffLines(diffInput.old_string, diffInput.new_string), 2)
+  }, [diffInput])
+
   if (!diffInput) return null
 
   if (diffInput.kind === 'edit') {
     const effectiveBase = baseLine ?? 1
     const isRelative = baseLine == null
-    const rawOps = compactDiff(diffLines(diffInput.old_string, diffInput.new_string), 2)
     const ops = annotateLineNumbers(rawOps, effectiveBase)
     // path は summary に出てるので冗長。replace_all フラグ or 行番号相対注記があるときだけヘッダを出す
     const showHeader = diffInput.replace_all || (baseKnown && isRelative)
@@ -226,7 +233,7 @@ function CompactBanner({ msg }) {
   )
 }
 
-const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKeySource, activeSubagent }) {
+const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKeySource, activeSubagentTool }) {
   if (msg.role === 'system' && msg.kind === 'compact') {
     return <CompactBanner msg={msg} />
   }
@@ -311,8 +318,8 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
                       {/* Task tool が進行中 (= result 未受信) でかつ status.subagent が active なら、
                           subagent 内で今動いてる sub-tool 名を inline 併記する。 これで「Task が
                           何をやってるか」 が普通の tool 行として観察可能 (= ActivityBar 撤去の代替)。 */}
-                      {t.name === 'Task' && !t.result && activeSubagent?.last_tool && (
-                        <span className="tool-meta"> · ↳ {activeSubagent.last_tool}</span>
+                      {t.name === 'Task' && !t.result && activeSubagentTool && (
+                        <span className="tool-meta"> · ↳ {activeSubagentTool}</span>
                       )}
                     </summary>
                     {hasMore && (
