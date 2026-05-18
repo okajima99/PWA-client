@@ -26,13 +26,34 @@ function AskUserQuestionBubble({ askUserQuestion, onAnswer }) {
   const questionText = typeof q.question === 'string' ? q.question : JSON.stringify(q.question ?? '')
   const headerText = typeof q.header === 'string' ? q.header : ''
 
+  // 回答済は details で折りたたみ。 options / free input は完全に非表示にして
+  // 「回答済の選択肢ボタンがまた active に見える」 不安をゼロにする。
+  if (answered) {
+    const summaryAnswer = selectedAnswer || '(送信中)'
+    const summaryDisplay = summaryAnswer.length > 60
+      ? summaryAnswer.slice(0, 60) + '…'
+      : summaryAnswer
+    return (
+      <details className="ask-question answered">
+        <summary className="ask-summary">✓ 回答済: {summaryDisplay}</summary>
+        <div className="ask-answered-body">
+          {headerText && <div className="ask-header">{headerText}</div>}
+          <div className="ask-text">{questionText}</div>
+          {selectedAnswer && (
+            <div className="ask-answered-detail">回答内容: {selectedAnswer}</div>
+          )}
+        </div>
+      </details>
+    )
+  }
+
+  // ここから下は未回答経路だけ。 回答済は上で早期 return 済。
   const submit = (answer) => {
-    if (answered || !answer) return
+    if (!answer) return
     onAnswer(tool_use_id, answer)
   }
 
   const handleOptionClick = (label) => {
-    if (answered) return
     if (multi) {
       setSelected(prev => prev.includes(label) ? prev.filter(x => x !== label) : [...prev, label])
     } else {
@@ -53,20 +74,19 @@ function AskUserQuestionBubble({ askUserQuestion, onAnswer }) {
   }
 
   return (
-    <div className={`ask-question ${answered ? 'answered' : ''}`}>
+    <div className="ask-question">
       {headerText && <div className="ask-header">{headerText}</div>}
       <div className="ask-text">{questionText}</div>
 
       {options.length > 0 && (
         <div className={`ask-options ${multi ? 'multi' : 'single'}`}>
           {options.map((opt, i) => {
-            const isSelected = multi ? selected.includes(opt.label) : (answered && selectedAnswer === opt.label)
+            const isSelected = multi && selected.includes(opt.label)
             return (
               <button
                 key={i}
                 className={`ask-option ${isSelected ? 'selected' : ''}`}
                 onClick={() => handleOptionClick(opt.label)}
-                disabled={answered}
                 title={opt.description}
               >
                 {multi && <span className="ask-check">{isSelected ? '☑' : '☐'}</span>}
@@ -78,7 +98,7 @@ function AskUserQuestionBubble({ askUserQuestion, onAnswer }) {
         </div>
       )}
 
-      {multi && !answered && (
+      {multi && (
         <button className="ask-submit" onClick={handleMultiSubmit} disabled={selected.length === 0}>
           選択を送信 ({selected.length})
         </button>
@@ -95,21 +115,17 @@ function AskUserQuestionBubble({ askUserQuestion, onAnswer }) {
             // IME 確定 Enter は無視（iOS / 日本語入力での誤送信防止）
             if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleFreeSubmit()
           }}
-          disabled={answered}
           autoComplete="off"
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
         />
-        <button className="ask-free-send" onClick={handleFreeSubmit} disabled={answered || !freeText.trim()}>
+        <button className="ask-free-send" onClick={handleFreeSubmit} disabled={!freeText.trim()}>
           送信
         </button>
       </div>
 
-      {answered && selectedAnswer && (
-        <div className="ask-answered">回答済: {selectedAnswer}</div>
-      )}
-      {!answered && lastError && (
+      {lastError && (
         <div className="ask-error">⚠ 送信失敗: {lastError}（もう一度押して再試行）</div>
       )}
     </div>
