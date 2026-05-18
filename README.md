@@ -328,6 +328,32 @@ LaunchAgent 化 (= `com.example.sunshine-audio-switch.plist`) で常駐させる
 Windows / Linux は OS の loopback audio で直接拾える場合が多く、 仮想 device 不要な
 ことが多い (= Sunshine docs の OS 別注記を参照)。
 
+## Troubleshooting
+
+### Chrome / Brave で `NET::ERR_CERTIFICATE_TRANSPARENCY_REQUIRED` 等の HTTPS 証明書エラー
+
+Tailscale が発行する Let's Encrypt 証明書まわりで Chromium 系ブラウザが拒否する
+ケースが Tailscale 側の既知 issue として残ってる (=
+[tailscale/tailscale#16179](https://github.com/tailscale/tailscale/issues/16179))。
+順に試す:
+
+1. **incognito / private window で開き直す** (= 過去 cert state を抜く、 上記 issue で
+   workaround として有効報告あり)
+2. **Tailscale 管理画面で HTTPS Certificates が ON か確認**
+   ([docs](https://tailscale.com/docs/how-to/set-up-https-certificates))
+3. **OS の時刻が正しいか確認** (= 大きくズレてると CT 検証失敗)
+
+上記で抜けない、 もしくは「とりあえず動かしたい」 場合は **direct IP HTTP fallback** で
+回避できる:
+
+```
+http://<your-tailscale-ip>:8000
+```
+
+- `<your-tailscale-ip>` は Tailscale 管理画面 or `tailscale ip` で確認 (= `100.x.x.x`)
+- tailnet 内の通信は WireGuard で暗号化済なので、 HTTPS を剥がしても tailnet 内なら実害なし
+- ホーム画面追加 (= PWA 化) も HTTP URL のままで可能
+
 ## 設定ファイル
 
 ### `backend/config.json`
