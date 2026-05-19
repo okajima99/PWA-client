@@ -1,45 +1,43 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 
-// column-reverse 配置で「最新が見えてる」 と判定する scrollTop 上限 (= px)。 viewport 高さに
-// 比例しない固定値だが、 数 px の指の振動を許容する目的で 30px。 ユーザがメッセージを
-// 戻し読みする時は最低でも 1 段スクロール (= 数十 px) するので識別可能。
-const AT_BOTTOM_TOP_THRESHOLD_PX = 30
-// onScroll の showScrollBtn 更新の throttle 間隔。 60fps で十分、 過剰更新を抑える。
-const SCROLL_THROTTLE_MS = 150
+// 「最新が見えてる」 と判定するボトム余白 (= px)。 数 px の指の振動を許容する目的で 30px。
+// ユーザがメッセージを戻し読みする時は最低でも 1 段スクロール (= 数十 px) するので識別可能。
+const AT_BOTTOM_THRESHOLD_PX = 30
 // scrollToBottom 実行後、 自前 scroll を「ユーザ操作」 と誤検知させないための猶予時間。
 // この間の onScroll は無視する。 短いと render 遅延中の onScroll を拾い、 長いと
 // ユーザ反応に対する反映が遅れる。
 const PROGRAMMATIC_SCROLL_GUARD_MS = 200
 
-// 起動時に最新メッセージが見える」 を最速化するため、 .messages を
-// flex-direction: column-reverse にして「scrollTop=0 = 最新表示の状態」 にする。
-// この hook はその前提で書かれている:
-//   - isAtBottom = (scrollTop ≈ 0)、 = 「最新が見えてる」 の判定
-//   - scrollToBottom = scrollTop = 0
-//   - 上スクロール (scrollTop > 0) = 古いメッセージ閲覧
-//   - 新着メッセージ自動追従は column-reverse が flex で底辺に push してくれる、
-//     scrollTop=0 のままなら何もしなくても見える
-//   - scrollTop > 0 (= 古いメッセージ閲覧中) に新着が来たら hasNew=true で赤丸表示
+// 通常 column (古い→新しい が DOM 上→下) で、 JS で底辺へ scroll する古典構成。
 //
-// 起動 / タブ切替時は useLayoutEffect で paint 前に scrollTop=0 を強制 (= 前 session
-// の scroll 位置が残るのを防ぐ)。
+// 旧実装は flex-direction: column-reverse のトリックを使っていたが、 iOS Safari WebKit で
+// column-reverse + overflow:auto の scrollTop 解釈が壊れていて (= 視覚順序は反転、 数値は
+// 通常 column 仕様) 、 「↓ボタンが下端で出る」「details が上に展開」「scroll 末尾追従が
+// 異常に強い」 等の連鎖症状を起こしていた (= 2026-05-19 修正、 WebKit #225278 系列の bug
+// と整合)。 通常 column に戻すことで全て解消する。
+//
+//   - isAtBottom = (scrollHeight - scrollTop - clientHeight ≤ 30)、 = 「最新が見えてる」
+//   - scrollToBottom = scrollTop を scrollHeight 相当に上げる
+//   - 上スクロール (scrollTop が小さくなる) = 古いメッセージ閲覧
+//   - 新着メッセージ追従は isAtBottom 中のみ JS で再 scroll、 そうでなければ hasNew=true
+//
+// 起動 / タブ切替時は useLayoutEffect で paint 前に底へ flush (= 前 session の scroll 残留防止)。
 export function useAutoScroll({ messages, activeSession }) {
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [hasNew, setHasNew] = useState(false)
   const isAtBottomRef = useRef(true)
   const scrollerDomRef = useRef(null)
-  const scrollThrottleRef = useRef(0)
   const msgLengthRef = useRef({})
   const programmaticScrollRef = useRef(false)
   const scrollEndTimerRef = useRef(null)
   const sid = activeSession?.id
 
-  // 同期: scrollTop=0 (= column-reverse の底辺 = 最新が見える状態)
+  // 同期: 最下端 (= 最新が見える状態) に移動
   const scrollToBottomSync = useCallback(() => {
     const el = scrollerDomRef.current
     if (!el) return
     isAtBottomRef.current = true
-    el.scrollTop = 0
+    el.scrollTop = el.scrollHeight
   }, [])
 
   // 公開: 「↓ 最新へ」 ボタン or send 直後に呼ぶ用
@@ -49,14 +47,14 @@ export function useAutoScroll({ messages, activeSession }) {
     programmaticScrollRef.current = true
     isAtBottomRef.current = true
     setHasNew(false)
-    el.scrollTop = 0
+    el.scrollTop = el.scrollHeight
     clearTimeout(scrollEndTimerRef.current)
     scrollEndTimerRef.current = setTimeout(() => {
       programmaticScrollRef.current = false
     }, PROGRAMMATIC_SCROLL_GUARD_MS)
   }, [])
 
-  // 起動 / タブ切替: paint 前に scrollTop=0 を強制 (= 前 session の scroll 残留防止)
+  // 起動 / タブ切替: paint 前に底へ flush (= 前 session の scroll 残留防止)
   useLayoutEffect(() => {
     if (!sid) return
     isAtBottomRef.current = true
@@ -68,8 +66,8 @@ export function useAutoScroll({ messages, activeSession }) {
   }, [sid])
 
   // 新着メッセージ:
-  //   isAtBottom (scrollTop≈0) なら column-reverse の flex が自動で底辺に push、 何もしなくてOK。
-  //   scrollTop>0 (= 古いメッセージ閲覧中) なら hasNew=true で赤丸表示。
+  //   isAtBottom 中なら底に追従、 上スクロール中 (= 古いメッセージ閲覧) なら hasNew=true で赤丸表示。
+  //   通常 column では新着で要素が下に伸びるだけ、 scroll 位置は変わらないので明示追従が必要。
   useEffect(() => {
     if (!sid) return
     const cur = messages[sid] || []
@@ -77,10 +75,14 @@ export function useAutoScroll({ messages, activeSession }) {
     const prevLen = msgLengthRef.current[sid] || 0
     msgLengthRef.current[sid] = currentLen
 
-    if (currentLen > prevLen && !isAtBottomRef.current) {
-      setHasNew(true)
+    if (currentLen > prevLen) {
+      if (isAtBottomRef.current) {
+        scrollToBottomSync()
+      } else {
+        setHasNew(true)
+      }
     }
-  }, [messages, sid])
+  }, [messages, sid, scrollToBottomSync])
 
   // 画面回転 / キーボード表示等のレイアウト変化時は最新位置に戻す (isAtBottom 中のみ)
   useEffect(() => {
@@ -91,19 +93,40 @@ export function useAutoScroll({ messages, activeSession }) {
     return () => window.removeEventListener('resize', onResize)
   }, [scrollToBottomSync])
 
+  // scroll 容器の子要素 layout が遅延確定する (= Markdown / コードブロック / 画像 / details
+  // 展開等) ケースに追従するための ResizeObserver。 isAtBottom 中なら scrollHeight が伸びる
+  // たびに底辺へ送り直す。 初回マウント / タブ切替の「scrollHeight が後から伸びて底辺まで
+  // 届かない」 問題と、 SSE で長文 AM が伸び続けるケースを同時に解消する。
+  useEffect(() => {
+    const el = scrollerDomRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (isAtBottomRef.current) scrollToBottomSync()
+    })
+    ro.observe(el)
+    // 子要素のサイズ変化も拾う (= 直接の resize でない場合)
+    for (const child of el.children) ro.observe(child)
+    // 子の追加 / 削除に追従するため、 MutationObserver で children を監視
+    const mo = new MutationObserver((muts) => {
+      for (const m of muts) {
+        for (const n of m.addedNodes) if (n.nodeType === 1) ro.observe(n)
+      }
+    })
+    mo.observe(el, { childList: true })
+    return () => { ro.disconnect(); mo.disconnect() }
+  }, [scrollToBottomSync, sid])
+
   const onScroll = useCallback(() => {
     if (programmaticScrollRef.current) return
     const el = scrollerDomRef.current
     if (!el) return
-    // column-reverse: scrollTop が 0 に近い = 最新が見えてる
-    const atBottom = el.scrollTop <= AT_BOTTOM_TOP_THRESHOLD_PX
+    // 通常 column: 底辺 = scrollTop が scrollHeight - clientHeight に近い
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    const atBottom = distanceFromBottom <= AT_BOTTOM_THRESHOLD_PX
     isAtBottomRef.current = atBottom
     if (atBottom) setHasNew(false)
-    const now = Date.now()
-    if (now - scrollThrottleRef.current >= SCROLL_THROTTLE_MS) {
-      scrollThrottleRef.current = now
-      setShowScrollBtn(!atBottom)
-    }
+    // 同値時は React が re-render を bailout するので、 毎回 set で OK。
+    setShowScrollBtn(!atBottom)
   }, [])
 
   return {

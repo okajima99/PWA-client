@@ -5,10 +5,10 @@
   overflow: hidden;
 }
 
-/* column-reverse トリック: scrollTop = 0 が底辺 (= 最新メッセージが見える状態)。
- * 起動時に scroll 操作なしで「最新が下に表示」 が達成される。
- * 上スクロール = 古いメッセージ閲覧、 下スクロール = 最新へ戻る、 という直感とも一致。
- * displayMessages 側で配列を reverse して render すること (App.jsx)。 */
+/* 通常 column: 古い→新しい が上→下。 JS で scrollTop を scrollHeight へ送って底辺維持。
+ * 旧 column-reverse トリックは iOS Safari WebKit の scrollTop 挙動 bug
+ * (= 視覚は反転、 数値は通常 column 仕様) で「↓ボタン位置反転」「details 上に展開」 を
+ * 起こしていたため撤廃 (2026-05-19、 WebKit #225278 系列)。 */
 .messages {
   height: 100%;
   overflow-y: auto;
@@ -16,7 +16,7 @@
   -webkit-overflow-scrolling: touch;
   scroll-behavior: smooth;
   display: flex;
-  flex-direction: column-reverse;
+  flex-direction: column;
 }
 
 /* ↓ スクロールボタン */

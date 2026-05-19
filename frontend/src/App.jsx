@@ -486,12 +486,11 @@ export default function App() {
         </Suspense>
       )}
 
-      {/* メッセージ一覧。 .messages は flex-direction: column-reverse (App.css)、
-        起動時に scroll 操作なしで最新メッセージが下に見える構造。 displayMessages を
-        逆順 render することで column-reverse と相殺し「古い→新しい (上→下)」 配置になる。 */}
+      {/* メッセージ一覧。 .messages は通常 flex-direction: column、 古い→新しい が上→下。
+        起動 / 新着時は useAutoScroll が JS で scrollTop = scrollHeight に送って底辺維持。 */}
       <div className="messages-container">
         <div ref={scrollerDomRef} className="messages" onScroll={onScroll}>
-          {[...displayMessages].reverse().map((msg) => (
+          {displayMessages.map((msg) => (
             <MessageItem
               key={msg.id}
               msg={msg}
