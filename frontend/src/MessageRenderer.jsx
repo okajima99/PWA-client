@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useRef, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { visit } from 'unist-util-visit'
@@ -50,6 +50,42 @@ function remarkFilePaths() {
   }
 }
 
+// コードブロック描画 + 右上「コピー」 ボタン。 textContent を navigator.clipboard.writeText で
+// 投げる素朴実装。 PWA は Tailscale HTTPS 経由なので iOS Safari でも writeText が動く。
+// 失敗時 (= clipboard permission denied / 非 secure context) は console.error のみ、 表示は
+// 「✗」 で 1.5 秒。
+function CodeBlock({ children }) {
+  const ref = useRef(null)
+  const [state, setState] = useState('idle') // 'idle' | 'copied' | 'failed'
+  const timerRef = useRef(null)
+  const onCopy = useCallback(async (e) => {
+    e.stopPropagation()
+    const text = ref.current?.textContent ?? ''
+    try {
+      await navigator.clipboard.writeText(text)
+      setState('copied')
+    } catch (err) {
+      console.error('copy failed', err)
+      setState('failed')
+    }
+    clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => setState('idle'), 1500)
+  }, [])
+  return (
+    <div className="md-code-wrap">
+      <pre ref={ref} className="md-code">{children}</pre>
+      <button
+        type="button"
+        className="md-code-copy"
+        onClick={onCopy}
+        aria-label="コードをコピー"
+      >
+        {state === 'copied' ? '✓' : state === 'failed' ? '✗' : 'copy'}
+      </button>
+    </div>
+  )
+}
+
 const MessageRenderer = React.memo(function MessageRenderer({ text, onOpenFile }) {
   // streaming 中も ReactMarkdown を通す。不完全な Markdown (閉じてない表/コードブロック等) でも
   // react-markdown は例外を吐かず、暫定の見た目で描画する。途中の表やコードが視覚的に見えないよりマシ。
@@ -71,7 +107,7 @@ const MessageRenderer = React.memo(function MessageRenderer({ text, onOpenFile }
           return <a href={href} target="_blank" rel="noreferrer">{children}</a>
         },
         pre({ children }) {
-          return <pre className="md-code">{children}</pre>
+          return <CodeBlock>{children}</CodeBlock>
         },
         code({ className, children }) {
           if (!className) return <code className="inline-code">{children}</code>
