@@ -1,0 +1,27 @@
+name: test
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend deps
+        run: pip install -r backend/requirements.txt
+
+      - name: Seed backend/config.json from example
+        # backend/config.json は gitignore 済 (= 個人設定)。 import 時に読まれるので、
+        # CI では example を copy して default 値で起動できるようにする。
+        run: cp backend/config.example.json backend/config.json
+
+      - name: Run pytest
+        run: python -m pytest backend/tests -v
