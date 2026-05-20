@@ -1,12 +1,14 @@
 #!/bin/bash
 set -eu
 
-# Anonymity scan: refuse commits that introduce personal identifiers or
-# prior-employer / host names. Same PCRE the CI workflow uses (mirrored in
-# `.tooling/local-ci/anon-scan.sh`). Staged files only — the hook stays fast.
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SCANNER="${REPO_ROOT}/.tooling/local-ci/anon-scan.sh"
 
+# -----------------------------------------------------------------------------
+# 1. Anonymity scan: refuse commits introducing personal identifiers or
+#    prior-employer / host names. Same PCRE as .github/workflows/anon-check.yml
+#    (mirrored in .tooling/local-ci/anon-scan.sh). Staged files only — fast.
+# -----------------------------------------------------------------------------
+SCANNER="${REPO_ROOT}/.tooling/local-ci/anon-scan.sh"
 if [ -x "${SCANNER}" ]; then
     staged="$(git diff --cached --name-only --diff-filter=ACMRT)"
     if [ -n "${staged}" ]; then
@@ -19,4 +21,44 @@ if [ -x "${SCANNER}" ]; then
     fi
 else
     echo "warning: ${SCANNER} not found / not executable; skipping anon scan."
+fi
+
+# -----------------------------------------------------------------------------
+# 2. Backend flake8 over staged Python files (critical-only set: syntax /
+#    undefined names / invalid f-string / break-outside-loop). Catches AI-
+#    generated breakage before commit; style nits are deferred to `task lint`.
+# -----------------------------------------------------------------------------
+staged_py="$(git diff --cached --name-only --diff-filter=ACMRT | grep -E '^backend/.*\.py$' || true)"
+if [ -n "${staged_py}" ]; then
+    if command -v flake8 >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        flake8 ${staged_py} || {
+            echo ""
+            echo "flake8 failed on staged backend files. Fix and re-stage, or commit with --no-verify if intentional."
+            exit 1
+        }
+    else
+        echo "warning: flake8 not installed; skipping backend lint. Run: pip install -r backend/requirements.txt"
+    fi
+fi
+
+# -----------------------------------------------------------------------------
+# 3. Frontend ESLint over staged JS/JSX/TS/TSX files under frontend/src/.
+#    npx defers to frontend/node_modules; if ESLint isn't installed yet
+#    (= fresh clone), the check is skipped with a hint.
+# -----------------------------------------------------------------------------
+staged_js="$(git diff --cached --name-only --diff-filter=ACMRT | grep -E '^frontend/src/.*\.(js|jsx|ts|tsx)$' || true)"
+if [ -n "${staged_js}" ]; then
+    if [ -d "${REPO_ROOT}/frontend/node_modules/eslint" ]; then
+        # Strip frontend/ prefix so paths are relative to the eslint config dir.
+        rel_paths="$(echo "${staged_js}" | sed 's|^frontend/||')"
+        # shellcheck disable=SC2086
+        (cd "${REPO_ROOT}/frontend" && npx --no-install eslint ${rel_paths}) || {
+            echo ""
+            echo "ESLint failed on staged frontend files. Fix and re-stage, or commit with --no-verify if intentional."
+            exit 1
+        }
+    else
+        echo "warning: frontend/node_modules/eslint missing; skipping frontend lint. Run: cd frontend && npm install"
+    fi
 fi

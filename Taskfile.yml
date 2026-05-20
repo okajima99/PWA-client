@@ -1,0 +1,79 @@
+# =============================================================================
+# Taskfile - claude-pwa-client unified entry point
+# =============================================================================
+# Prerequisites:
+#   - go-task CLI: `brew install go-task/tap/go-task`
+#   - backend deps: `pip install -r backend/requirements.txt` (in pwa-client conda env)
+#   - frontend deps: `cd frontend && npm install`
+#
+# Usage:
+#   task --list             # show all tasks
+#   task lint               # backend flake8 + frontend ESLint
+#   task lint:fix           # additionally autoformat backend with black
+#   task test:unit          # pytest over backend/tests/
+#   task build              # frontend production build (dist/)
+#   task dev                # Vite dev server (frontend only, backend stays on LaunchAgent)
+# =============================================================================
+
+version: '3'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # ---------------------------------------------------------------------------
+  # Lint
+  # ---------------------------------------------------------------------------
+  lint:
+    desc: Run lint for backend (flake8) and frontend (ESLint)
+    cmds:
+      - task: lint:backend
+      - task: lint:frontend
+
+  lint:backend:
+    desc: flake8 critical-only checks over backend/
+    cmds:
+      - python -m flake8 backend --jobs 1 --count --show-source --statistics
+
+  lint:frontend:
+    desc: ESLint over frontend/src/
+    cmds:
+      - cd frontend && npm run lint
+
+  lint:fix:
+    desc: Lint and autoformat with black (backend) + ESLint (frontend)
+    cmds:
+      - python -m black backend
+      - cd frontend && npm run lint
+
+  # ---------------------------------------------------------------------------
+  # Test
+  # ---------------------------------------------------------------------------
+  test:unit:
+    desc: pytest over backend/tests/
+    cmds:
+      - python -m pytest backend/tests
+
+  # ---------------------------------------------------------------------------
+  # Build / dev server
+  # ---------------------------------------------------------------------------
+  build:
+    desc: Frontend production build (dist/)
+    cmds:
+      - cd frontend && npm run build
+
+  dev:
+    desc: Frontend Vite dev server (backend stays on LaunchAgent)
+    cmds:
+      - cd frontend && npm run dev
+
+  # ---------------------------------------------------------------------------
+  # Anonymity scan (= manual full-tree run; pre-commit hook already covers
+  # staged files automatically)
+  # ---------------------------------------------------------------------------
+  anon:scan:
+    desc: Full-tree anonymity scan (mirrors anon-check CI workflow)
+    cmds:
+      - bash .tooling/local-ci/anon-scan.sh
