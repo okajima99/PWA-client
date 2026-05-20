@@ -1,0 +1,22 @@
+#!/bin/bash
+set -eu
+
+# Anonymity scan: refuse commits that introduce personal identifiers or
+# prior-employer / host names. Same PCRE the CI workflow uses (mirrored in
+# `.tooling/local-ci/anon-scan.sh`). Staged files only — the hook stays fast.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+SCANNER="${REPO_ROOT}/.tooling/local-ci/anon-scan.sh"
+
+if [ -x "${SCANNER}" ]; then
+    staged="$(git diff --cached --name-only --diff-filter=ACMRT)"
+    if [ -n "${staged}" ]; then
+        abs_staged=""
+        while IFS= read -r f; do
+            [ -z "${f}" ] && continue
+            abs_staged="${abs_staged}${REPO_ROOT}/${f}"$'\n'
+        done <<< "${staged}"
+        ANON_SCAN_PATHS="${abs_staged}" bash "${SCANNER}"
+    fi
+else
+    echo "warning: ${SCANNER} not found / not executable; skipping anon scan."
+fi
