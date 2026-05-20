@@ -189,6 +189,10 @@ export default function App() {
       fetchDebounceRef.current = null
       fetchLatest()
     }, STATUS_FETCH_DEBOUNCE_MS)
+    // status object 全体ではなく buffer_length / buffer_id の primitive だけを deps にし、
+    // SSE push のたびに status reference が変わって effect が再発火するのを避けている。
+    // visibilitySuppressUntilRef は ref なので deps 不要 (= ref.current 更新で再発火しない)。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSid, status?.buffer_length, status?.buffer_id, loading, fetchLatest])
 
   // backend 再起動検知: status.backend_start_time が変化したら backend が再起動された
@@ -221,6 +225,8 @@ export default function App() {
       }
       return next
     })
+    // pendingSendUntilRef は ref なので deps 不要 (= ref.current 書き込みは再 render を起こさない)。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.backend_start_time, setLoading, setMessages])
 
   // ボタン UI 用の合成 loading 判定。 3 source の OR:

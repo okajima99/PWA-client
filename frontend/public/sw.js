@@ -57,10 +57,9 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
   const data = event.notification.data || {}
-  const sid = data.sid
   const notifId = data.id  // backend が払い出した通知 id (既読化用)
   // 通知タップは常に chat に着地 (= 旧 native bridge は撤去、 2026-05-16)。
-  // 将来 sid からセッションを active にする deep link は chat 側で実装する。
+  // 将来 sid からセッションを active にする deep link を再導入する時は data.sid を読む。
   const targetUrl = '/'
   event.waitUntil((async () => {
     // 既読化 (失敗時は無視)
