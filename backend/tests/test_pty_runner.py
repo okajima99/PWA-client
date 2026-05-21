@@ -71,6 +71,25 @@ def test_write_and_resize_after_exit_are_noops():
     pty_runner.resize_pty(session, 40, 120)
 
 
+def test_capture_tmux_scrollback_disabled_when_no_wrap(monkeypatch):
+    """USE_TMUX_WRAP=False では capture は常に b''。"""
+    monkeypatch.setattr(pty_runner, "USE_TMUX_WRAP", False)
+    assert pty_runner.capture_tmux_scrollback("anything") == b""
+
+
+def test_has_tmux_session_disabled_when_no_wrap(monkeypatch):
+    monkeypatch.setattr(pty_runner, "USE_TMUX_WRAP", False)
+    assert pty_runner.has_tmux_session("anything") is False
+
+
+def test_capture_tmux_scrollback_returns_empty_on_unknown(monkeypatch):
+    """tmux に存在しない session を指したら returncode!=0 で空 bytes。"""
+    monkeypatch.setattr(pty_runner, "USE_TMUX_WRAP", True)
+    # 存在しないだろう name を渡す (= 仮に存在しても無害な空 capture)
+    out = pty_runner.capture_tmux_scrollback("__nonexistent_test_session__")
+    assert out == b""
+
+
 def test_tmux_session_name_sanitizes_special_chars():
     """tmux に渡せない記号 (`.`, `:`, ` `) を `_` 化、 prefix で衝突避け。"""
     assert pty_runner._tmux_session_name("foo") == "pwa-foo"

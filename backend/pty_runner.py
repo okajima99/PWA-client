@@ -248,6 +248,44 @@ async def terminate_pty_session(session: PtySession, timeout: float = 3.0) -> No
         session.exit_event.set()
 
 
+def has_tmux_session(session_id: str) -> bool:
+    """指定 session の tmux session が既存か。 USE_TMUX_WRAP=False なら常に False。"""
+    if not USE_TMUX_WRAP:
+        return False
+    tmux_name = _tmux_session_name(session_id)
+    result = subprocess.run(
+        [TMUX_BIN, "has-session", "-t", tmux_name],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def capture_tmux_scrollback(session_id: str, lines: int = 5000) -> bytes:
+    """tmux capture-pane で過去出力を ANSI 付きでバイト列取得 (= 再接続時の復元用)。
+
+    `-e` で escape sequence を保持、 `-J` で wrapping を結合、 `-p` で stdout に出力、
+    `-S -<lines>` で過去 `lines` 行ぶん遡る。 結果は ANSI 含むので xterm.write() に
+    そのまま流せば過去画面が復元される。
+    """
+    if not USE_TMUX_WRAP:
+        return b""
+    tmux_name = _tmux_session_name(session_id)
+    try:
+        result = subprocess.run(
+            [TMUX_BIN, "capture-pane", "-p", "-e", "-J", "-S", f"-{lines}", "-t", tmux_name],
+            capture_output=True,
+            timeout=2,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("tmux capture-pane timed out for session=%s", session_id)
+        return b""
+    if result.returncode != 0:
+        return b""
+    # tmux capture-pane の出力は行末 LF。 そのまま xterm に流すと最終行に余分な改行が
+    # 入って claude の現在カーソル位置とズレるので末尾 LF を 1 個だけ剥がす。
+    return result.stdout.rstrip(b"\n")
+
+
 def kill_tmux_session(session_id: str) -> bool:
     """指定 session の tmux session を強制終了する (= 中の claude も死ぬ)。
 

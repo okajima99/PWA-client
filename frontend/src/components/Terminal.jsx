@@ -65,51 +65,73 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
     xtermRef.current = xterm;
     fitRef.current = fit;
 
-    const ws = new WebSocket(`${wsBase}/ws/pty/${encodeURIComponent(sessionId)}`);
-    ws.binaryType = 'arraybuffer';
-    wsRef.current = ws;
+    // WebSocket reconnect 制御: exponential backoff (= 500ms → 10s)。
+    // iOS Safari は background で WS を切るので必須。
+    let cancelled = false;
+    let backoffMs = 500;
+    const MAX_BACKOFF = 10_000;
+    let reconnectTimer = null;
+    let dataDisposable = null;
 
-    ws.addEventListener('open', () => {
-      // 初期 resize を送って claude TUI を画面幅に合わせる
-      ws.send(
-        JSON.stringify({
-          type: 'resize',
-          rows: xterm.rows,
-          cols: xterm.cols,
-        }),
-      );
-    });
+    const connect = () => {
+      if (cancelled) return;
+      const ws = new WebSocket(`${wsBase}/ws/pty/${encodeURIComponent(sessionId)}`);
+      ws.binaryType = 'arraybuffer';
+      wsRef.current = ws;
 
-    ws.addEventListener('message', (ev) => {
-      if (typeof ev.data === 'string') {
-        try {
-          const ctrl = JSON.parse(ev.data);
-          if (ctrl.type === 'exit') {
-            xterm.write(
-              `\r\n\x1b[31m[backend reports PTY exited rc=${ctrl.returncode}]\x1b[0m\r\n`,
-            );
-            onExit?.(ctrl);
-          } else if (ctrl.type === 'error') {
-            xterm.write(
-              `\r\n\x1b[31m[backend error: ${ctrl.message}]\x1b[0m\r\n`,
-            );
-          }
-        } catch {
-          // 未知の text frame は無視
+      ws.addEventListener('open', () => {
+        backoffMs = 500; // 成功したら backoff リセット
+        ws.send(
+          JSON.stringify({
+            type: 'resize',
+            rows: xterm.rows,
+            cols: xterm.cols,
+          }),
+        );
+      });
+
+      ws.addEventListener('message', (ev) => {
+        if (typeof ev.data === 'string') {
+          try {
+            const ctrl = JSON.parse(ev.data);
+            if (ctrl.type === 'exit') {
+              xterm.write(
+                `\r\n\x1b[31m[backend reports PTY exited rc=${ctrl.returncode}]\x1b[0m\r\n`,
+              );
+              onExit?.(ctrl);
+            } else if (ctrl.type === 'error') {
+              xterm.write(
+                `\r\n\x1b[31m[backend error: ${ctrl.message}]\x1b[0m\r\n`,
+              );
+            }
+          } catch { /* 未知の text frame は無視 */ }
+          return;
         }
-        return;
-      }
-      // バイナリ = PTY stdout バイト列、 そのまま render
-      xterm.write(new Uint8Array(ev.data));
-    });
+        // バイナリ = PTY stdout バイト列、 そのまま render
+        xterm.write(new Uint8Array(ev.data));
+      });
 
-    ws.addEventListener('close', () => {
-      xterm.write('\r\n\x1b[2m[disconnected]\x1b[0m\r\n');
-    });
+      const scheduleReconnect = (reason) => {
+        if (cancelled) return;
+        xterm.write(
+          `\r\n\x1b[2m[disconnected: ${reason}, retry in ${Math.round(backoffMs / 100) / 10}s]\x1b[0m\r\n`,
+        );
+        reconnectTimer = setTimeout(() => {
+          backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF);
+          connect();
+        }, backoffMs);
+      };
 
-    // 入力: xterm が受けたキーストロークをそのまま WS にバイナリで流す
-    const dataDisposable = xterm.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      ws.addEventListener('close', (ev) => scheduleReconnect(`close ${ev.code}`));
+      ws.addEventListener('error', () => {
+        try { ws.close(); } catch { /* noop */ }
+      });
+    };
+
+    // 入力: xterm が受けたキーストロークをそのまま現行 WS にバイナリで流す
+    dataDisposable = xterm.onData((data) => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(new TextEncoder().encode(data));
       }
     });
@@ -117,7 +139,8 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
     // resize 連携: container サイズ変動を検知して fit + WS に resize 通知
     const sendResize = () => {
       fit.fit();
-      if (ws.readyState === WebSocket.OPEN) {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(
           JSON.stringify({
             type: 'resize',
@@ -130,10 +153,14 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
     const resizeObserver = new ResizeObserver(sendResize);
     resizeObserver.observe(containerRef.current);
 
+    connect();
+
     return () => {
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       resizeObserver.disconnect();
-      dataDisposable.dispose();
-      try { ws.close(); } catch { /* noop */ }
+      dataDisposable?.dispose();
+      try { wsRef.current?.close(); } catch { /* noop */ }
       xterm.dispose();
       xtermRef.current = null;
       wsRef.current = null;

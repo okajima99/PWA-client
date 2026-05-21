@@ -25,6 +25,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from config import AGENTS, USE_PTY_RUNNER
 from pty_runner import (
     PtySession,
+    capture_tmux_scrollback,
+    has_tmux_session,
     pty_sessions,
     resize_pty,
     spawn_pty_session,
@@ -43,6 +45,16 @@ async def pty_socket(ws: WebSocket, session_id: str) -> None:
         await ws.close(code=4001, reason="USE_PTY_RUNNER is false")
         return
     await ws.accept()
+
+    # 既存 tmux session があれば、 spawn 前に scrollback を送って画面復元する。
+    # client 側の xterm はまだ空、 ここでまとめて書き込んでもらう。
+    reattaching = has_tmux_session(session_id)
+    if reattaching:
+        scrollback = capture_tmux_scrollback(session_id)
+        if scrollback:
+            await ws.send_bytes(scrollback)
+            # scrollback と次の live 出力の境界を示す軽い marker。 ANSI dim で目立たず。
+            await ws.send_bytes(b"\r\n\x1b[2m--- reconnected ---\x1b[0m\r\n")
 
     session = pty_sessions.get(session_id)
     if session is None or session.exit_event.is_set():
