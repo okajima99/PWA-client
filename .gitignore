@@ -20,3 +20,4 @@ logs/
 # 例外: 公開リポ運用に直接使うツール (= 例 penalty-bench.py) は明示 unignore。
 scripts/*
 !scripts/penalty-bench.py
+!scripts/ws-pty-smoketest.py
