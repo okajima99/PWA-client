@@ -16,6 +16,14 @@
     - loop.add_reader で master fd を非ブロッキング read、 chunk を Queue に積む
     - WebSocket route 側が Queue を await して client に流し、 client 入力は write_pty で master に書く
     - resize は TIOCSWINSZ ioctl で master fd に通知
+
+tmux 永続化 (= phase 3):
+    USE_TMUX_WRAP=True (= 既定) のとき、 `claude` を直接でなく
+    `tmux new-session -A -s <session_id> claude` 経由で起動する。
+    - 1 度目の attach: tmux セッション + claude を新規作成して attach
+    - 2 度目以降の attach: 既存セッションに attach (= claude は生きたまま)
+    - WebSocket が切れたら attach (= PTY child) を terminate、 ただし tmux サーバ内の
+      セッション + claude は生存し続けるので backend 再起動でも保たれる
 """
 from __future__ import annotations
 
@@ -25,7 +33,9 @@ import fcntl
 import logging
 import os
 import pty
+import re
 import struct
+import subprocess
 import termios
 from dataclasses import dataclass
 
@@ -36,6 +46,20 @@ logger = logging.getLogger(__name__)
 # 同時稼働 PTY セッション (= session_id -> PtySession)。
 # module-level に置くことで state.py への import 循環を避けつつ shutdown から到達可能。
 pty_sessions: dict[str, "PtySession"] = {}
+
+# tmux で wrap して永続化する。 開発 / test では monkeypatch で False に倒せる。
+USE_TMUX_WRAP: bool = True
+TMUX_BIN: str = "tmux"
+
+# tmux session 名に使える文字に session_id を sanitize する。 tmux は
+# `.`, `:`, ` `, `\` などを名前に許さない。 安全のため英数 + - + _ だけ通す。
+_TMUX_NAME_SAFE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _tmux_session_name(session_id: str) -> str:
+    """tmux 安全な名前に正規化。 pwa-<original> の prefix で衝突避け。"""
+    safe = _TMUX_NAME_SAFE.sub("_", session_id)
+    return f"pwa-{safe}"
 
 
 @dataclass
@@ -90,9 +114,17 @@ async def spawn_pty_session(
     # TTY 想定の TERM を確保 (= 親 server が daemon 起動だと TERM 無いことがある)
     child_env.setdefault("TERM", "xterm-256color")
 
+    # 実行コマンド組み立て: tmux wrap 時は `tmux new-session -A -s <name> claude`、
+    # 直接時は `claude` 単独。 tmux の -A は「既存なら attach、 無ければ作って attach」。
+    if USE_TMUX_WRAP:
+        tmux_name = _tmux_session_name(session_id)
+        argv = [TMUX_BIN, "new-session", "-A", "-s", tmux_name, CLAUDE_PATH]
+    else:
+        argv = [CLAUDE_PATH]
+
     try:
         proc = await asyncio.create_subprocess_exec(
-            CLAUDE_PATH,
+            *argv,
             # programmatic 印になる引数は一切渡さない
             stdin=slave_fd,
             stdout=slave_fd,
@@ -216,8 +248,31 @@ async def terminate_pty_session(session: PtySession, timeout: float = 3.0) -> No
         session.exit_event.set()
 
 
+def kill_tmux_session(session_id: str) -> bool:
+    """指定 session の tmux session を強制終了する (= 中の claude も死ぬ)。
+
+    Returns True if a session existed and was killed, False otherwise.
+    通常の WebSocket disconnect では呼ばない (= 永続化のため)。 ユーザが明示的に
+    「このセッション破棄」 を指示した時だけ呼ぶ。
+    """
+    if not USE_TMUX_WRAP:
+        return False
+    tmux_name = _tmux_session_name(session_id)
+    result = subprocess.run(
+        [TMUX_BIN, "kill-session", "-t", tmux_name],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
 async def shutdown_all() -> None:
-    """backend shutdown 時、 全 PTY セッションを綺麗に閉じる。"""
+    """backend shutdown 時、 全 PTY child (= attach 接続) を綺麗に閉じる。
+
+    tmux session は意図的に殺さない (= 中の claude をプロセスごと残して backend
+    再起動後に reattach できる)。 セッション破棄が必要なら別途 kill_tmux_session を
+    呼ぶ。
+    """
     for session_id, session in list(pty_sessions.items()):
         try:
             await terminate_pty_session(session)

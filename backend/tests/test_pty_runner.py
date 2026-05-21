@@ -71,15 +71,27 @@ def test_write_and_resize_after_exit_are_noops():
     pty_runner.resize_pty(session, 40, 120)
 
 
+def test_tmux_session_name_sanitizes_special_chars():
+    """tmux に渡せない記号 (`.`, `:`, ` `) を `_` 化、 prefix で衝突避け。"""
+    assert pty_runner._tmux_session_name("foo") == "pwa-foo"
+    assert pty_runner._tmux_session_name("foo.bar:baz qux") == "pwa-foo_bar_baz_qux"
+    assert pty_runner._tmux_session_name("alpha-1_2") == "pwa-alpha-1_2"
+
+
 def test_spawn_cat_roundtrip(restore_env, restore_pty_sessions, monkeypatch):
     """`/bin/cat` を代用 spawn して PTY ポンプ全体を検証。
 
     cat は stdin を stdout にそのまま返すので、 write_pty → output_queue から
     同じバイト列が読めれば PTY pump が機能してる。 さらに terminate で
     exit_event が立つことも確認。
+
+    USE_TMUX_WRAP=False に倒すのは、 test 終了後に tmux サーバ内にゴミセッションを
+    残さないため (= test 環境を汚さない)。 tmux 込みの動作確認は別途
+    integration test または smoketest で行う。
     """
     os.environ.pop("ANTHROPIC_BASE_URL", None)
     monkeypatch.setattr(pty_runner, "CLAUDE_PATH", "/bin/cat")
+    monkeypatch.setattr(pty_runner, "USE_TMUX_WRAP", False)
 
     async def scenario() -> None:
         session = await pty_runner.spawn_pty_session("roundtrip-test")
