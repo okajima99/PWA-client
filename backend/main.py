@@ -91,6 +91,20 @@ async def lifespan(app: FastAPI):
     # 起動: 共有 httpx クライアント初期化 + 古い tmp ファイル / 大きすぎるエラーログを掃除
     await http_client.init()
 
+    # tmux server の status bar を全 session で OFF にする (= 端末画面下の緑バー除去)。
+    # `-g` でサーバ全体に効くので、 既存 session も新規 session も等しく status off。
+    # tmux 未起動 / 未インストール時は黙って失敗させる。
+    if pty_runner.USE_TMUX_WRAP:
+        try:
+            import subprocess as _sp
+            _sp.run(
+                [pty_runner.TMUX_BIN, "set-option", "-g", "status", "off"],
+                check=False, timeout=2,
+                stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+            )
+        except Exception:
+            logger.debug("tmux status off failed", exc_info=True)
+
     # アイドル GC: 一定時間発話のないセッションの SDK client を自動 disconnect する
     import asyncio as _asyncio
     idle_gc_task = _asyncio.create_task(idle_disconnect_loop())

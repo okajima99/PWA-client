@@ -200,13 +200,7 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
         </div>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <button type="button" onClick={() => sendRaw('\x1b')} style={keyBtnStyle}>Esc</button>
-          <button type="button" onClick={() => sendRaw('\t')} style={keyBtnStyle}>Tab</button>
-          <button type="button" onClick={() => sendRaw('\x03')} style={keyBtnStyle}>^C</button>
           <button type="button" onClick={() => sendRaw('\r')} style={keyBtnStyle}>Enter</button>
-          <button type="button" onClick={() => sendRaw('\x1b[A')} style={keyBtnStyle}>↑</button>
-          <button type="button" onClick={() => sendRaw('\x1b[B')} style={keyBtnStyle}>↓</button>
-          <button type="button" onClick={() => sendRaw('\x1b[D')} style={keyBtnStyle}>←</button>
-          <button type="button" onClick={() => sendRaw('\x1b[C')} style={keyBtnStyle}>→</button>
         </div>
       </div>
     </div>

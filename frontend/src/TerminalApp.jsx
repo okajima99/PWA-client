@@ -45,12 +45,6 @@ export default function TerminalApp() {
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [treeOpen, setTreeOpen] = useState(null)
   const [previewPath, setPreviewPath] = useState(null)
-  // terminal フォントサイズ (= zoom)。 SessionDrawer の global menu から A−/A+ で増減。
-  const [fontSize, setFontSize] = useState(14)
-  const FONT_MIN = 8
-  const FONT_MAX = 28
-  const zoomIn = useCallback(() => setFontSize(s => Math.min(s + 2, FONT_MAX)), [])
-  const zoomOut = useCallback(() => setFontSize(s => Math.max(s - 2, FONT_MIN)), [])
   const storageInfo = useStorageQuota()
   const [storageWarnDismissed, setStorageWarnDismissed] = useState(false)
   const moonlightAvailable = useMoonlightAvailable()
@@ -100,12 +94,7 @@ export default function TerminalApp() {
             🖥
           </button>
         )}
-        <TopbarMoreMenu
-          onOpenFileTree={() => setTreeOpen('~')}
-          onZoomIn={zoomIn}
-          onZoomOut={zoomOut}
-          fontSize={fontSize}
-        />
+        <TopbarMoreMenu onOpenFileTree={() => setTreeOpen('~')} />
       </header>
 
       {desktopOpen && moonlightAvailable && (
@@ -149,7 +138,7 @@ export default function TerminalApp() {
               display: s.id === activeId ? 'block' : 'none',
             }}
           >
-            <Terminal sessionId={s.id} fontSize={fontSize} />
+            <Terminal sessionId={s.id} />
           </div>
         ))}
         {!activeId && (
@@ -195,12 +184,10 @@ export default function TerminalApp() {
 }
 
 /**
- * topbar 右端の ⋯ メニュー。 旧 chat UI でメッセージボックス右にあった
- * 「⋯」 メニューと同じ役割: 現セッション関連の補助アクション集約。
- *
- * 中身: ファイルツリーを開く / terminal の zoom in/out。
+ * topbar 右端の ⋯ メニュー。 現セッション関連の補助アクション集約。
+ * 中身: ファイルツリーを開く。
  */
-function TopbarMoreMenu({ onOpenFileTree, onZoomIn, onZoomOut, fontSize }) {
+function TopbarMoreMenu({ onOpenFileTree }) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef(null)
 
@@ -238,21 +225,6 @@ function TopbarMoreMenu({ onOpenFileTree, onZoomIn, onZoomOut, fontSize }) {
           >
             📁 ファイルツリー
           </button>
-          <div className="topbar-more-zoom-row">
-            <span className="topbar-more-zoom-label">
-              Zoom{typeof fontSize === 'number' ? ` (${fontSize}px)` : ''}
-            </span>
-            <button
-              onClick={onZoomOut}
-              className="topbar-more-zoom-btn"
-              title="Zoom out"
-            >A−</button>
-            <button
-              onClick={onZoomIn}
-              className="topbar-more-zoom-btn"
-              title="Zoom in"
-            >A+</button>
-          </div>
         </div>
       )}
     </div>
