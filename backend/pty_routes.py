@@ -146,3 +146,24 @@ async def _pump_from_client(ws: WebSocket, session: PtySession) -> None:
         return
     except Exception:
         logger.exception("_pump_from_client error session=%s", session.session_id)
+
+
+@router.get("/api/agents")
+def list_agents() -> dict:
+    """session picker 用に AGENTS のサマリを返す。
+
+    cwd 等の path を露出するのは tailnet 内に限定された運用前提なので OK、 でも
+    必要最小限に絞る (= display_name と id だけ + plain shell 用の擬似 entry)。
+    """
+    agents = [
+        {
+            "id": agent_id,
+            "display_name": cfg.get("display_name") or agent_id,
+        }
+        for agent_id, cfg in AGENTS.items()
+    ]
+    # AGENTS に紐付かない素の terminal session 用エントリも明示的に出す。
+    # session_id="shell" は backend 側で AGENTS lookup を miss して default cwd で
+    # zsh を起動する経路 (= 既存の spawn 経路の素直な動作)。
+    agents.append({"id": "shell", "display_name": "Plain shell"})
+    return {"agents": agents}
