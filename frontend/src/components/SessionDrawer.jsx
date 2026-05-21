@@ -51,6 +51,16 @@ export default function SessionDrawer({
   const [globalMenuOpen, setGlobalMenuOpen] = useState(false)  // ヘッダ ⋯ の総合メニュー
   const [resetBusy, setResetBusy] = useState(false)
   const globalMenuRef = useRef(null)
+  // 現在の UI モード判定 (= ?legacy=1 ならチャット版、 それ以外はターミナル版)。
+  // main.jsx の routing と同じ判定式。 切替は URL を書き換えて reload。
+  const isLegacyMode = typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('legacy') === '1'
+  const handleSwitchUi = () => {
+    const url = new URL(window.location.href)
+    if (isLegacyMode) url.searchParams.delete('legacy')
+    else url.searchParams.set('legacy', '1')
+    window.location.replace(url.toString())
+  }
   const isLastSession = sessions.length <= 1
   // リセット (= SW unregister + cache 全消し + reload) は常時提供。
   // PWA 化すると Safari の cache クリア UI に届かなくなるための救済。
@@ -158,6 +168,12 @@ export default function SessionDrawer({
                     {pushEnabled ? '通知を無効にする' : '通知を有効にする'}
                   </button>
                 )}
+                <button
+                  onClick={() => { setGlobalMenuOpen(false); handleSwitchUi() }}
+                  title={isLegacyMode ? 'ターミナル版 UI に切り替えて再読込' : 'チャット版 UI に切り替えて再読込'}
+                >
+                  {isLegacyMode ? '⌨ ターミナル版に切替' : '💬 チャット版に切替'}
+                </button>
                 <button
                   onClick={() => { setGlobalMenuOpen(false); handleReset() }}
                   disabled={resetBusy}
