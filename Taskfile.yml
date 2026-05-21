@@ -77,3 +77,14 @@ tasks:
     desc: Full-tree anonymity scan (mirrors anon-check CI workflow)
     cmds:
       - bash .tooling/local-ci/anon-scan.sh
+
+  # ---------------------------------------------------------------------------
+  # Bench
+  # ---------------------------------------------------------------------------
+  bench:penalty:
+    desc: 'Per-turn 5h_pct delta over recent N turns (see docs/penalty-baseline.md)'
+    vars:
+      LOG_PATH:
+        sh: 'python3 -c "import json; print(json.load(open(\"backend/config.json\")).get(\"rate_limits_log\", \"\"))" 2>/dev/null || true'
+    cmds:
+      - python3 scripts/penalty-bench.py "{{.LOG_PATH}}"
