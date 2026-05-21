@@ -24,7 +24,10 @@ import json
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
+
+import rate_limits_log
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -304,16 +307,58 @@ def _on_system_msg(session_id: str, msg: SystemMessage) -> None:
 
 
 def _on_result_msg(session_id: str, msg: ResultMessage) -> None:
-    """ResultMessage: claude session_id 永続化、 agent_status 更新、 ターン完了 Web Push。"""
+    """ResultMessage: claude session_id 永続化、 agent_status 更新、 ターン完了 Web Push、
+    観測 sink (= rate_limits_log) への 1 行 append。"""
     if msg.session_id:
         sessions[session_id] = msg.session_id
         save_sessions()
     update_agent_from_result(session_id, msg.model_usage, {})
+    _record_rate_limits(session_id, msg)
     turn_text = last_assistant_text.get(session_id, "").strip()
     if turn_text and not flags["user_visible"]:
         body = turn_text if len(turn_text) <= 140 else (turn_text[:140] + "…")
         asyncio.create_task(broadcast_push(body, notification_title_for(session_id), session_id))
     last_assistant_text[session_id] = ""
+
+
+def _record_rate_limits(session_id: str, msg: ResultMessage) -> None:
+    """ResultMessage 受信時の usage + 5h / 7d 使用率 snapshot を JSONL に append。
+    PWA 経由の 1 turn あたり token 消費を時系列で観察するための一次情報。 失敗は
+    debug log に落として握りつぶす (= 観測 sink で本筋を巻き込まない)。
+
+    `msg.usage` (= Anthropic API レスポンスの usage そのまま、 snake_case) を
+    primary 集計に使う。 `msg.model_usage` は per-model 内訳 (= camelCase) で、
+    SDK が data["modelUsage"] を生のまま持つので参考用に raw のまま記録する。"""
+    try:
+        u = msg.usage or {}
+        astat = agent_status.get(session_id, {})
+        entry = {
+            "timestamp": int(time.time()),
+            "datetime": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "pwa_session_id": session_id,
+            "claude_session_id": msg.session_id,
+            "model": astat.get("model"),
+            "ctx_window": astat.get("ctx_window"),
+            "ctx_pct": astat.get("ctx_pct"),
+            "num_turns": getattr(msg, "num_turns", None),
+            "duration_ms": getattr(msg, "duration_ms", None),
+            "duration_api_ms": getattr(msg, "duration_api_ms", None),
+            "total_cost_usd": getattr(msg, "total_cost_usd", None),
+            "input_tokens": u.get("input_tokens", 0) or 0,
+            "output_tokens": u.get("output_tokens", 0) or 0,
+            "cache_read_input_tokens": u.get("cache_read_input_tokens", 0) or 0,
+            "cache_creation_input_tokens": u.get("cache_creation_input_tokens", 0) or 0,
+            "five_hour_pct": shared_status.get("five_hour_pct"),
+            "five_hour_resets_at": shared_status.get("five_hour_resets_at"),
+            "seven_day_pct": shared_status.get("seven_day_pct"),
+            "seven_day_resets_at": shared_status.get("seven_day_resets_at"),
+            # model_usage は SDK が camelCase のまま保持する per-model 内訳。 raw で残し、
+            # 後で grep / 解析する時に「どの model が何回呼ばれて何 token 使った」 を見る用
+            "model_usage": msg.model_usage,
+        }
+        rate_limits_log.append(entry)
+    except Exception:
+        logger.debug("rate_limits_log record failed for session=%s", session_id, exc_info=True)
 
 
 def _on_rate_limit(msg: RateLimitEvent) -> None:
