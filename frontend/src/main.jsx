@@ -2,8 +2,8 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
+import TerminalApp from './TerminalApp.jsx'
 import Terminal from './components/Terminal.jsx'
-import AgentPicker from './components/AgentPicker.jsx'
 import ErrorBoundary from './ErrorBoundary.jsx'
 
 // Service Worker 登録 (Web Push 受信用)。
@@ -16,9 +16,9 @@ if ('serviceWorker' in navigator) {
 }
 
 // ルーティング:
-//   `?terminal=<id>`      → xterm.js full-screen で /ws/pty/<id> に繋ぐ
+//   `?terminal=<id>`      → xterm.js single-shot (= debug / 直リンク用)
 //   `?legacy=1`           → 旧 chat UI (= 移行期間の保険、 後で削除予定)
-//   それ以外              → AgentPicker (= session 選択 → terminal 起動)
+//   それ以外              → TerminalApp (= 既存 UI + Terminal 差し替え)
 const params = new URLSearchParams(window.location.search)
 const terminalSessionId = (() => {
   const sid = params.get('terminal')
@@ -36,7 +36,7 @@ createRoot(document.getElementById('root')).render(
       ) : legacyMode ? (
         <App />
       ) : (
-        <AgentPicker />
+        <TerminalApp />
       )}
     </ErrorBoundary>
   </StrictMode>,

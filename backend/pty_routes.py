@@ -30,6 +30,27 @@ from pty_runner import (
     spawn_pty_session,
     write_pty,
 )
+from state import sessions_meta
+
+
+def _resolve_cwd(session_id: str) -> str | None:
+    """session_id から起動 cwd を解決する。
+
+    優先順:
+        1. session_id がそのまま AGENTS の key (= 直リンク `?terminal=agent_a` 等)
+        2. session_id が sessions_meta に登録済なら、 そこに紐付く agent_id 経由で
+           AGENTS から取得 (= UI でセッションタブを作る通常経路)
+        3. どちらも該当なし → None (= backend の起動 cwd で zsh が立ち上がる)
+    """
+    cfg = AGENTS.get(session_id)
+    if cfg:
+        return cfg.get("cwd")
+    meta = sessions_meta.get(session_id)
+    if meta is not None:
+        agent_cfg = AGENTS.get(meta.agent_id)
+        if agent_cfg:
+            return agent_cfg.get("cwd")
+    return None
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +75,7 @@ async def pty_socket(ws: WebSocket, session_id: str) -> None:
 
     session = pty_sessions.get(session_id)
     if session is None or session.exit_event.is_set():
-        cwd = None
-        if session_id in AGENTS:
-            cwd = AGENTS[session_id].get("cwd")
+        cwd = _resolve_cwd(session_id)
         try:
             session = await spawn_pty_session(session_id, cwd=cwd)
         except Exception as e:
