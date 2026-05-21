@@ -35,6 +35,12 @@ CORS_ALLOW_ORIGINS: list = config.get("cors_allow_origins", [])
 # 用途。 path が空 / 未設定なら no-op (= backend は何も書かない)。
 RATE_LIMITS_LOG_PATH = config.get("rate_limits_log", "")
 
+# --- PTY runner (= phase 1 PTY 経路 feature flag) ---
+# True にすると `/ws/pty/{session_id}` で claude を素 PTY 起動経路に流せる。
+# default False = 旧 SDK 経路だけ動く (= regression なし)。
+# 切替は config.json に `use_pty_runner: true` を追加 + backend 再起動。
+USE_PTY_RUNNER: bool = bool(config.get("use_pty_runner", False))
+
 # --- Web Push 関連 ---
 # VAPID claim の sub (連絡先)。デフォルトは汎用 mailto。
 VAPID_SUB = config.get("vapid_sub", "mailto:admin@example.com")

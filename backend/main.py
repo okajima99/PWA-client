@@ -5,8 +5,10 @@
 - config.py        設定 / 定数
 - state.py         プロセス共有状態
 - http_client.py   共通 httpx クライアント
-- sdk_runner.py    Claude Agent SDK 駆動
-- chat_routes.py   チャット送受信エンドポイント
+- sdk_runner.py    Claude Agent SDK 駆動 (= 旧経路、 PTY 移行中)
+- pty_runner.py    PTY-attached claude CLI 駆動 (= 新経路、 USE_PTY_RUNNER で切替)
+- chat_routes.py   チャット送受信エンドポイント (= 旧 SDK 経路)
+- pty_routes.py    /ws/pty/{session_id} WebSocket (= 新 PTY 経路)
 - files_routes.py  ファイル系エンドポイント
 - proxy_routes.py  Anthropic プロキシ
 - push.py          Web Push 配信 + エンドポイント
@@ -77,6 +79,8 @@ from state import sessions_meta, stream_states  # noqa: E402
 import chat_routes  # noqa: E402
 import files_routes  # noqa: E402
 import proxy_routes  # noqa: E402
+import pty_routes  # noqa: E402
+import pty_runner  # noqa: E402
 import push  # noqa: E402
 
 
@@ -118,6 +122,7 @@ async def lifespan(app: FastAPI):
         pass
     for session_id in list(stream_states.keys()):
         await disconnect_client(session_id)
+    await pty_runner.shutdown_all()
     close_all_session_logs()
     await http_client.aclose()
 
@@ -137,6 +142,7 @@ if CORS_ALLOW_ORIGINS:
 app.include_router(chat_routes.router)
 app.include_router(files_routes.router)
 app.include_router(proxy_routes.router)
+app.include_router(pty_routes.router)
 app.include_router(push.router)
 
 
