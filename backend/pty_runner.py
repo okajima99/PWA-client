@@ -51,6 +51,13 @@ pty_sessions: dict[str, "PtySession"] = {}
 USE_TMUX_WRAP: bool = True
 TMUX_BIN: str = "tmux"
 
+# PTY で初期起動するコマンド。 default は対話 login shell (= zsh -il) でユーザの
+# .zshrc / 関数 / alias を載せた状態にする。 これにより claude 直起動でなく
+# 「ターミナルが開いた状態」 で接続でき、 ユーザは自分の関数 (= claude 起動 wrapper
+# 等) を打って claude を立ち上げられる。
+# CLAUDE_PATH (= config.json) は path 検証のためだけに残し、 ここでは使わない。
+PTY_INITIAL_ARGV: list[str] = ["zsh", "-il"]
+
 # tmux session 名に使える文字に session_id を sanitize する。 tmux は
 # `.`, `:`, ` `, `\` などを名前に許さない。 安全のため英数 + - + _ だけ通す。
 _TMUX_NAME_SAFE = re.compile(r"[^A-Za-z0-9_-]")
@@ -102,6 +109,8 @@ async def spawn_pty_session(
             "Unset and restart backend."
         )
     if not CLAUDE_PATH:
+        # PTY 自体は zsh で動かせるが、 ユーザの wrapper 関数が最終的に呼ぶ claude path
+        # はここで検証。 未設定なら設定漏れとして失敗させる。
         raise RuntimeError("CLAUDE_PATH is empty; set `claude_path` in backend/config.json")
 
     master_fd, slave_fd = pty.openpty()
@@ -118,9 +127,9 @@ async def spawn_pty_session(
     # 直接時は `claude` 単独。 tmux の -A は「既存なら attach、 無ければ作って attach」。
     if USE_TMUX_WRAP:
         tmux_name = _tmux_session_name(session_id)
-        argv = [TMUX_BIN, "new-session", "-A", "-s", tmux_name, CLAUDE_PATH]
+        argv = [TMUX_BIN, "new-session", "-A", "-s", tmux_name, *PTY_INITIAL_ARGV]
     else:
-        argv = [CLAUDE_PATH]
+        argv = list(PTY_INITIAL_ARGV)
 
     try:
         proc = await asyncio.create_subprocess_exec(

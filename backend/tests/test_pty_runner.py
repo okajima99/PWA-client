@@ -109,7 +109,10 @@ def test_spawn_cat_roundtrip(restore_env, restore_pty_sessions, monkeypatch):
     integration test または smoketest で行う。
     """
     os.environ.pop("ANTHROPIC_BASE_URL", None)
-    monkeypatch.setattr(pty_runner, "CLAUDE_PATH", "/bin/cat")
+    # spawn は PTY_INITIAL_ARGV で起動するので、 ここを `/bin/cat` 1 個に差替えて
+    # echo 子プロセスを試す。 CLAUDE_PATH は validation 用に残ってるので空でない値を入れる。
+    monkeypatch.setattr(pty_runner, "PTY_INITIAL_ARGV", ["/bin/cat"])
+    monkeypatch.setattr(pty_runner, "CLAUDE_PATH", "/bin/true")
     monkeypatch.setattr(pty_runner, "USE_TMUX_WRAP", False)
 
     async def scenario() -> None:

@@ -25,8 +25,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from config import AGENTS, USE_PTY_RUNNER
 from pty_runner import (
     PtySession,
-    capture_tmux_scrollback,
-    has_tmux_session,
     pty_sessions,
     resize_pty,
     spawn_pty_session,
@@ -46,15 +44,13 @@ async def pty_socket(ws: WebSocket, session_id: str) -> None:
         return
     await ws.accept()
 
-    # 既存 tmux session があれば、 spawn 前に scrollback を送って画面復元する。
-    # client 側の xterm はまだ空、 ここでまとめて書き込んでもらう。
-    reattaching = has_tmux_session(session_id)
-    if reattaching:
-        scrollback = capture_tmux_scrollback(session_id)
-        if scrollback:
-            await ws.send_bytes(scrollback)
-            # scrollback と次の live 出力の境界を示す軽い marker。 ANSI dim で目立たず。
-            await ws.send_bytes(b"\r\n\x1b[2m--- reconnected ---\x1b[0m\r\n")
+    # scrollback の自動復元は無効化中: 接続元 client の幅 (= 例 iPhone Safari 30 cols)
+    # と capture 時の pane 幅 (= 例 Mac Chrome 120 cols) がズレてると、 ANSI の絶対カーソル
+    # 位置指定が崩れて TUI が左右に分裂表示される。 正しく直すには「client の resize 受信
+    # → tmux pane を新幅に refresh → capture-pane → 送信」 の順序にする必要があり、
+    # 現状の「接続即送信」 とは経路が違うので別 PR で。 当面は live 出力のみで運用。
+    # 必要なら capture_tmux_scrollback() / has_tmux_session() は他経路 (= 明示要求の
+    # WS message 等) から呼べる。
 
     session = pty_sessions.get(session_id)
     if session is None or session.exit_event.is_set():

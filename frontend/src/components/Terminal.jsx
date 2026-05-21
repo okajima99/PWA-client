@@ -42,12 +42,30 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
       // mobile-friendly: scrollback 多めに取って tmux capture-pane 復元に備える
       scrollback: 10_000,
       allowProposedApi: true,
-      // 配色は claude CLI の ANSI に従う、 background だけ control する
+      // 配色は claude CLI / shell prompt の ANSI に従うが、 真っ黒背景に
+      // ANSI 「黒」 (= color 0) を載せると prompt の一部が消えるので palette を
+      // VS Code dark+ 系の値で override (= 黒は背景より少し明るい灰色に倒す)。
       theme: {
         background: '#0e0f12',
         foreground: '#e6e6e6',
         cursor: '#e6e6e6',
         selectionBackground: '#264f78',
+        black: '#3b3f4a',
+        red: '#f48771',
+        green: '#a9c77c',
+        yellow: '#e5c07b',
+        blue: '#6aaeff',
+        magenta: '#c586c0',
+        cyan: '#56b6c2',
+        white: '#d4d4d4',
+        brightBlack: '#5a6072',
+        brightRed: '#ff8a73',
+        brightGreen: '#b8d398',
+        brightYellow: '#f0d695',
+        brightBlue: '#82bbff',
+        brightMagenta: '#d9a5dc',
+        brightCyan: '#7fcfd9',
+        brightWhite: '#f5f5f5',
       },
     });
     const fit = new FitAddon();
@@ -88,6 +106,11 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
             cols: xterm.cols,
           }),
         );
+        // Ctrl+L (= form feed) を 1 個送って shell / claude TUI に redraw を要求。
+        // tmux pane の現在状態 (= prompt や TUI の現フレーム) を新接続 client に
+        // 流させるためのキック。 これがないと接続直後の画面が真っ黒で、 ユーザが
+        // 何か打つまで何も見えない (= shell prompt は接続前に既に print 済)。
+        ws.send(new TextEncoder().encode('\x0c'));
       });
 
       ws.addEventListener('message', (ev) => {
