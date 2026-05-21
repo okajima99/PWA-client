@@ -9,14 +9,92 @@
  *     - binary frames: stdin bytes (= keystrokes / paste)
  *     - text frames (JSON): { type: "resize", rows, cols }
  *
- * Penalty 回避 (= docs/pty-migration.md) は backend 側で担保、 frontend は単に
- * バイト列を運ぶだけなので構造上 penalty trigger を出すことはない。
+ * モバイル方針 (= clsh-dev 模倣の touch スクロールのみ採用):
+ *   - 入力は xterm.onData → WS 直送 (= キーストローク単位、 バッファなし)
+ *   - スクロールは attachTouchScroll で touchstart/move/end → xterm.scrollLines 駆動
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
+
+/**
+ * モバイル向け 1 本指タッチスクロール (= clsh-dev の実装パターン移植)。
+ *
+ * WebglAddon を使うと scrollback は canvas 描画になり .xterm-viewport の中身が
+ * 空に近くなる → ブラウザのネイティブタッチスクロールが効かない。 そこで touch
+ * イベントを host で拾って px → 行数換算で xterm.scrollLines を呼ぶ。
+ *
+ * preventDefault を入れて iOS の body bounce / pull-to-refresh 等の競合を遮断
+ * (= passive: false 必須)。
+ */
+function attachTouchScroll(xterm, host) {
+  let lastY = 0;
+  let lastT = 0;
+  let velocity = 0;
+  let pxAccum = 0;
+  let inertiaRaf = null;
+  const fontSize = () => xterm.options.fontSize ?? 14;
+  const cancelInertia = () => {
+    if (inertiaRaf !== null) {
+      cancelAnimationFrame(inertiaRaf);
+      inertiaRaf = null;
+    }
+  };
+  const onStart = (e) => {
+    cancelInertia();
+    lastY = e.touches[0].clientY;
+    lastT = Date.now();
+    velocity = 0;
+    pxAccum = 0;
+  };
+  const onMove = (e) => {
+    if (e.cancelable) e.preventDefault();
+    const y = e.touches[0].clientY;
+    const t = Date.now();
+    const dt = Math.max(t - lastT, 1);
+    const dy = lastY - y;
+    velocity = velocity * 0.3 + (dy / dt) * 0.7;
+    pxAccum += dy;
+    const fs = fontSize();
+    const lines = Math.trunc(pxAccum / fs);
+    if (lines !== 0) {
+      xterm.scrollLines(lines);
+      pxAccum -= lines * fs;
+    }
+    lastY = y;
+    lastT = t;
+  };
+  const onEnd = () => {
+    const fs = fontSize();
+    let v = velocity;
+    const decay = 0.95;
+    const step = () => {
+      v *= decay;
+      const dy = v * 16;
+      const lines = Math.round(dy / fs);
+      if (lines !== 0) xterm.scrollLines(lines);
+      if (Math.abs(v) > 0.02) {
+        inertiaRaf = requestAnimationFrame(step);
+      } else {
+        inertiaRaf = null;
+      }
+    };
+    if (Math.abs(velocity) > 0.05) inertiaRaf = requestAnimationFrame(step);
+  };
+  host.addEventListener('touchstart', onStart, { passive: true });
+  host.addEventListener('touchmove', onMove, { passive: false });
+  host.addEventListener('touchend', onEnd, { passive: true });
+  host.addEventListener('touchcancel', onEnd, { passive: true });
+  return () => {
+    cancelInertia();
+    host.removeEventListener('touchstart', onStart);
+    host.removeEventListener('touchmove', onMove);
+    host.removeEventListener('touchend', onEnd);
+    host.removeEventListener('touchcancel', onEnd);
+  };
+}
 
 const DEFAULT_WS_BASE =
   (typeof window !== 'undefined' && window.location.protocol === 'https:'
@@ -24,27 +102,68 @@ const DEFAULT_WS_BASE =
     : 'ws://') +
   (typeof window !== 'undefined' ? window.location.host : 'localhost:8000');
 
-export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }) {
+export default function Terminal({
+  sessionId,
+  wsBase = DEFAULT_WS_BASE,
+  onExit,
+}) {
   const containerRef = useRef(null);
   const xtermRef = useRef(null);
   const wsRef = useRef(null);
   const fitRef = useRef(null);
+  const webglRef = useRef(null);
+  const inputRef = useRef(null);
+  const [inputValue, setInputValue] = useState('');
+
+  // バイト列 / 文字列を現行 WS に流す共通経路 (= input bar / 制御キーから呼ぶ)。
+  const sendRaw = useCallback((data) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (typeof data === 'string') {
+      ws.send(new TextEncoder().encode(data));
+    } else {
+      ws.send(data);
+    }
+  }, []);
+
+  // input 内のテキストを送信して空にする。 末尾改行込みかは呼び出し側で指定。
+  const flushInput = useCallback((withReturn) => {
+    if (inputValue) sendRaw(inputValue);
+    if (withReturn) sendRaw('\r');
+    setInputValue('');
+    inputRef.current?.focus();
+  }, [inputValue, sendRaw]);
+
+  // fontSize 変更時: 描画範囲が container 全体を埋めるよう正しい順序で再計算する。
+  //
+  // 順序が重要:
+  //   1. WebglAddon を先に dispose (= DOM renderer に一時切り替え、 char measure
+  //      キャッシュが新フォントで再走可能になる)
+  //   2. options.fontSize 更新
+  //   3. fit.fit() (= 新 cellWidth/Height で cols/rows を再計算、 xterm.resize)
+  //   4. WebglAddon を新規 load (= 新 cell dimension で texture atlas を再生成)
+  //   5. tmux に新 cols/rows を送る
+  //
+  // 旧順序 (= options 更新 → addon dispose → 新 addon load → fit) では addon load 時
+  // に古い cellWidth が拾われて renderer 内部の cell dimension が更新されず、
+  // 描画領域だけ縮小して左上に集約される症状が出ていた。
+  // zoom 機能は一旦無効化 (= 描画バグ調査中)。 fontSize prop 来ても無視する。
+  // 再有効化は WebGL renderer の dispose/reload を transient なしで切り替える
+  // 方法を確立してから。
 
   useEffect(() => {
     if (!containerRef.current) return undefined;
 
     const xterm = new XTerm({
-      fontFamily:
-        'SF Mono, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+      // フォントは単一指定 (= clsh パターン)。 多段 fallback だと iOS Safari で
+      // 「char measure 時のフォント ≠ 描画時のフォント」 が起きてセル幅 vs 実幅
+      // が乖離し、 cols 計算経由で右はみ出しを引き起こす。
+      fontFamily: 'Menlo, monospace',
       fontSize: 14,
-      lineHeight: 1.2,
+      lineHeight: 1,
       cursorBlink: true,
-      // mobile-friendly: scrollback 多めに取って tmux capture-pane 復元に備える
       scrollback: 10_000,
       allowProposedApi: true,
-      // 配色は claude CLI / shell prompt の ANSI に従うが、 真っ黒背景に
-      // ANSI 「黒」 (= color 0) を載せると prompt の一部が消えるので palette を
-      // VS Code dark+ 系の値で override (= 黒は背景より少し明るい灰色に倒す)。
       theme: {
         background: '#0e0f12',
         foreground: '#e6e6e6',
@@ -71,25 +190,55 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
     const fit = new FitAddon();
     xterm.loadAddon(fit);
 
-    try {
-      xterm.loadAddon(new WebglAddon());
-    } catch {
-      // WebGL が使えない環境 (= iOS Safari の一部 / WebGL 抑制) は DOM renderer に
-      // 自動 fallback、 アドオン未ロードでも動作する
-    }
+    let disposed = false;
+    let webglAddon = null;
 
-    xterm.open(containerRef.current);
-    fit.fit();
+    // フォントが完全に解決してから open + fit を行う (= clsh パターン)。
+    // 未ロード状態で open すると char measure が間に合わず、 後でフォント
+    // 解決時にセル幅と内部 cellWidth がズレたまま固定 → cols 計算が狂って
+    // 横はみ出しの原因になる。
+    const setup = async () => {
+      try {
+        await document.fonts.load('14px Menlo');
+      } catch { /* fontfetch 失敗時はフォールバック動作 */ }
+      if (disposed) return;
+
+      xterm.open(containerRef.current);
+
+      try {
+        webglAddon = new WebglAddon();
+        // iOS Safari は WebGL context lost を頻発する。 lost 時に dispose して
+        // DOM renderer に fallback、 これがないと画面が固まる。
+        webglAddon.onContextLoss(() => {
+          try { webglAddon.dispose(); } catch { /* noop */ }
+          webglAddon = null;
+          webglRef.current = null;
+        });
+        xterm.loadAddon(webglAddon);
+        webglRef.current = webglAddon;
+      } catch { /* WebGL 取得失敗時は DOM renderer fallback */ }
+
+      try { fit.fit(); } catch { /* noop */ }
+      // setup 完了時点の正しい cols/rows を tmux に送る。 ResizeObserver の初回
+      // callback は xterm.open 前に発火していて default 80x24 で send された
+      // 可能性があるため、 ここで明示再送して整合を取る。
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'resize',
+          rows: xterm.rows,
+          cols: xterm.cols,
+        }));
+      }
+    };
+    setup();
     xtermRef.current = xterm;
     fitRef.current = fit;
 
-    // WebSocket reconnect 制御: exponential backoff (= 500ms → 10s)。
-    // iOS Safari は background で WS を切るので必須。
     let cancelled = false;
     let backoffMs = 500;
     const MAX_BACKOFF = 10_000;
     let reconnectTimer = null;
-    let dataDisposable = null;
 
     const connect = () => {
       if (cancelled) return;
@@ -98,7 +247,7 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
       wsRef.current = ws;
 
       ws.addEventListener('open', () => {
-        backoffMs = 500; // 成功したら backoff リセット
+        backoffMs = 500;
         ws.send(
           JSON.stringify({
             type: 'resize',
@@ -106,10 +255,6 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
             cols: xterm.cols,
           }),
         );
-        // Ctrl+L (= form feed) を 1 個送って shell / claude TUI に redraw を要求。
-        // tmux pane の現在状態 (= prompt や TUI の現フレーム) を新接続 client に
-        // 流させるためのキック。 これがないと接続直後の画面が真っ黒で、 ユーザが
-        // 何か打つまで何も見えない (= shell prompt は接続前に既に print 済)。
         ws.send(new TextEncoder().encode('\x0c'));
       });
 
@@ -127,10 +272,9 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
                 `\r\n\x1b[31m[backend error: ${ctrl.message}]\x1b[0m\r\n`,
               );
             }
-          } catch { /* 未知の text frame は無視 */ }
+          } catch { /* ignore */ }
           return;
         }
-        // バイナリ = PTY stdout バイト列、 そのまま render
         xterm.write(new Uint8Array(ev.data));
       });
 
@@ -151,15 +295,6 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
       });
     };
 
-    // 入力: xterm が受けたキーストロークをそのまま現行 WS にバイナリで流す
-    dataDisposable = xterm.onData((data) => {
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(new TextEncoder().encode(data));
-      }
-    });
-
-    // resize 連携: container サイズ変動を検知して fit + WS に resize 通知
     const sendResize = () => {
       fit.fit();
       const ws = wsRef.current;
@@ -176,13 +311,25 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
     const resizeObserver = new ResizeObserver(sendResize);
     resizeObserver.observe(containerRef.current);
 
+    const detachTouch = attachTouchScroll(xterm, containerRef.current);
+
+    // キーストロークは xterm.onData で受けて WS に直送 (= バッファなし)。
+    const dataDisposable = xterm.onData((data) => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(new TextEncoder().encode(data));
+      }
+    });
+
     connect();
 
     return () => {
       cancelled = true;
+      disposed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       resizeObserver.disconnect();
-      dataDisposable?.dispose();
+      detachTouch();
+      dataDisposable.dispose();
       try { wsRef.current?.close(); } catch { /* noop */ }
       xterm.dispose();
       xtermRef.current = null;
@@ -191,16 +338,100 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
     };
   }, [sessionId, wsBase, onExit]);
 
+  // xterm.open の host には padding を入れない (= WebGL canvas が padding 起点で
+  // 配置されて 1 セル分右にズレる症状を回避)。 余白が欲しい場合は外側のラッパで取る。
   return (
     <div
-      ref={containerRef}
       style={{
+        display: 'flex',
+        flexDirection: 'column',
         width: '100%',
         height: '100%',
         background: '#0e0f12',
-        padding: '8px',
-        boxSizing: 'border-box',
       }}
-    />
+    >
+      <div
+        ref={containerRef}
+        style={{ flex: 1, minHeight: 0, width: '100%', background: '#0e0f12' }}
+      />
+      {/* 入力 bar (= clsh 模倣の最小版)。
+          上段: text input + Send (= text + \r)。
+          下段: 単独制御キー Esc / Tab / ^C / Enter / 矢印。 */}
+      <div
+        style={{
+          flexShrink: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 4,
+          padding: '6px 6px 8px',
+          background: '#15171c',
+          borderTop: '1px solid #2a2d35',
+        }}
+      >
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input
+            ref={inputRef}
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                flushInput(true);
+              }
+            }}
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="入力 → Send で確定"
+            style={inputStyle}
+          />
+          <button
+            type="button"
+            onClick={() => flushInput(true)}
+            style={{ ...keyBtnStyle, background: '#3a5a8c', color: '#fff', minWidth: 56 }}
+          >Send</button>
+        </div>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          <button type="button" onClick={() => sendRaw('\x1b')} style={keyBtnStyle}>Esc</button>
+          <button type="button" onClick={() => sendRaw('\t')} style={keyBtnStyle}>Tab</button>
+          <button type="button" onClick={() => sendRaw('\x03')} style={keyBtnStyle}>^C</button>
+          <button type="button" onClick={() => sendRaw('\r')} style={keyBtnStyle}>Enter</button>
+          <button type="button" onClick={() => sendRaw('\x1b[A')} style={keyBtnStyle}>↑</button>
+          <button type="button" onClick={() => sendRaw('\x1b[B')} style={keyBtnStyle}>↓</button>
+          <button type="button" onClick={() => sendRaw('\x1b[D')} style={keyBtnStyle}>←</button>
+          <button type="button" onClick={() => sendRaw('\x1b[C')} style={keyBtnStyle}>→</button>
+        </div>
+      </div>
+    </div>
   );
 }
+
+const inputStyle = {
+  flex: 1,
+  minWidth: 0,
+  background: '#0e0f12',
+  color: '#e6e6e6',
+  border: '1px solid #2a2d35',
+  borderRadius: 4,
+  padding: '6px 8px',
+  fontFamily: 'Menlo, monospace',
+  // 16px 必須: iOS Safari は input の font-size が 16px 未満だと focus 時に
+  // 自動 zoom-in する。 viewport meta で user-scalable=no も入れているが、
+  // font-size 側でも防いでおく (= maximum-scale を尊重しない iOS バージョン対策)。
+  fontSize: 16,
+};
+
+const keyBtnStyle = {
+  background: '#2a2d35',
+  color: '#e6e6e6',
+  border: '1px solid #3a3d45',
+  borderRadius: 4,
+  padding: '6px 10px',
+  fontSize: 13,
+  fontFamily: 'Menlo, monospace',
+  cursor: 'pointer',
+  flexShrink: 0,
+  minWidth: 38,
+  touchAction: 'manipulation',  // iOS のダブルタップ zoom 抑制
+};

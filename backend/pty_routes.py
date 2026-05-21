@@ -25,6 +25,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from config import AGENTS, USE_PTY_RUNNER
 from pty_runner import (
     PtySession,
+    capture_tmux_scrollback,
     pty_sessions,
     resize_pty,
     spawn_pty_session,
@@ -65,13 +66,9 @@ async def pty_socket(ws: WebSocket, session_id: str) -> None:
         return
     await ws.accept()
 
-    # scrollback の自動復元は無効化中: 接続元 client の幅 (= 例 iPhone Safari 30 cols)
-    # と capture 時の pane 幅 (= 例 Mac Chrome 120 cols) がズレてると、 ANSI の絶対カーソル
-    # 位置指定が崩れて TUI が左右に分裂表示される。 正しく直すには「client の resize 受信
-    # → tmux pane を新幅に refresh → capture-pane → 送信」 の順序にする必要があり、
-    # 現状の「接続即送信」 とは経路が違うので別 PR で。 当面は live 出力のみで運用。
-    # 必要なら capture_tmux_scrollback() / has_tmux_session() は他経路 (= 明示要求の
-    # WS message 等) から呼べる。
+    # scrollback の自動復元は無効化 (= 2026-05-21 再試行で描画破綻、 旧症状再発)。
+    # capture-pane の history を流すと、 中に含まれる ANSI cursor 制御 (= claude
+    # streaming 中の途中再描画指示等) が新接続側の状態と整合せず画面が壊れる。
 
     session = pty_sessions.get(session_id)
     if session is None or session.exit_event.is_set():
