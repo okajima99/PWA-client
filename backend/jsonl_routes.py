@@ -366,7 +366,9 @@ def _lines_to_sse(lines: list[str], pos: int, session_id: str) -> list[str]:
         _track_turn_start(session_id, obj)
         if _mutate_agent_status(session_id, obj):
             status_dirty = True
-        _maybe_push_blockers(session_id, obj)
+        # 通知 push 発火 (= _maybe_push_blockers) は SSE 経路で呼ばない。 別 lifespan task の
+        # monitor_all_sessions_loop が全 sid を常時 tail して push を担当 (= PWA 接続有無に
+        # 関係なく通知発火させるため + SSE 経路との二重発火回避)。
         evts = jsonl_line_to_events(obj)
         _attach_duration_to_result(session_id, obj, evts)
         for event in evts:
@@ -460,3 +462,65 @@ async def jsonl_stream(session_id: str, request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# --- 常時 tail (= PWA 接続有無に関係なく動く push 発火経路) ---
+# backend の lifespan task として全 PWA session の JSONL を polling し、
+# AskUserQuestion 発火 / stop_reason 異常を検出して Web Push を飛ばす。
+# SSE 経路 (= /jsonl/stream) の _maybe_push_blockers 呼び出しは廃止済 (= 二重発火回避)。
+async def monitor_all_sessions_loop():
+    """全 PWA session の JSONL を常時 tail し、 推論を止める要因を検出して push 発火する。
+
+    起動時は各 sid を末尾 offset から開始する (= backend 起動前の過去行は通知しない)。
+    `/clear` 等で claude_sid が切り替わると `_latest_jsonl` が新 path を返すので、
+    そのときは新 path の末尾から再開する。 file が縮んだ (rotate / truncate) 場合も
+    同様に末尾再同期。
+
+    State: state[sid] = (path, byte_offset)。 SSE 経路の `offsetRef` とは独立した
+    バックエンド内の追跡 (= frontend の localStorage が消えても影響を受けない)。
+    """
+    state: dict[str, tuple[Path, int]] = {}
+    logger.info("monitor_all_sessions_loop started")
+    try:
+        while True:
+            try:
+                await asyncio.sleep(POLL_INTERVAL)
+                from state import sessions_meta as _sessions_meta  # 動的参照
+                for sid in list(_sessions_meta.keys()):
+                    path = _latest_jsonl(sid)
+                    if path is None:
+                        continue
+                    try:
+                        size = path.stat().st_size
+                    except OSError:
+                        continue
+                    prev = state.get(sid)
+                    if prev is None or prev[0] != path:
+                        # 初回 or path 切替: 末尾から開始 (= 過去行を再通知しない)
+                        state[sid] = (path, size)
+                        continue
+                    _prev_path, prev_pos = prev
+                    if size < prev_pos:
+                        # rotate / truncate: 末尾再同期
+                        state[sid] = (path, size)
+                        continue
+                    if size <= prev_pos:
+                        continue
+                    lines, new_pos = _read_complete_lines(path, prev_pos)
+                    state[sid] = (path, new_pos)
+                    for raw in lines:
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        try:
+                            obj = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        _maybe_push_blockers(sid, obj)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("monitor_all_sessions_loop iteration failed")
+    except asyncio.CancelledError:
+        logger.info("monitor_all_sessions_loop cancelled")
+        raise

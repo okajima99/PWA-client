@@ -110,6 +110,10 @@ async def lifespan(app: FastAPI):
     import asyncio as _asyncio
     idle_gc_task = _asyncio.create_task(idle_disconnect_loop())
 
+    # 常時 tail: PWA 接続有無に関係なく全 sid の JSONL を監視して、 AskUserQuestion /
+    # stop_reason 異常を Web Push に流す (= jsonl_routes SSE 経路と独立)。
+    blocker_monitor_task = _asyncio.create_task(jsonl_routes.monitor_all_sessions_loop())
+
     cutoff = time.time() - 24 * 3600
     if UPLOADS_TMP.exists():
         for f in UPLOADS_TMP.iterdir():
@@ -130,13 +134,15 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # 終了: アイドル GC 停止 → SDK クライアントを全て切断 → httpx を閉じる
+    # 終了: 各バックグラウンド task を停止 → SDK クライアントを全て切断 → httpx を閉じる
     idle_gc_task.cancel()
-    try:
-        await idle_gc_task
-    except (asyncio.CancelledError, Exception):
-        # cancel 後の CancelledError は想定通り、 それ以外の例外は無視 (= shutdown 続行)。
-        pass
+    blocker_monitor_task.cancel()
+    for t in (idle_gc_task, blocker_monitor_task):
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            # cancel 後の CancelledError は想定通り、 それ以外の例外は無視 (= shutdown 続行)。
+            pass
     for session_id in list(stream_states.keys()):
         await disconnect_client(session_id)
     await pty_runner.shutdown_all()
