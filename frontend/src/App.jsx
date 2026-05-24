@@ -39,10 +39,6 @@ const EFFORT_OPTIONS = [
   { value: 'xhigh', label: 'Extra High' },
   { value: 'max', label: 'Max' },
 ]
-// status SSE で buffer_length / buffer_id が連続 push された時の fetchLatest 集約間隔。
-// 1 turn 中の各 AssistantMessage で連続発火するのを 1 回にまとめる。 これより短くすると
-// 同 turn の中で複数 reconnect が走り、 長くすると proactive の見た目反映が遅れる。
-const STATUS_FETCH_DEBOUNCE_MS = 250
 // session 削除後の IndexedDB orphan 画像掃除を遅延する時間 (= setMessages の state 反映を待つ)。
 const IMAGE_GC_AFTER_DELETE_MS = 300
 // 起動時の初回 GC 遅延 (= localStorage 復元 + 初期 fetch の messages 確定を待つ)。
@@ -118,7 +114,7 @@ export default function App() {
     scrollToBottom,
     onScroll,
   } = useAutoScroll({ messages, activeSession })
-  const { loading, setLoading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession, visibilitySuppressUntilRef, pendingSendUntilRef } = useChatStream({
+  const { loading, setLoading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession, pendingSendUntilRef } = useChatStream({
     activeSession,
     sessions,
     setMessages,
@@ -169,52 +165,6 @@ export default function App() {
   useDeepLink(setActiveId)
   useNotificationClear()
   const moonlightAvailable = useMoonlightAvailable()
-
-  // proactive turn (= Monitor / CronCreate 等) の検知: status SSE で push される
-  // buffer_length / buffer_id を観測し、 前回より進んでたら fetchLatest で buffer を引取る。
-  //
-  // なぜ streaming flag ではなく buffer_length を見るか:
-  //   short proactive turn (= 1-2 秒で完結する Monitor 1 行出力) では、 backend で
-  //   complete=False→True の flip が連続して status_event.set される。 status SSE は
-  //   両方 push するが、 React の setState batching で「false → false」 に潰れて
-  //   watcher が走らない race が起きていた。 buffer_length は単調増加なので絶対に
-  //   取りこぼさない (= 前回 sent 位置と比較するだけ)。
-  //
-  // buffer_id が変わるのは backend の chat_routes.py で新 turn 開始時に
-  // state.buffer_id = uuid を振り直すタイミング (= buffer reset)。 id が変わったら
-  // length 比較を捨てて新 turn として fetch する。
-  const lastSeenBufferRef = useRef({}) // { [sid]: { length, id } }
-  const fetchDebounceRef = useRef(null)
-  // visibility 抑止の deadline は useStreamReconnect の hook 内に集約 (= 単一の真実)。
-  // visibilitychange リスナも reconnect 経路と同じ場所で 1 つだけ持たせる。
-
-  useEffect(() => {
-    if (!activeSid || !status) return
-    const cur = lastSeenBufferRef.current[activeSid] || { length: 0, id: null }
-    const bufLen = status.buffer_length ?? 0
-    const bufId = status.buffer_id ?? null
-    const progressed = (bufId !== cur.id) || (bufLen > cur.length)
-    if (!progressed) return
-    // 二重発火防止: ref を先に更新してから fetch
-    lastSeenBufferRef.current[activeSid] = { length: bufLen, id: bufId }
-    // ターン中 (= user 送信直後の POST /chat/stream SSE が直接流してる) は reconnect 不要、
-    // むしろ進行中の POST controller を abort してしまうと turn が切れる。
-    if (loading[activeSid]) return
-    // visibility 復帰直後は useStreamReconnect 側で resync するので watcher は黙る
-    if (Date.now() < visibilitySuppressUntilRef.current) return
-    // デバウンス: status SSE は backend 側で wire ごとに status_event.set されるため
-    // 短時間に複数 push 来ることがある (= 1 turn の各 AssistantMessage で連続発火)。
-    // 連続 progress を 1 回の fetchLatest にまとめ、 reconnect の重複呼び出しを避ける。
-    if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current)
-    fetchDebounceRef.current = setTimeout(() => {
-      fetchDebounceRef.current = null
-      fetchLatest()
-    }, STATUS_FETCH_DEBOUNCE_MS)
-    // status object 全体ではなく buffer_length / buffer_id の primitive だけを deps にし、
-    // SSE push のたびに status reference が変わって effect が再発火するのを避けている。
-    // visibilitySuppressUntilRef は ref なので deps 不要 (= ref.current 更新で再発火しない)。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSid, status?.buffer_length, status?.buffer_id, loading, fetchLatest])
 
   // backend 再起動検知: status.backend_start_time が変化したら backend が再起動された
   // (= LaunchAgent KeepAlive で自動復活 or 手動 kickstart)。 中断された turn が

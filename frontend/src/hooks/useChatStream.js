@@ -46,9 +46,8 @@ export function useChatStream({
   const sid = activeSession?.id || null
   const [loading, setLoading] = useState({})
   const [apiKeySource, setApiKeySource] = useState({})
-  // App.jsx の showStopButton が参照する楽観 deadline / visibility 抑止 (= インターフェース維持)。
+  // App.jsx の showStopButton が参照する楽観 deadline。
   const pendingSendUntilRef = useRef({})
-  const visibilitySuppressUntilRef = useRef(0)
   // session ごとの最後に受信した byte offset。 タブ切替で再接続する時、 ここから差分だけ
   // 取り直すことで全 replay を避ける (= 切替を軽く + localStorage 即復元と併用)。
   // localStorage に永続化することで、 アプリ再起動 / リロードを跨いでも継続。
@@ -230,7 +229,6 @@ export function useChatStream({
     stopMessage,
     fetchLatest,
     endSession,
-    visibilitySuppressUntilRef,
     pendingSendUntilRef,
   }
 }
