@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  API_BASE,
   LS_ACTIVE_SESSION,
   LS_LEGACY_ACTIVE_AGENT,
   LS_SESSIONS_META,
 } from '../constants.js'
+import { apiFetch } from '../utils/api.js'
+import { lsGet, lsSet } from '../utils/storage.js'
 
 // セッション (= UI 上の 1 タブ = 1 議題) のリストと、 現在 active な session_id を管理する。
 // backend `/sessions` を真値とし、 起動時に GET でローカルの localStorage と同期する。
@@ -12,14 +13,8 @@ import {
 export function useSessions() {
   // 起動時は localStorage から先読み (オフラインでもとりあえず描画する)
   const [sessions, setSessions] = useState(() => {
-    try {
-      const raw = localStorage.getItem(LS_SESSIONS_META)
-      if (raw) {
-        const parsed = JSON.parse(raw)
-        if (Array.isArray(parsed)) return parsed
-      }
-    } catch { /* ignore */ }
-    return []
+    const parsed = lsGet(LS_SESSIONS_META)
+    return Array.isArray(parsed) ? parsed : []
   })
 
   const [activeId, setActiveId] = useState(() => {
@@ -39,7 +34,7 @@ export function useSessions() {
 
   // localStorage 同期 (sessions / activeId が変わるたび)
   useEffect(() => {
-    try { localStorage.setItem(LS_SESSIONS_META, JSON.stringify(sessions)) } catch { /* ignore */ }
+    lsSet(LS_SESSIONS_META, sessions)
   }, [sessions])
   useEffect(() => {
     try {
@@ -53,8 +48,8 @@ export function useSessions() {
     if (initRef.current) return
     initRef.current = true
     Promise.all([
-      fetch(`${API_BASE}/sessions`).then(r => r.json()).catch(() => null),
-      fetch(`${API_BASE}/agents`).then(r => r.json()).catch(() => null),
+      apiFetch(`/sessions`).then(r => r.json()).catch(() => null),
+      apiFetch(`/agents`).then(r => r.json()).catch(() => null),
     ]).then(([serverSessions, serverAgents]) => {
       if (Array.isArray(serverAgents)) setAgents(serverAgents)
       if (Array.isArray(serverSessions)) {
@@ -75,7 +70,7 @@ export function useSessions() {
     if (title) body.title = title
     let meta
     try {
-      const res = await fetch(`${API_BASE}/sessions`, {
+      const res = await apiFetch(`/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -95,7 +90,7 @@ export function useSessions() {
 
   const removeSession = useCallback(async (id) => {
     try {
-      await fetch(`${API_BASE}/sessions/${id}`, { method: 'DELETE' })
+      await apiFetch(`/sessions/${id}`, { method: 'DELETE' })
     } catch { /* backend 未到達でもローカル状態は消す */ }
     // 現在の sessions / activeId を直接読んで外で計算する (updater 内に副作用を持たない)。
     // React の StrictMode で updater が 2 回実行されても安全。
@@ -113,7 +108,7 @@ export function useSessions() {
     // 楽観更新
     setSessions(prev => prev.map(s => s.id === id ? { ...s, title: trimmed } : s))
     try {
-      await fetch(`${API_BASE}/sessions/${id}`, {
+      await apiFetch(`/sessions/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: trimmed }),

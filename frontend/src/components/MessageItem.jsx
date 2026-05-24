@@ -4,7 +4,7 @@ import AskUserQuestionBubble from './AskUserQuestionBubble.jsx'
 import AttachedImages from './AttachedImages.jsx'
 import { formatToolResultContent, formatCost, formatDuration, formatModelName, formatTokens } from '../utils/format.js'
 import { diffLines, compactDiff } from '../utils/diff.js'
-import { API_BASE } from '../constants.js'
+import { apiFetch } from '../utils/api.js'
 import './MessageItem.css'
 
 const RESULT_PREVIEW_CHARS = 800
@@ -42,7 +42,7 @@ function LinkifiedResult({ text, onOpenFile, errorClass }) {
 async function fetchEditBaseLine(filePath, newString, signal) {
   if (!filePath || !newString) return null
   try {
-    const res = await fetch(`${API_BASE}/file?path=${encodeURIComponent(filePath)}`, { signal })
+    const res = await apiFetch(`/file?path=${encodeURIComponent(filePath)}`, { signal })
     if (!res.ok) return null
     const data = await res.json()
     const content = data?.content

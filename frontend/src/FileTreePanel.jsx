@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { API_BASE } from './constants.js'
+import { apiFetch } from './utils/api.js'
 import './FileTreePanel.css'
 
 const HOME = '~'
@@ -14,7 +14,7 @@ export default function FileTreePanel({ onOpenFile, onClose, initialPath }) {
   const loadDir = useCallback((path) => {
     setLoading(true)
     setError(null)
-    fetch(`${API_BASE}/files/tree?path=${encodeURIComponent(path)}`)
+    apiFetch(`/files/tree?path=${encodeURIComponent(path)}`)
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
       .then(data => {
         setCurrentPath(data.path)

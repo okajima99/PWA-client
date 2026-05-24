@@ -7,7 +7,9 @@ import StatusBar from './components/StatusBar.jsx'
 import StorageWarning from './components/StorageWarning.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
 import PlanApprovalBubble from './components/PlanApprovalBubble.jsx'
-import { API_BASE, LS_SESSION_ACTIVITY } from './constants.js'
+import { LS_SESSION_ACTIVITY } from './constants.js'
+import { apiFetch } from './utils/api.js'
+import { lsGet, lsSet } from './utils/storage.js'
 import { useStatus } from './hooks/useStatus.js'
 import { useAttachments } from './hooks/useAttachments.js'
 import { useChatStorage } from './hooks/useChatStorage.js'
@@ -87,16 +89,8 @@ export default function App() {
   const { messages, setMessages, input, setInput } = useChatStorage(sessions)
   // タブごとの表示モード (= 'chat' | 'terminal')。 デバッグ用に生 xterm を見たいタブだけ
   // terminal にし、 localStorage で永続化する (= そのタブはターミナル、 別タブは chat)。
-  const [viewModes, setViewModes] = useState(() => {
-    try {
-      const raw = localStorage.getItem('cpc_view_modes')
-      if (raw) return JSON.parse(raw) || {}
-    } catch { /* ignore */ }
-    return {}
-  })
-  useEffect(() => {
-    try { localStorage.setItem('cpc_view_modes', JSON.stringify(viewModes)) } catch { /* ignore */ }
-  }, [viewModes])
+  const [viewModes, setViewModes] = useState(() => lsGet('cpc_view_modes') || {})
+  useEffect(() => { lsSet('cpc_view_modes', viewModes) }, [viewModes])
   const activeViewMode = activeSid ? (viewModes[activeSid] || 'chat') : 'chat'
   // toggle ヘルパは「現在 mode → 反転 mode」 を計算する純粋関数として残し、
   // 実際の setViewModes 呼出は呼び出し側で行う (= topbar の 💬 戻るボタンと同じ
@@ -299,7 +293,7 @@ export default function App() {
       return
     }
     let cancelled = false
-    fetch(`${API_BASE}/sessions/${activeSid}/config`)
+    apiFetch(`/sessions/${activeSid}/config`)
       .then(r => r.ok ? r.json() : null)
       .then(d => {
         if (!d || cancelled) return
@@ -314,7 +308,7 @@ export default function App() {
   const patchSessionConfig = useCallback(async (patch) => {
     if (!activeSid) return
     try {
-      const res = await fetch(`${API_BASE}/sessions/${activeSid}/config`, {
+      const res = await apiFetch(`/sessions/${activeSid}/config`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
@@ -647,7 +641,7 @@ export default function App() {
           pendingPlan={status.pending_plan}
           onChoose={async (key) => {
             if (!activeSid) return
-            await fetch(`${API_BASE}/pty/${encodeURIComponent(activeSid)}/send`, {
+            await apiFetch(`/pty/${encodeURIComponent(activeSid)}/send`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ text: key, enter: true }),

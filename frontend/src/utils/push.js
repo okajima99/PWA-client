@@ -1,7 +1,7 @@
 // Web Push 通知の登録/解除ヘルパ。
 // iOS PWA は 16.4+ かつホーム画面追加済み (display:standalone) でのみ動作する。
 
-import { API_BASE } from '../constants.js'
+import { apiFetch } from './api.js'
 
 const ENABLED_KEY = 'cpc_push_enabled'
 
@@ -62,7 +62,7 @@ export async function enablePush() {
   const perm = await Notification.requestPermission()
   if (perm !== 'granted') throw new Error('通知が許可されませんでした')
 
-  const keyRes = await fetch(`${API_BASE}/push/vapid-public-key`)
+  const keyRes = await apiFetch(`/push/vapid-public-key`)
   if (!keyRes.ok) throw new Error('サーバ側の VAPID 鍵が未設定です')
   const { public_key } = await keyRes.json()
   if (!public_key) throw new Error('VAPID 公開鍵が空です')
@@ -87,7 +87,7 @@ export async function enablePush() {
     })
   }
 
-  const res = await fetch(`${API_BASE}/push/subscribe`, {
+  const res = await apiFetch(`/push/subscribe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(sub.toJSON()),
@@ -104,7 +104,7 @@ export async function disablePush() {
   const sub = await reg.pushManager.getSubscription()
   if (sub) {
     try {
-      await fetch(`${API_BASE}/push/unsubscribe`, {
+      await apiFetch(`/push/unsubscribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sub.toJSON()),

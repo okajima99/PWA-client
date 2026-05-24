@@ -1,6 +1,8 @@
 // App.jsx から責務分離した小粒 hook 群 (= push 状態同期、 既読化、 バッジ、 deep link 等)。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { API_BASE, LS_SESSION_ACTIVITY } from '../constants.js'
+import { LS_SESSION_ACTIVITY } from '../constants.js'
+import { apiFetch } from '../utils/api.js'
+import { lsGet, lsSet } from '../utils/storage.js'
 import { clearAllNotifications } from '../utils/badge.js'
 
 
@@ -15,7 +17,7 @@ export function usePushState(activeSid) {
         client: 'web',
       })
       try {
-        fetch(`${API_BASE}/push/state`, {
+        apiFetch(`/push/state`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body,
@@ -36,7 +38,7 @@ export function usePushState(activeSid) {
 export function useReadOnSessionOpen(activeSid) {
   useEffect(() => {
     if (!activeSid) return
-    fetch(`${API_BASE}/notifications/read-all`, {
+    apiFetch(`/notifications/read-all`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: activeSid }),
@@ -55,7 +57,7 @@ export function useMoonlightAvailable() {
     let cancelled = false
     ;(async () => {
       try {
-        const res = await fetch(`${API_BASE}/moonlight/`, { method: 'HEAD', credentials: 'same-origin' })
+        const res = await apiFetch(`/moonlight/`, { method: 'HEAD', credentials: 'same-origin' })
         if (!cancelled) setAvailable(res.ok)
       } catch {
         if (!cancelled) setAvailable(false)
@@ -109,14 +111,8 @@ export function useDeepLink(setActiveId) {
 // 永続値が無ければ ts=0 で記録 (= sort では created_at fallback)。
 export function useSessionActivity(messages, sessions) {
   const [sessionActivity, setSessionActivity] = useState(() => {
-    try {
-      const raw = localStorage.getItem(LS_SESSION_ACTIVITY)
-      if (raw) {
-        const parsed = JSON.parse(raw)
-        if (parsed && typeof parsed === 'object') return parsed
-      }
-    } catch { /* ignore */ }
-    return {}
+    const parsed = lsGet(LS_SESSION_ACTIVITY)
+    return parsed && typeof parsed === 'object' ? parsed : {}
   })
 
   // messages dict は streaming flush で rAF 毎に新 reference になるが、 各 sid の
@@ -158,7 +154,7 @@ export function useSessionActivity(messages, sessions) {
   }, [messagesLenSig])
 
   useEffect(() => {
-    try { localStorage.setItem(LS_SESSION_ACTIVITY, JSON.stringify(sessionActivity)) } catch { /* ignore */ }
+    lsSet(LS_SESSION_ACTIVITY, sessionActivity)
   }, [sessionActivity])
 
   // sort された session 一覧 (= 「最終活動時刻」 降順、 0 や未活動は created_at fallback)。
@@ -185,14 +181,8 @@ export function useSessionActivity(messages, sessions) {
 const LS_LAST_SEEN_LEN = 'cpc.lastSeenLen'
 
 function loadLastSeen() {
-  try {
-    const raw = localStorage.getItem(LS_LAST_SEEN_LEN)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      if (parsed && typeof parsed === 'object') return parsed
-    }
-  } catch { /* ignore */ }
-  return {}
+  const parsed = lsGet(LS_LAST_SEEN_LEN)
+  return parsed && typeof parsed === 'object' ? parsed : {}
 }
 
 export function useSessionBadges({ sids, activeSid, messages, loading }) {
@@ -203,7 +193,7 @@ export function useSessionBadges({ sids, activeSid, messages, loading }) {
 
   // localStorage 永続化
   useEffect(() => {
-    try { localStorage.setItem(LS_LAST_SEEN_LEN, JSON.stringify(lastSeenLen)) } catch { /* ignore */ }
+    lsSet(LS_LAST_SEEN_LEN, lastSeenLen)
   }, [lastSeenLen])
 
   // 明示的既読化: session click 時に呼ばれる。 activeSid の useEffect が走る前に

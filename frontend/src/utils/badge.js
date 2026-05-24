@@ -1,6 +1,6 @@
 // アプリバッジ (ホーム画面アイコン右上の未読数) + 通知センター掃除ヘルパ。
 // iOS 16.4+ PWA で Badging API + getNotifications が動く。
-import { API_BASE } from '../constants.js'
+import { apiFetch } from './api.js'
 
 /** 数値 N をバッジに反映。 0 は clearAppBadge と等価 (iOS では非表示)。 */
 export function setBadge(count) {
@@ -47,7 +47,7 @@ export async function clearAllNotifications() {
     }
   } catch { /* ignore */ }
   try {
-    await fetch(`${API_BASE}/notifications/sync`, {
+    await apiFetch(`/notifications/sync`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ count: remaining }),

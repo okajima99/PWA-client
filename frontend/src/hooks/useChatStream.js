@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { API_BASE, LS_JSONL_OFFSET, MAX_MESSAGES } from '../constants.js'
+import { LS_JSONL_OFFSET, MAX_MESSAGES } from '../constants.js'
+import { apiFetch, apiUrl } from '../utils/api.js'
+import { lsGet, lsSet } from '../utils/storage.js'
 import { generateId } from '../utils/id.js'
 import { useStreamBuffer } from './internal/useStreamBuffer.js'
 import { processStreamEvent } from './internal/processStreamEvent.js'
@@ -8,20 +10,12 @@ import { processStreamEvent } from './internal/processStreamEvent.js'
 // 保持し、 新規 EventSource 接続時に `?from=<offset>` で渡す。 backend は offset 以降の
 // 完全行だけ流すので、 初回 replay の重さがほぼゼロになる。
 function loadOffsets() {
-  try {
-    const raw = localStorage.getItem(LS_JSONL_OFFSET)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      if (parsed && typeof parsed === 'object') return parsed
-    }
-  } catch { /* ignore */ }
-  return {}
+  const parsed = lsGet(LS_JSONL_OFFSET)
+  return parsed && typeof parsed === 'object' ? parsed : {}
 }
 
 function persistOffsets(offsets) {
-  try {
-    localStorage.setItem(LS_JSONL_OFFSET, JSON.stringify(offsets))
-  } catch { /* ignore */ }
+  lsSet(LS_JSONL_OFFSET, offsets)
 }
 
 // chat 1 セッションの送受信・状態管理を束ねる公開フック (= TUI / JSONL 版)。
@@ -134,8 +128,8 @@ export function useChatStream({
     buffer.resetBuf(sid)
     const from = offsetRef.current[sid]
     const url = from != null
-      ? `${API_BASE}/jsonl/stream/${encodeURIComponent(sid)}?from=${encodeURIComponent(from)}`
-      : `${API_BASE}/jsonl/stream/${encodeURIComponent(sid)}`
+      ? apiUrl(`/jsonl/stream/${encodeURIComponent(sid)}?from=${encodeURIComponent(from)}`)
+      : apiUrl(`/jsonl/stream/${encodeURIComponent(sid)}`)
     const es = new EventSource(url)
     es.onmessage = (e) => {
       if (e.lastEventId) {
@@ -166,7 +160,7 @@ export function useChatStream({
   // chat UI の操作 → tmux session にキー送信 (= 出力 SSE と分離)。
   const sendToPty = useCallback(async (targetSid, body) => {
     try {
-      await fetch(`${API_BASE}/pty/${encodeURIComponent(targetSid)}/send`, {
+      await apiFetch(`/pty/${encodeURIComponent(targetSid)}/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -220,7 +214,7 @@ export function useChatStream({
         form.append('files', item.file)
       }
       try {
-        await fetch(`${API_BASE}/pty/${encodeURIComponent(sid)}/send-with-files`, {
+        await apiFetch(`/pty/${encodeURIComponent(sid)}/send-with-files`, {
           method: 'POST',
           body: form,
         })

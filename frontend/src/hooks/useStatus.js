@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { API_BASE } from '../constants.js'
+import { apiFetch, apiUrl } from '../utils/api.js'
 
 // 現在 active なセッションの status を backend からリアルタイム受信する。
 //
@@ -30,13 +30,13 @@ export function useStatus(activeSession) {
     // SSE 接続後はすぐに status snapshot が push されるので、 ここの fetch は補助。
     // ただし fetch のレスポンスが SSE より遅れて返ると、 古い snapshot で SSE 値を
     // 上書きしてしまう race があった。 sseReceived フラグで「SSE が先に来てたら捨てる」。
-    fetch(`${API_BASE}/status/${sid}`)
+    apiFetch(`/status/${sid}`)
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (!cancelled && !sseReceived && d) setStatus(d) })
       .catch(() => {})
 
     try {
-      evt = new EventSource(`${API_BASE}/status/${sid}/stream`)
+      evt = new EventSource(apiUrl(`/status/${sid}/stream`))
       evt.onmessage = (e) => {
         if (cancelled) return
         sseReceived = true

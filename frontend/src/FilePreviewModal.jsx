@@ -14,7 +14,7 @@ import markup from 'react-syntax-highlighter/dist/esm/languages/prism/markup'
 import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml'
 import toml from 'react-syntax-highlighter/dist/esm/languages/prism/toml'
 import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash'
-import { API_BASE } from './constants.js'
+import { apiFetch } from './utils/api.js'
 import './Modal.css'
 
 SyntaxHighlighter.registerLanguage('python', python)
@@ -69,7 +69,7 @@ export default function FilePreviewModal({ path, onClose }) {
     setLoading(true)
     setError(null)
     setContent(null)
-    fetch(`${API_BASE}/file?path=${encodeURIComponent(path)}`, { signal: controller.signal })
+    apiFetch(`/file?path=${encodeURIComponent(path)}`, { signal: controller.signal })
       .then(r => {
         if (r.status === 413) return r.json().then(d => Promise.reject(d.detail || 'ファイルが大きすぎます'))
         return r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`)
@@ -96,7 +96,7 @@ export default function FilePreviewModal({ path, onClose }) {
     setSaving(true)
     setSaveError(null)
     try {
-      const res = await fetch(`${API_BASE}/file`, {
+      const res = await apiFetch(`/file`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path, content: editText }),
