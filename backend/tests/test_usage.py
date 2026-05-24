@@ -1,32 +1,7 @@
-"""usage.py の pure 関数 (= _parse_reset / compute_ctx_pct / format_model_name) の
+"""usage.py の pure 関数 (= compute_ctx_pct / format_model_name) の
 unit test。 すべて side-effect なしで、 fixture も不要。
 """
-from usage import _parse_reset, compute_ctx_pct, format_model_name
-
-
-# ============================================================================
-# _parse_reset
-# ============================================================================
-
-def test_parse_reset_unix_epoch_string():
-    # 意図: Anthropic header は通常 unix epoch 文字列で来る、 そのまま int 化される
-    assert _parse_reset("1779015600") == 1779015600
-
-
-def test_parse_reset_iso8601_with_z():
-    # 意図: ISO 8601 "Z" suffix も fromisoformat 経由で epoch 化できる
-    # epoch は datetime(2026,5,17,12,0,0,tzinfo=UTC).timestamp() で確定値を pin
-    assert _parse_reset("2026-05-17T12:00:00Z") == 1779019200
-
-
-def test_parse_reset_none_returns_none():
-    # 意図: header 欠落時は None で素通り (= 呼び側で shared_status を触らない)
-    assert _parse_reset(None) is None
-
-
-def test_parse_reset_garbage_returns_none():
-    # 意図: パース不能文字列は黙って None、 例外で broadcast を止めない
-    assert _parse_reset("not-a-time") is None
+from usage import compute_ctx_pct, format_model_name
 
 
 # ============================================================================

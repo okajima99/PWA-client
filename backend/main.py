@@ -4,10 +4,10 @@
 
 - config.py        設定 / 定数
 - state.py         プロセス共有状態
-- sdk_runner.py    Claude Agent SDK 駆動 (= 旧経路、 PTY 移行中)
-- pty_runner.py    PTY-attached claude CLI 駆動 (= 新経路、 USE_PTY_RUNNER で切替)
-- chat_routes.py   チャット送受信エンドポイント (= 旧 SDK 経路)
-- pty_routes.py    /ws/pty/{session_id} WebSocket (= 新 PTY 経路)
+- pty_runner.py    PTY-attached claude CLI 駆動 (= tmux 内で claude TUI を起動)
+- chat_routes.py   session メタ / status / config エンドポイント
+- pty_routes.py    /ws/pty/{session_id} WebSocket + /pty/{sid}/send (= 入力経路)
+- jsonl_routes.py  /jsonl/stream/{sid} SSE (= JSONL tail で出力配信) + blocker 監視
 - hooks_router.py  /hooks/event (= claude CLI hooks → Web Push)
 - files_routes.py  ファイル系エンドポイント
 - push.py          Web Push 配信 + エンドポイント

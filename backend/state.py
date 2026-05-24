@@ -6,7 +6,7 @@
 セッションは複数同時に存在できる (= 同じ作業ディレクトリで複数議題を並行で持てる)。
 
 - セッション定義 (`sessions_meta`): 永続化、 session_meta.json
-- ストリームごとの SDK 接続状態 (`stream_states`)
+- ストリームごとの状態 (`stream_states`)
 - ステータスキャッシュ (`agent_status`, `shared_status`)
 - claude セッション ID の永続化 (`sessions` + `save_sessions`): session_id → claude session_id
 - ターン中の assistant text (`last_assistant_text`)
@@ -23,8 +23,6 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-
-from claude_agent_sdk import ClaudeSDKClient
 
 from config import AGENTS
 
@@ -193,42 +191,21 @@ sessions_meta, sessions = _load_sessions_meta_and_claude_sessions()
 @dataclass
 class StreamState:
     agent_id: str = ""  # どの AGENTS 設定 (cwd / notification_title) を参照するか
+    # buffer / buffer_id / complete は /status payload (_build_status) が読む。
+    # PTY + JSONL 経路では buffer に積まれないが、 status の streaming フラグ /
+    # buffer_id 整合のためフィールドだけ維持する。
     buffer: list[str] = field(default_factory=list)
     buffer_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     complete: bool = True
-    client: ClaudeSDKClient | None = None
-    pending_question: asyncio.Future | None = None
+    # AskUserQuestion の回答待ち tool_use id (= /status payload に載せる)。
     pending_question_tool_id: str | None = None
-    # /stop や新ターン割り込みで tool_use が宙ぶらりんになった場合の id。
-    # 次の /stream で synthetic tool_result を先頭に入れて履歴を閉じる。
-    orphaned_tool_use_id: str | None = None
-    # 直近 POST が発行した user_request_id。wire イベントに付与してフロントが
-    # 「ユーザー起点 ResultMessage」と「自発 ResultMessage」を区別できるようにする。
-    # POST でセット、 ResultMessage 受信で reset (= 次の turn は自発扱い)。
-    user_request_id: str | None = None
-    # アイドル GC 用: 直近のターン活動時刻 (ターン開始 / 完了時に更新)。
-    # 0.0 = まだ一度も発話してない (= GC 対象にしない)
-    last_activity_at: float = 0.0
     # session 別 model / effort 上書き。 None なら AGENTS 設定 + env デフォルトを使う。
-    # PATCH /sessions/{id}/config で更新 → 次の ensure_client で反映 (= 既存 client は
-    # disconnect される)。
+    # PATCH /sessions/{id}/config で更新 → claude TUI に /model /effort を send-keys。
     model_override: str | None = None
     effort_override: str | None = None  # "low" | "medium" | "high"
-    # SSE replay 用のシグナル。 buffer.append / complete=True / buffer reset 時に set
-    # することで _sse_replay の polling sleep を撤廃 (= 20Hz wake → イベント駆動)。
-    # 受信側は wait_for(timeout=15) で待ち、 タイムアウト時は keep-alive ping を yield。
-    # event.set() を漏らしても最大 15 秒遅延、 ハングはしない (= timeout が保険)。
-    buffer_event: asyncio.Event = field(default_factory=asyncio.Event)
-    # SDK の全 message を持続的に受信する task (= 1 セッション 1 個)。
-    # ensure_client で起動、 disconnect_client で cancel + await。
-    # user POST 経由のターンも proactive (= Monitor / CronCreate 等) のターンも、
-    # 全部この 1 本の async for で受信する。 turn ownership は UserMessage の content と
-    # state.pending_user_input の照合で判定。
-    receive_task: asyncio.Task | None = None
     # 状態変化シグナル (= /status/{sid}/stream SSE が wait する event)。
-    # state.complete 切替 / current_tool 変化 / todos 更新等で set、 SSE 受信側は
-    # 現状 status JSON を yield して event.clear() する。 polling を撤廃して
-    # backend→frontend を「即時 push」 にする。
+    # current_tool 変化 / todos 更新等 (= hooks / jsonl 経路) で set、 SSE 受信側は
+    # 現状 status JSON を yield して event.clear() する。 backend→frontend を即時 push。
     status_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -303,7 +280,7 @@ def register_session(agent_id: str, title: str | None = None) -> SessionDef:
 
 
 def unregister_session(session_id: str) -> bool:
-    """セッションを完全削除。 SDK client の disconnect は呼び出し側責任。"""
+    """セッションを完全削除。 PTY / tmux の停止は呼び出し側責任。"""
     if session_id not in sessions_meta:
         return False
     sessions_meta.pop(session_id, None)
@@ -323,14 +300,6 @@ def rename_session(session_id: str, title: str) -> bool:
     sessions_meta[session_id].title = title
     save_sessions_meta()
     return True
-
-
-# --- 共通ヘルパ ---
-def reset_activity(session_id: str) -> None:
-    if session_id not in agent_status:
-        return
-    agent_status[session_id]["current_tool"] = None
-    agent_status[session_id]["subagent"] = None
 
 
 # SDK レスポンス / HTTP header の解析と agent_status / shared_status の更新は

@@ -294,7 +294,6 @@ def _mutate_agent_status(session_id: str, line: dict) -> bool:
     """JSONL 1 行から agent_status を更新する。 変化があれば True を返す
     (= caller が status_event.set() するための合図)。
 
-    旧 sdk_runner._on_assistant_msg / _on_system_msg と同等の責務を JSONL 由来で果たす。
     PTY 経路では SDK の structured message が無いので、 JSONL の type/content から
     todos / plan_mode / current_tool / ctx_pct / model を直接拾う。
     """
