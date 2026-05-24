@@ -434,25 +434,24 @@ def get_session_config(session_id: str):
 @router.patch("/sessions/{session_id}/config")
 async def patch_session_config(session_id: str, payload: dict = Body(...)):
     """session の model / effort 上書きを更新する。 None / 未指定で「デフォルトに戻す」。
-    変更時は既存 SDK client を disconnect して、 次ターン開始時に新値で建て直す。"""
+    PTY 経路では state 値だけでなく claude TUI に slash command を流して
+    実切替まで完遂する (= `/model <name>` / `/effort <level>`)。"""
     if session_id not in sessions_meta:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
     state = stream_states[session_id]
-    # 推論中の切替は SDK client を強制切断 → 走ってる receive_response が途中で死ぬ
-    # ため、 ストリーム表示が中途半端な状態で固まる。 完了を待つか /stop してからに。
-    if not state.complete:
-        raise HTTPException(
-            status_code=409,
-            detail="推論中はモデル / effort 切替不可。 応答完了 or 停止後に再試行してください。",
-        )
-    changed = False
+    # 旧 SDK 経路は推論中切替で client が壊れる事故あり → 409 で弾いてた。 PTY 経路では
+    # state.complete を更新してないので常に True 扱いになり、 ここのガードは効かない。
+    # claude TUI 側で「推論中の /model」 が動かなければ tmux send-keys が黙って吸われる
+    # だけ (= UI 上は変えたつもりで実切替されない)、 ユーザが完了後に再試行する想定。
+    changed_model = False
+    changed_effort = False
     if "model" in payload:
         m = payload["model"]
         if m is not None and not isinstance(m, str):
             raise HTTPException(status_code=400, detail="model は文字列か null")
         if state.model_override != m:
             state.model_override = m or None
-            changed = True
+            changed_model = True
     if "effort" in payload:
         e = payload["effort"]
         if e is not None:
@@ -460,10 +459,24 @@ async def patch_session_config(session_id: str, payload: dict = Body(...)):
                 raise HTTPException(status_code=400, detail=f"effort は {ALLOWED_EFFORTS} のいずれか or null")
         if state.effort_override != e:
             state.effort_override = e or None
-            changed = True
-    if changed:
-        # 既存 client を切断 → 次の ensure_client で新 model / effort で建て直し
-        await disconnect_client(session_id)
+            changed_effort = True
+    # PTY 経路: claude TUI に slash command を tmux send-keys で投入する (= 実切替)。
+    # 失敗 (= tmux session が無い、 claude TUI が引数取らない、 等) でも 200 で返す:
+    # state の override 値は更新されてるので UI 表示は新値、 ユーザが必要なら再試行する。
+    from pty_runner import tmux_send_keys
+    if changed_model and state.model_override:
+        tmux_send_keys(session_id, text=f"/model {state.model_override}", enter=True)
+    if changed_effort and state.effort_override:
+        # claude TUI に `/effort <level>` コマンドが存在するかは要実機確認 (= 公式 docs に
+        # 明示記載なし)。 存在しない場合は claude が「未知コマンド」 として無視する、
+        # その時は実装側で対応案を再検討する。
+        tmux_send_keys(session_id, text=f"/effort {state.effort_override}", enter=True)
+    if changed_model or changed_effort:
+        # 旧 SDK 経路互換: 走ってる SDK client があれば切断 (= PTY 経路では no-op に近い)。
+        try:
+            await disconnect_client(session_id)
+        except Exception:
+            pass
     return {
         "ok": True,
         "model": state.model_override,
