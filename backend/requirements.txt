@@ -9,3 +9,4 @@ watchdog>=4
 flake8>=7
 black>=24
 pytest>=8
+httpx  # starlette TestClient (= backend/tests/) が実行時に要求する
