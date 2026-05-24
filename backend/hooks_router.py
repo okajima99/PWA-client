@@ -18,6 +18,7 @@ session_id 解決:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -149,7 +150,10 @@ async def hooks_event(request: Request) -> dict:
         state = stream_states.get(pwa_session_id)
         if state is not None:
             state.status_event.set()
-        await broadcast_push(body, title, pwa_session_id)
+        # fire-and-forget: webpush 送信は数百 ms かかる場合があり、 hook の curl が
+        # それを待つと claude プロセスの Stop ハンドラ完了が遅れて体感も遅くなる。
+        # backend は即 200 を返して、 配信は別 task に逃がす。
+        asyncio.create_task(broadcast_push(body, title, pwa_session_id))
         return {"ok": True, "pushed": "Stop"}
 
     if event == "Notification":
@@ -157,7 +161,7 @@ async def hooks_event(request: Request) -> dict:
         if not message:
             return {"ok": True, "ignored": "empty_message"}
         body = _truncate(message)
-        await broadcast_push(body, title, pwa_session_id)
+        asyncio.create_task(broadcast_push(body, title, pwa_session_id))
         return {"ok": True, "pushed": "Notification"}
 
     # 未対応イベントは受信ログだけ残して通す

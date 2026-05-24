@@ -80,10 +80,25 @@ export function useChatStream({
           if (event.uuid && cur.some(m => m.role === 'user' && m.uuid === event.uuid)) {
             return prev
           }
+          const eventText = event.text || ''
+          // 添付付き送信の dedup: backend が「<本文> [添付ファイル: /path/...]」 を tmux に送る
+          // → JSONL に同じ text で user 行が書かれる。 楽観 bubble (= fileNames を持つ
+          // optimistic な user) と置換し、 path 込み全文は表示しない (= 元 text + 画像チップ
+          // だけが残る、 二重表示を防ぐ)。
+          if (eventText.includes('[添付ファイル: ')) {
+            const optimIdx = cur.findIndex(
+              m => m.role === 'user' && m.optimistic && (m.fileNames?.length || m.imageUrls?.length)
+            )
+            if (optimIdx >= 0) {
+              const next = [...cur]
+              next[optimIdx] = { ...next[optimIdx], uuid: event.uuid || null, optimistic: false }
+              return { ...prev, [curSid]: next }
+            }
+          }
           // sendMessage が挿入した optimistic user bubble (uuid 無し、 同 text) と
           // 同一発話なら、 uuid を補完して optimistic フラグを外す (= 二重表示防止)。
           const optimIdx = cur.findIndex(
-            m => m.role === 'user' && m.optimistic && m.text === (event.text || '')
+            m => m.role === 'user' && m.optimistic && m.text === eventText
           )
           if (optimIdx >= 0) {
             const next = [...cur]
@@ -94,7 +109,7 @@ export function useChatStream({
             ...prev,
             [curSid]: [
               ...cur,
-              { id: generateId(), uuid: event.uuid || null, role: 'user', text: event.text || '' },
+              { id: generateId(), uuid: event.uuid || null, role: 'user', text: eventText },
             ].slice(-MAX_MESSAGES),
           }
         })
