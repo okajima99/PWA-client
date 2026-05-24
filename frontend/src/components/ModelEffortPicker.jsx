@@ -1,0 +1,60 @@
+// ⋯ メニュー → Model & Effort の切替ダイアログ。 App.jsx から純粋プレゼンテーショナルに
+// 切り出したもの。 選択肢は公式 CLI が受け入れる短縮形 + effort 階層。
+
+const MODEL_OPTIONS = [
+  { value: 'opus', label: 'Opus' },
+  { value: 'sonnet', label: 'Sonnet' },
+  { value: 'haiku', label: 'Haiku' },
+]
+const EFFORT_OPTIONS = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'Extra High' },
+  { value: 'max', label: 'Max' },
+]
+
+// open=false なら描画しない。 model / effort は現在の選択 (= override ?? default)、
+// disabled は推論中フラグ、 onPick({model}|{effort}) で patch、 onClose で閉じる。
+export default function ModelEffortPicker({ open, model, effort, disabled, onPick, onClose }) {
+  if (!open) return null
+  return (
+    <div className="picker-overlay" onClick={onClose}>
+      <div className="picker-dialog" onClick={e => e.stopPropagation()}>
+        <div className="picker-title">Model &amp; Effort</div>
+        {disabled && (
+          <div className="picker-notice">推論中は変更できません</div>
+        )}
+        <div className="picker-section">
+          <div className="picker-section-label">Model</div>
+          {MODEL_OPTIONS.map(opt => (
+            <button
+              key={opt.value}
+              className={`picker-option ${model === opt.value ? 'active' : ''}`}
+              onClick={() => onPick({ model: opt.value })}
+              disabled={disabled}
+            >
+              <span>{opt.label}</span>
+              {model === opt.value && <span className="picker-check">✓</span>}
+            </button>
+          ))}
+        </div>
+        <div className="picker-section">
+          <div className="picker-section-label">Effort</div>
+          {EFFORT_OPTIONS.map(opt => (
+            <button
+              key={opt.value}
+              className={`picker-option ${effort === opt.value ? 'active' : ''}`}
+              onClick={() => onPick({ effort: opt.value })}
+              disabled={disabled}
+            >
+              <span>{opt.label}</span>
+              {effort === opt.value && <span className="picker-check">✓</span>}
+            </button>
+          ))}
+        </div>
+        <button className="picker-close" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  )
+}

@@ -29,19 +29,8 @@ import {
 import { setBadge } from './utils/badge.js'
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
-// 公式 CLI が受け入れる短縮形 + effort 階層 (= module scope const、 毎 render 再生成を避ける)。
-const MODEL_OPTIONS = [
-  { value: 'opus', label: 'Opus' },
-  { value: 'sonnet', label: 'Sonnet' },
-  { value: 'haiku', label: 'Haiku' },
-]
-const EFFORT_OPTIONS = [
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'Extra High' },
-  { value: 'max', label: 'Max' },
-]
+import ChatInput from './components/ChatInput.jsx'
+import ModelEffortPicker from './components/ModelEffortPicker.jsx'
 // session 削除後の IndexedDB orphan 画像掃除を遅延する時間 (= setMessages の state 反映を待つ)。
 const IMAGE_GC_AFTER_DELETE_MS = 300
 // 起動時の初回 GC 遅延 (= localStorage 復元 + 初期 fetch の messages 確定を待つ)。
@@ -517,122 +506,37 @@ export default function App() {
       <ActivityBar status={status} />
 
       {activeViewMode !== 'terminal' && (
-      <div className="inputarea">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/jpeg,image/png,image/gif,image/webp,text/*,.py,.js,.ts,.jsx,.tsx,.md,.json,.css,.html,.yaml,.yml,.toml,.sh"
-          multiple
-          style={{ display: 'none' }}
-          onChange={handleFileSelect}
+        <ChatInput
+          activeSid={activeSid}
+          activeSession={activeSession}
+          input={input}
+          setInput={setInput}
+          inputDisabled={inputDisabled}
+          fileInputRef={fileInputRef}
+          onFileSelect={handleFileSelect}
+          menuRef={menuRef}
+          menuOpen={menuOpen}
+          setMenuOpen={setMenuOpen}
+          onOpenTree={() => setTreeOpen('~')}
+          activeViewMode={activeViewMode}
+          onToggleView={() => { if (activeSid) setViewModes(prev => ({ ...prev, [activeSid]: flippedViewMode })) }}
+          onOpenPicker={() => setPickerOpen('config')}
+          onEndSession={() => setConfirmEnd(true)}
+          showStopButton={showStopButton}
+          onStop={() => setConfirmStop(true)}
+          onSend={sendMessage}
+          currentAttachments={currentAttachments}
         />
-        <textarea
-          value={activeSid ? (input[activeSid] || '') : ''}
-          onChange={e => activeSid && setInput(prev => ({ ...prev, [activeSid]: e.target.value }))}
-          placeholder={activeSession ? 'メッセージを入力...' : '左の ☰ から会話を作成してください'}
-          rows={2}
-          disabled={inputDisabled}
-        />
-        <div className="buttons" ref={menuRef}>
-          {menuOpen && (
-            <div className="action-menu">
-              <button onClick={() => { fileInputRef.current?.click(); setMenuOpen(false) }} className="menu-item">
-                ファイル添付
-              </button>
-              <button onClick={() => { setTreeOpen('~'); setMenuOpen(false) }} className="menu-item">
-                ファイルツリー
-              </button>
-              <button
-                onClick={() => {
-                  if (activeSid) {
-                    setViewModes(prev => ({ ...prev, [activeSid]: flippedViewMode }))
-                  }
-                  setMenuOpen(false)
-                }}
-                className="menu-item"
-                disabled={!activeSession}
-              >
-                {activeViewMode === 'terminal' ? '💬 チャットで表示' : '⌨ ターミナルで表示'}
-              </button>
-              {activeSession && (
-                <button
-                  className="menu-item"
-                  onClick={() => { setPickerOpen('config'); setMenuOpen(false) }}
-                >
-                  Model & Effort
-                </button>
-              )}
-              <button
-                onClick={() => { setMenuOpen(false); setConfirmEnd(true) }}
-                className="menu-item end"
-                disabled={!activeSession}
-              >
-                セッション終了
-              </button>
-            </div>
-          )}
-          <button
-            onClick={() => setMenuOpen(prev => !prev)}
-            className={`more ${menuOpen ? 'active' : ''}`}
-            aria-label="メニュー"
-          >
-            ⋯
-          </button>
-          {showStopButton ? (
-            <button onClick={() => setConfirmStop(true)} className="stop" aria-label="停止">■</button>
-          ) : (
-            <button
-              onClick={sendMessage}
-              disabled={!activeSession || (!(input[activeSid] || '').trim() && currentAttachments.length === 0)}
-              className="send"
-              aria-label="送信"
-            >
-              送信
-            </button>
-          )}
-        </div>
-      </div>
       )}
 
-      {pickerOpen === 'config' && activeSid && (
-        <div className="picker-overlay" onClick={() => setPickerOpen(null)}>
-          <div className="picker-dialog" onClick={e => e.stopPropagation()}>
-            <div className="picker-title">Model &amp; Effort</div>
-            {configDisabled && (
-              <div className="picker-notice">推論中は変更できません</div>
-            )}
-            <div className="picker-section">
-              <div className="picker-section-label">Model</div>
-              {MODEL_OPTIONS.map(opt => (
-                <button
-                  key={opt.value}
-                  className={`picker-option ${activeModel === opt.value ? 'active' : ''}`}
-                  onClick={() => patchSessionConfig({ model: opt.value })}
-                  disabled={configDisabled}
-                >
-                  <span>{opt.label}</span>
-                  {activeModel === opt.value && <span className="picker-check">✓</span>}
-                </button>
-              ))}
-            </div>
-            <div className="picker-section">
-              <div className="picker-section-label">Effort</div>
-              {EFFORT_OPTIONS.map(opt => (
-                <button
-                  key={opt.value}
-                  className={`picker-option ${activeEffort === opt.value ? 'active' : ''}`}
-                  onClick={() => patchSessionConfig({ effort: opt.value })}
-                  disabled={configDisabled}
-                >
-                  <span>{opt.label}</span>
-                  {activeEffort === opt.value && <span className="picker-check">✓</span>}
-                </button>
-              ))}
-            </div>
-            <button className="picker-close" onClick={() => setPickerOpen(null)}>Close</button>
-          </div>
-        </div>
-      )}
+      <ModelEffortPicker
+        open={pickerOpen === 'config' && !!activeSid}
+        model={activeModel}
+        effort={activeEffort}
+        disabled={configDisabled}
+        onPick={patchSessionConfig}
+        onClose={() => setPickerOpen(null)}
+      />
 
       {/* claude が ExitPlanMode で出した承認プロンプトを overlay として表示。
           backend がアクティブ session の agent_status.pending_plan を SSE で流す。 */}
