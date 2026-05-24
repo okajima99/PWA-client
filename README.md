@@ -54,6 +54,8 @@ Claude Code をスマートフォンから操作するための PWA クライア
   programmatic ツール判定による使用量ペナルティを構造的に回避する (= 旧 SDK + proxy 経路は
   この判定で素の数倍の subscription budget を消費していた。 経緯と実測は
   `docs/pty-migration.md` / `docs/penalty-baseline.md` を参照)
+- **手元の Claude Code サブスクリプション (= Pro / Max) でそのまま使える** — 別途 API キーや
+  API 従量課金は不要 (= claude CLI 自身の認証経路をそのまま使うため)
 - iPhone / Android からは Tailscale 経由で Mac の HTTPS にアクセス
 - インターネット公開はしない、 Tailscale tailnet 内のみ
 
