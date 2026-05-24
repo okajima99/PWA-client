@@ -122,6 +122,19 @@ def test_user_text_block_array_folds_to_user_message():
     assert events[0]["text"] == "hello"
 
 
+def test_meta_message_skipped():
+    # harness の malformed retry 注入 (isMeta:true) は chat に出さない
+    line = {
+        "type": "user",
+        "isMeta": True,
+        "message": {
+            "role": "user",
+            "content": "Your tool call was malformed and could not be parsed. Please retry.",
+        },
+    }
+    assert jsonl_line_to_events(line) == []
+
+
 def test_sidechain_skipped():
     line = {
         "type": "assistant",

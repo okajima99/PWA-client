@@ -22,6 +22,10 @@ def jsonl_line_to_events(line: dict) -> list[dict]:
         return []
     if line.get("isSidechain"):
         return []
+    if line.get("isMeta"):
+        # harness が注入するメタメッセージ (= tool call の malformed retry 指示 / caveat 等)。
+        # ユーザー発言でも claude の応答でもないので chat には出さない。
+        return []
     line_type = line.get("type")
     if line_type == "assistant":
         return _assistant_events(line)
