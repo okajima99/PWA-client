@@ -97,13 +97,10 @@ export default function App() {
     try { localStorage.setItem('cpc_view_modes', JSON.stringify(viewModes)) } catch { /* ignore */ }
   }, [viewModes])
   const activeViewMode = activeSid ? (viewModes[activeSid] || 'chat') : 'chat'
-  const toggleViewMode = useCallback(() => {
-    if (!activeSid) return
-    setViewModes(prev => ({
-      ...prev,
-      [activeSid]: (prev[activeSid] || 'chat') === 'terminal' ? 'chat' : 'terminal',
-    }))
-  }, [activeSid])
+  // toggle ヘルパは「現在 mode → 反転 mode」 を計算する純粋関数として残し、
+  // 実際の setViewModes 呼出は呼び出し側で行う (= topbar の 💬 戻るボタンと同じ
+  // 「set 直書き」 経路に統一して、 useCallback closure 経由で動かない疑惑を消す)。
+  const flippedViewMode = activeViewMode === 'terminal' ? 'chat' : 'terminal'
   const { attachments, fileInputRef, handleFileSelect, removeAttachment, clearAttachments } = useAttachments(activeSession)
   const status = useStatus(activeSession)
   const {
@@ -551,7 +548,12 @@ export default function App() {
                 ファイルツリー
               </button>
               <button
-                onClick={() => { toggleViewMode(); setMenuOpen(false) }}
+                onClick={() => {
+                  if (activeSid) {
+                    setViewModes(prev => ({ ...prev, [activeSid]: flippedViewMode }))
+                  }
+                  setMenuOpen(false)
+                }}
                 className="menu-item"
                 disabled={!activeSession}
               >
