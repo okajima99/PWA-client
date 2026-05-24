@@ -9,8 +9,17 @@ JSONL と旧 SDK-SSE event はほぼ同型 (= message.role + content[] + tool_re
       usage / model を載せた result event を合成 (= MetaLine の token / model 表示用)
     - user 素プロンプト: JSONL は content=string (= ユーザ発言) → user_message event に変換
     - subagent 出力: isSidechain=True の行は親 chat に混ぜない (= skip)
+    - slash command の内部表現: `/clear` 等を tmux 経由で送ると claude は
+      `<command-name>/clear</command-name>` 形式の XML を user 行として JSONL に書く。
+      これはユーザ発話ではなく claude 内部表現なので chat には出さない (= skip)。
 """
 from __future__ import annotations
+
+import re
+
+# `/clear` / `/model` / `/effort` 等の slash command 発動時、 claude が JSONL に書く
+# 内部表現の検出用。 行頭に `<command-name>` が来ることで判別。
+_COMMAND_XML_RE = re.compile(r"^\s*<command-name>")
 
 
 def jsonl_line_to_events(line: dict) -> list[dict]:
@@ -90,6 +99,9 @@ def _user_events(line: dict) -> list[dict]:
     if isinstance(content, str):
         text = content.strip()
         if not text:
+            return []
+        # claude TUI の slash command 内部表現は user 発話ではないので chat には出さない
+        if _COMMAND_XML_RE.match(text):
             return []
         return [{"type": "user_message", "text": content, "uuid": line.get("uuid")}]
 

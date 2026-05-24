@@ -154,3 +154,34 @@ def test_unknown_type_skipped():
     assert jsonl_line_to_events({"type": "attachment"}) == []
     assert jsonl_line_to_events({"type": "pr-link"}) == []
     assert jsonl_line_to_events("not a dict") == []
+
+
+def test_slash_command_xml_skipped():
+    # `/clear` 等の slash command を tmux 経由で送ると claude は
+    # `<command-name>/clear</command-name>` 形式の user 行を JSONL に書く。
+    # これはユーザ発話ではなく内部表現なので chat には出さない。
+    line = {
+        "type": "user",
+        "uuid": "u-clear",
+        "message": {
+            "role": "user",
+            "content": (
+                "<command-name>/clear</command-name> "
+                "<command-message>clear</command-message> "
+                "<command-args></command-args>"
+            ),
+        },
+    }
+    assert jsonl_line_to_events(line) == []
+
+
+def test_slash_command_xml_with_leading_whitespace_skipped():
+    line = {
+        "type": "user",
+        "uuid": "u-model",
+        "message": {
+            "role": "user",
+            "content": "  \n<command-name>/model</command-name> <command-message>model</command-message>",
+        },
+    }
+    assert jsonl_line_to_events(line) == []
