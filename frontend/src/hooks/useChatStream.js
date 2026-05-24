@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { LS_JSONL_OFFSET, MAX_MESSAGES } from '../constants.js'
+import { LS_JSONL_OFFSET } from '../constants.js'
 import { apiFetch, apiUrl } from '../utils/api.js'
 import { lsGet, lsSet } from '../utils/storage.js'
 import { generateId } from '../utils/id.js'
 import { useStreamBuffer } from './internal/useStreamBuffer.js'
 import { processStreamEvent } from './internal/processStreamEvent.js'
+import { reconcileUserMessage } from './internal/reconcileUserMessage.js'
 
 // session_id → JSONL byte offset の永続化。 タブ切替 / リロードを跨いで「ここまで読んだ」 を
 // 保持し、 新規 EventSource 接続時に `?from=<offset>` で渡す。 backend は offset 以降の
@@ -73,42 +74,8 @@ export function useChatStream({
         buffer.cancelAndFlush(curSid)
         setMessages(prev => {
           const cur = prev[curSid] || []
-          // 既知 uuid なら何もしない
-          if (event.uuid && cur.some(m => m.role === 'user' && m.uuid === event.uuid)) {
-            return prev
-          }
-          const eventText = event.text || ''
-          // 添付付き送信の dedup: backend が「<本文> [添付ファイル: /path/...]」 を tmux に送る
-          // → JSONL に同じ text で user 行が書かれる。 楽観 bubble (= fileNames を持つ
-          // optimistic な user) と置換し、 path 込み全文は表示しない (= 元 text + 画像チップ
-          // だけが残る、 二重表示を防ぐ)。
-          if (eventText.includes('[添付ファイル: ')) {
-            const optimIdx = cur.findIndex(
-              m => m.role === 'user' && m.optimistic && (m.fileNames?.length || m.imageUrls?.length)
-            )
-            if (optimIdx >= 0) {
-              const next = [...cur]
-              next[optimIdx] = { ...next[optimIdx], uuid: event.uuid || null, optimistic: false }
-              return { ...prev, [curSid]: next }
-            }
-          }
-          // sendMessage が挿入した optimistic user bubble (uuid 無し、 同 text) と
-          // 同一発話なら、 uuid を補完して optimistic フラグを外す (= 二重表示防止)。
-          const optimIdx = cur.findIndex(
-            m => m.role === 'user' && m.optimistic && m.text === eventText
-          )
-          if (optimIdx >= 0) {
-            const next = [...cur]
-            next[optimIdx] = { ...next[optimIdx], uuid: event.uuid || null, optimistic: false }
-            return { ...prev, [curSid]: next }
-          }
-          return {
-            ...prev,
-            [curSid]: [
-              ...cur,
-              { id: generateId(), uuid: event.uuid || null, role: 'user', text: eventText },
-            ].slice(-MAX_MESSAGES),
-          }
+          const next = reconcileUserMessage(cur, event.text || '', event.uuid)
+          return next === cur ? prev : { ...prev, [curSid]: next }
         })
         return
       }
