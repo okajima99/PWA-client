@@ -4,14 +4,12 @@
 
 - config.py        設定 / 定数
 - state.py         プロセス共有状態
-- http_client.py   共通 httpx クライアント
 - sdk_runner.py    Claude Agent SDK 駆動 (= 旧経路、 PTY 移行中)
 - pty_runner.py    PTY-attached claude CLI 駆動 (= 新経路、 USE_PTY_RUNNER で切替)
 - chat_routes.py   チャット送受信エンドポイント (= 旧 SDK 経路)
 - pty_routes.py    /ws/pty/{session_id} WebSocket (= 新 PTY 経路)
 - hooks_router.py  /hooks/event (= claude CLI hooks → Web Push)
 - files_routes.py  ファイル系エンドポイント
-- proxy_routes.py  Anthropic プロキシ
 - push.py          Web Push 配信 + エンドポイント
 """
 import asyncio
@@ -71,7 +69,6 @@ setup_uvicorn_access_log()
 logger = logging.getLogger(__name__)
 
 # --- アプリ内モジュール ---
-import http_client  # noqa: E402
 from config import CORS_ALLOW_ORIGINS, UPLOADS_TMP  # noqa: E402
 from sdk_runner import disconnect_client, idle_disconnect_loop  # noqa: E402
 from session_logging import close_all as close_all_session_logs, prune_all_existing  # noqa: E402
@@ -81,7 +78,6 @@ import chat_routes  # noqa: E402
 import files_routes  # noqa: E402
 import hooks_router  # noqa: E402
 import jsonl_routes  # noqa: E402
-import proxy_routes  # noqa: E402
 import pty_routes  # noqa: E402
 import pty_runner  # noqa: E402
 import push  # noqa: E402
@@ -89,8 +85,7 @@ import push  # noqa: E402
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 起動: 共有 httpx クライアント初期化 + 古い tmp ファイル / 大きすぎるエラーログを掃除
-    await http_client.init()
+    # 起動: 古い tmp ファイル / 大きすぎるエラーログの掃除 + 各種 background task 起動
 
     # tmux server の status bar を全 session で OFF にする (= 端末画面下の緑バー除去)。
     # `-g` でサーバ全体に効くので、 既存 session も新規 session も等しく status off。
@@ -157,7 +152,6 @@ async def lifespan(app: FastAPI):
     import jsonl_watcher  # noqa: PLC0415, E402
     jsonl_watcher.stop_watcher()
     close_all_session_logs()
-    await http_client.aclose()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -176,7 +170,6 @@ app.include_router(chat_routes.router)
 app.include_router(files_routes.router)
 app.include_router(hooks_router.router)
 app.include_router(jsonl_routes.router)
-app.include_router(proxy_routes.router)
 app.include_router(pty_routes.router)
 app.include_router(push.router)
 
