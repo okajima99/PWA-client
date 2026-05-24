@@ -70,7 +70,6 @@ logger = logging.getLogger(__name__)
 
 # --- アプリ内モジュール ---
 from config import CORS_ALLOW_ORIGINS, UPLOADS_TMP  # noqa: E402
-from session_logging import close_all as close_all_session_logs, prune_all_existing  # noqa: E402
 from state import sessions_meta  # noqa: E402
 
 import chat_routes  # noqa: E402
@@ -157,13 +156,6 @@ async def lifespan(app: FastAPI):
     # StandardOutPath (= backend.log) は launchd 管理で rotate されないので起動時に上限を切る。
     _truncate_if_oversized(LOG_DIR / "backend.log", LOG_MAX_BYTES)
 
-    # per-tab ログ: 既存セッションぶんの掃除を起動時に 1 回走らせる
-    # (セッション終了で都度 prune する設計だが、 取りこぼし対策として保険で実行)
-    try:
-        prune_all_existing(list(sessions_meta.keys()))
-    except Exception:
-        logger.exception("prune_all_existing failed")
-
     yield
 
     # 終了: 常時 tail task + uploads GC task を停止 → PTY セッションを閉じる
@@ -178,7 +170,6 @@ async def lifespan(app: FastAPI):
     await pty_runner.shutdown_all()
     import jsonl_watcher  # noqa: PLC0415, E402
     jsonl_watcher.stop_watcher()
-    close_all_session_logs()
 
 
 app = FastAPI(lifespan=lifespan)

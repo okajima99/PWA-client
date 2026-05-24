@@ -23,7 +23,6 @@ from fastapi.responses import StreamingResponse
 
 from config import AGENTS
 from usage import read_latest_rate_limits
-from session_logging import delete_session_log
 from state import (
     agent_status,
     backend_start_time,
@@ -87,8 +86,6 @@ async def delete_session(session_id: str):
             p.unlink(missing_ok=True)
         except Exception:
             logger.debug("tmp file unlink failed: %s", p, exc_info=True)
-    # per-tab ログを丸ごと削除
-    delete_session_log(session_id)
     unregister_session(session_id)
     return {"status": "ok", "session_id": session_id}
 
