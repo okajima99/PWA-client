@@ -18,7 +18,7 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from config import AGENTS
@@ -40,6 +40,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def require_session(session_id: str) -> str:
+    """path の session_id が存在しなければ 404 を投げる FastAPI 依存。 各 endpoint で
+    重複していた存在チェックを 1 箇所に集約する (= Depends(require_session) で受ける)。"""
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return session_id
+
+
 # --- セッション CRUD ---
 @router.get("/sessions")
 def list_sessions():
@@ -57,9 +65,7 @@ def create_session(payload: dict = Body(...)):
 
 
 @router.patch("/sessions/{session_id}")
-def patch_session(session_id: str, payload: dict = Body(...)):
-    if session_id not in sessions_meta:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+def patch_session(session_id: str, payload: dict = Body(...), _: str = Depends(require_session)):
     title = payload.get("title")
     if not isinstance(title, str) or not title.strip():
         raise HTTPException(status_code=400, detail="title は必須 (空不可)")
@@ -68,9 +74,7 @@ def patch_session(session_id: str, payload: dict = Body(...)):
 
 
 @router.delete("/sessions/{session_id}")
-async def delete_session(session_id: str):
-    if session_id not in sessions_meta:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+async def delete_session(session_id: str, _: str = Depends(require_session)):
     # PTY + tmux + JSONL binding を一括 cleanup
     try:
         from pty_runner import kill_tmux_session, pty_sessions  # noqa: PLC0415
@@ -122,20 +126,15 @@ def _build_status(session_id: str) -> dict:
 
 
 @router.get("/status/{session_id}")
-def get_status(session_id: str):
-    if session_id not in sessions_meta:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+def get_status(session_id: str, _: str = Depends(require_session)):
     return _build_status(session_id)
 
 
 @router.get("/status/{session_id}/stream")
-async def status_stream(session_id: str):
+async def status_stream(session_id: str, _: str = Depends(require_session)):
     """状態変化を即時 push する SSE。 frontend は EventSource で subscribe して
     polling 撤廃。 state.status_event が set されるたびに最新 status を yield。
     timeout で keep-alive ping、 タブ閉じれば接続が切れて自然終了。"""
-    if session_id not in sessions_meta:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
-
     state = stream_states[session_id]
 
     async def gen():
@@ -176,11 +175,9 @@ ALLOWED_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
 
 @router.get("/sessions/{session_id}/config")
-def get_session_config(session_id: str):
+def get_session_config(session_id: str, _: str = Depends(require_session)):
     """session の model / effort 上書き値を返す (= 未設定なら null)。
     UI が現在の選択を表示するため。"""
-    if session_id not in sessions_meta:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
     state = stream_states[session_id]
     cfg = AGENTS.get(state.agent_id) or {}
     return {
@@ -192,12 +189,10 @@ def get_session_config(session_id: str):
 
 
 @router.patch("/sessions/{session_id}/config")
-async def patch_session_config(session_id: str, payload: dict = Body(...)):
+async def patch_session_config(session_id: str, payload: dict = Body(...), _: str = Depends(require_session)):
     """session の model / effort 上書きを更新する。 None / 未指定で「デフォルトに戻す」。
     PTY 経路では state 値だけでなく claude TUI に slash command を流して
     実切替まで完遂する (= `/model <name>` / `/effort <level>`)。"""
-    if session_id not in sessions_meta:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
     state = stream_states[session_id]
     # 旧 SDK 経路は推論中切替で client が壊れる事故あり → 409 で弾いてた。 PTY 経路では
     # state.complete を更新してないので常に True 扱いになり、 ここのガードは効かない。
