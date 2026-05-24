@@ -207,18 +207,19 @@ export default function App() {
   // 開始 → backend が state.complete=False に倒すまでの数百 ms 間、 pendingSendUntilRef が
   // 停止ボタン表示を担保する。 backend からの真値が届いたら status.streaming に切り替わる。
   const [now, setNow] = useState(Date.now())
-  // pendingSend の deadline 切れを反映するため軽い tick (= 500ms 間隔)。 hidden 中は止める
-  // (= UI 見えてないので無駄、 iOS の background 帯で setInterval が電力を食う要因)。
+  // pendingSend の deadline 切れを「停止ボタン表示」 に反映するための one-shot timer。
+  // 常時 interval を回すと前景中ずっと App を 2Hz 再描画して iPhone の電力を食うので、
+  // activeSid に未来の deadline がある時だけ、 その時刻ちょうどに 1 回 setNow する。
+  // 送信時は sendMessage が loading を立てる → この effect が再評価 → timer を仕込む。
   useEffect(() => {
-    let id = null
-    const tick = () => setNow(Date.now())
-    const start = () => { if (id == null) { tick(); id = setInterval(tick, 500) } }
-    const stop = () => { if (id != null) { clearInterval(id); id = null } }
-    if (!document.hidden) start()
-    const onVis = () => { document.hidden ? stop() : start() }
-    document.addEventListener('visibilitychange', onVis)
-    return () => { stop(); document.removeEventListener('visibilitychange', onVis) }
-  }, [])
+    const deadline = pendingSendUntilRef.current[activeSid] || 0
+    const remain = deadline - Date.now()
+    if (remain <= 0) return
+    const id = setTimeout(() => setNow(Date.now()), remain + 50)
+    return () => clearTimeout(id)
+    // loading / streaming の変化が deadline 設定の契機なので deps に入れる
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSid, loading, status?.streaming])
   const isStreamingNow = !!(activeSid && status?.streaming)
   const isPendingSend = !!(activeSid && (pendingSendUntilRef.current[activeSid] || 0) > now)
   const showStopButton = !!(activeSid && (loading[activeSid] || isStreamingNow || isPendingSend))
