@@ -174,6 +174,9 @@ export function processStreamEvent(deps, sid, event) {
   // (event.uuid = AssistantMessage の uuid。 同じものを 2 回 replay しても 1 つの bubble に収束)
   const buf = bufFor ? bufFor(sid) : streamBufRef.current[sid]
   const eventUuid = event.uuid || null
+  // 同 message.id の追加 frame か (= JSONL は 1 AssistantMessage を複数行に分割し、
+  // 各行は 1 block の delta — thinking 行 / text 行 / tool_use 行が別々に来る)。
+  const sameUuid = buf.dirty && buf.uuid && eventUuid && buf.uuid === eventUuid
   // 異なる AssistantMessage uuid が来たら、 buf に居る前の AM を rAF 待たず先に flush する。
   // (replay で連続して別 uuid が back-to-back に来た時、 同 rAF 窓内で上書きされて
   // 中間 AssistantMessage が render されない regression を防ぐ。 同 uuid 連打 = 同じ
@@ -182,9 +185,19 @@ export function processStreamEvent(deps, sid, event) {
     cancelAndFlush(sid)
   }
   buf.needsNewBubble = true
-  buf.text = textContent
-  buf.thinking = thinkingContent || null
-  buf.newTools = newTools
+  if (sameUuid) {
+    // 同 AM の delta frame を rAF 窓内で coalesce する時、 後続の tool_use 行 (= text 空)
+    // で直前の text / thinking 行を空上書きしない。 非空なら新値、 空なら既存維持、
+    // tools は id で union。 flush 側マージと同じ `||` 意味論なので replay 二重配信にも冪等。
+    buf.text = textContent || buf.text
+    buf.thinking = thinkingContent || buf.thinking
+    const seen = new Set((buf.newTools || []).map(t => t.id))
+    buf.newTools = [...(buf.newTools || []), ...newTools.filter(t => !seen.has(t.id))]
+  } else {
+    buf.text = textContent
+    buf.thinking = thinkingContent || null
+    buf.newTools = newTools
+  }
   buf.uuid = eventUuid
   buf.dirty = true
   scheduleFlush(sid)
