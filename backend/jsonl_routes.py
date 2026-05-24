@@ -425,23 +425,41 @@ def _lines_to_sse(lines: list[str], pos: int, session_id: str) -> list[str]:
 
 
 def _initial_offset(path: Path) -> int:
-    """初回 replay の開始バイト位置。 直近 INITIAL_REPLAY_LINES 行ぶんに絞る。"""
+    """初回 replay の開始バイト位置。 直近 INITIAL_REPLAY_LINES 行ぶんに絞る。
+
+    末尾から固定 chunk ずつ遡って改行を数え、 「末尾から N 個目の改行の直後」 を返す。
+    ファイル全体をメモリに読まないので大きい JSONL でも O(末尾) で済む。 改行が
+    INITIAL_REPLAY_LINES 個以下なら 0 (= 全件 replay)。 旧実装 (= 全読み + rfind) と
+    同じ境界 (= count <= N → 0、 count > N → N 個目直後) を保つ。
+    """
     try:
-        with open(path, "rb") as f:
-            data = f.read()
+        size = path.stat().st_size
     except OSError:
         return 0
-    if data.count(b"\n") <= INITIAL_REPLAY_LINES:
+    if size == 0:
         return 0
-    # 末尾から INITIAL_REPLAY_LINES 個の改行を遡った位置
-    idx = len(data)
-    remaining = INITIAL_REPLAY_LINES
-    while remaining > 0:
-        idx = data.rfind(b"\n", 0, idx)
-        if idx == -1:
-            return 0
-        remaining -= 1
-    return idx + 1
+    chunk_size = 64 * 1024
+    found = 0
+    candidate = 0  # 末尾から N 個目の改行直後。 N+1 個目が見つかったら (= count > N) 返す
+    pos = size
+    try:
+        with open(path, "rb") as f:
+            while pos > 0:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                f.seek(pos)
+                chunk = f.read(read_size)
+                for i in range(len(chunk) - 1, -1, -1):
+                    if chunk[i] != 0x0A:  # b"\n"
+                        continue
+                    found += 1
+                    if found == INITIAL_REPLAY_LINES:
+                        candidate = pos + i + 1
+                    elif found > INITIAL_REPLAY_LINES:
+                        return candidate
+    except OSError:
+        return 0
+    return 0
 
 
 async def _jsonl_sse(session_id: str, start_pos: int | None = None):
@@ -544,6 +562,9 @@ async def monitor_all_sessions_loop():
             try:
                 await asyncio.sleep(POLL_INTERVAL)
                 from state import sessions_meta as _sessions_meta  # 動的参照
+                # 削除済み session の追跡 entry を刈り取る (= 無停止運用での単調増加防止)
+                for stale in [s for s in state if s not in _sessions_meta]:
+                    state.pop(stale, None)
                 for sid in list(_sessions_meta.keys()):
                     path = _latest_jsonl(sid)
                     if path is None:

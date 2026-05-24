@@ -82,6 +82,41 @@ import pty_runner  # noqa: E402
 import push  # noqa: E402
 
 
+def _truncate_if_oversized(path: Path, max_bytes: int) -> None:
+    """launchd の StandardOutPath は app の RotatingFileHandler と別管理で自動 rotate
+    されない。 起動時に上限超過してたら 0 に切り詰める (= 同 inode を保つので launchd の
+    O_APPEND fd は次 write から先頭に append し直し、 単調増加を防ぐ)。"""
+    try:
+        if path.exists() and path.stat().st_size > max_bytes:
+            open(path, "w").close()
+    except OSError:
+        logger.debug("truncate oversized log failed: %s", path, exc_info=True)
+
+
+def _prune_uploads_tmp(max_age_sec: float = 24 * 3600) -> None:
+    """uploads/tmp の古い添付ファイルを掃除する。 セッション削除時にも消えるが、
+    削除しない運用 + 無停止 backend だと溜まるので定期 + 起動時に sweep する。"""
+    if not UPLOADS_TMP.exists():
+        return
+    cutoff = time.time() - max_age_sec
+    for f in UPLOADS_TMP.iterdir():
+        try:
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("upload tmp unlink failed: %s", f, exc_info=True)
+
+
+async def _uploads_tmp_gc_loop(interval_sec: float = 3600.0) -> None:
+    """1 時間ごとに uploads/tmp を sweep する軽量 GC タスク。"""
+    while True:
+        await asyncio.sleep(interval_sec)
+        try:
+            _prune_uploads_tmp()
+        except Exception:
+            logger.exception("uploads tmp gc failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 起動: 古い tmp ファイル / 大きすぎるエラーログの掃除 + 各種 background task 起動
@@ -114,16 +149,13 @@ async def lifespan(app: FastAPI):
     for sid in list(sessions_meta.keys()):
         _asyncio.create_task(pty_runner._register_claude_when_ready(sid))
 
-    cutoff = time.time() - 24 * 3600
-    if UPLOADS_TMP.exists():
-        for f in UPLOADS_TMP.iterdir():
-            if f.is_file() and f.stat().st_mtime < cutoff:
-                try:
-                    f.unlink(missing_ok=True)
-                except Exception:
-                    logger.debug("upload tmp unlink failed: %s", f, exc_info=True)
-    # backend.error.log / backend.access.log は RotatingFileHandler で自動 rotate するので
-    # 起動時 truncate は不要。
+    # uploads/tmp: 起動時 sweep + 1 時間ごとの定期 GC (= 無停止運用でも溜め続けない)
+    _prune_uploads_tmp()
+    uploads_gc_task = _asyncio.create_task(_uploads_tmp_gc_loop())
+
+    # backend.error.log / backend.access.log は RotatingFileHandler で自動 rotate。
+    # StandardOutPath (= backend.log) は launchd 管理で rotate されないので起動時に上限を切る。
+    _truncate_if_oversized(LOG_DIR / "backend.log", LOG_MAX_BYTES)
 
     # per-tab ログ: 既存セッションぶんの掃除を起動時に 1 回走らせる
     # (セッション終了で都度 prune する設計だが、 取りこぼし対策として保険で実行)
@@ -134,13 +166,15 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # 終了: 常時 tail task を停止 → PTY セッションを閉じる
+    # 終了: 常時 tail task + uploads GC task を停止 → PTY セッションを閉じる
     blocker_monitor_task.cancel()
-    try:
-        await blocker_monitor_task
-    except (asyncio.CancelledError, Exception):
-        # cancel 後の CancelledError は想定通り、 それ以外の例外は無視 (= shutdown 続行)。
-        pass
+    uploads_gc_task.cancel()
+    for _t in (blocker_monitor_task, uploads_gc_task):
+        try:
+            await _t
+        except (asyncio.CancelledError, Exception):
+            # cancel 後の CancelledError は想定通り、 それ以外の例外は無視 (= shutdown 続行)。
+            pass
     await pty_runner.shutdown_all()
     import jsonl_watcher  # noqa: PLC0415, E402
     jsonl_watcher.stop_watcher()
