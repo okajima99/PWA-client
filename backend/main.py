@@ -70,9 +70,8 @@ logger = logging.getLogger(__name__)
 
 # --- アプリ内モジュール ---
 from config import CORS_ALLOW_ORIGINS, UPLOADS_TMP  # noqa: E402
-from sdk_runner import disconnect_client, idle_disconnect_loop  # noqa: E402
 from session_logging import close_all as close_all_session_logs, prune_all_existing  # noqa: E402
-from state import sessions_meta, stream_states  # noqa: E402
+from state import sessions_meta  # noqa: E402
 
 import chat_routes  # noqa: E402
 import files_routes  # noqa: E402
@@ -101,9 +100,7 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.debug("tmux status off failed", exc_info=True)
 
-    # アイドル GC: 一定時間発話のないセッションの SDK client を自動 disconnect する
     import asyncio as _asyncio
-    idle_gc_task = _asyncio.create_task(idle_disconnect_loop())
 
     # 常時 tail: PWA 接続有無に関係なく全 sid の JSONL を監視して、 AskUserQuestion /
     # stop_reason 異常を Web Push に流す (= jsonl_routes SSE 経路と独立)。
@@ -137,17 +134,13 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # 終了: 各バックグラウンド task を停止 → SDK クライアントを全て切断 → httpx を閉じる
-    idle_gc_task.cancel()
+    # 終了: 常時 tail task を停止 → PTY セッションを閉じる
     blocker_monitor_task.cancel()
-    for t in (idle_gc_task, blocker_monitor_task):
-        try:
-            await t
-        except (asyncio.CancelledError, Exception):
-            # cancel 後の CancelledError は想定通り、 それ以外の例外は無視 (= shutdown 続行)。
-            pass
-    for session_id in list(stream_states.keys()):
-        await disconnect_client(session_id)
+    try:
+        await blocker_monitor_task
+    except (asyncio.CancelledError, Exception):
+        # cancel 後の CancelledError は想定通り、 それ以外の例外は無視 (= shutdown 続行)。
+        pass
     await pty_runner.shutdown_all()
     import jsonl_watcher  # noqa: PLC0415, E402
     jsonl_watcher.stop_watcher()
