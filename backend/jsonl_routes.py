@@ -24,13 +24,87 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
+import re
+
 from config import TMUX_SESSION_MAP_DIR
 from jsonl_events import jsonl_line_to_events
 from push import broadcast_push, notification_title_for
 from pty_routes import _resolve_cwd
-from pty_runner import _tmux_session_name
+from pty_runner import _tmux_session_name, capture_tmux_scrollback
 from state import agent_status, stream_states
 from usage import compute_ctx_pct, format_model_name
+
+
+# ANSI escape を剥がして plain text にする (= tmux capture-pane の出力に色 / cursor 制御が
+# 含まれる、 選択肢抽出時にノイズ)
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+# 「1. Yes, auto-accept edits」 みたいな choice 行を拾う
+_PLAN_CHOICE_RE = re.compile(r"^\s*(\d+)\.\s+(.+?)\s*$", re.MULTILINE)
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
+
+async def _capture_plan_choices(session_id: str, tool_use_id: str) -> None:
+    """ExitPlanMode tool_use 直後に tmux 画面を capture して選択肢テキストを抽出する。
+    claude TUI は tool_use を JSONL に書いた直後に terminal に prompt を描画するので、
+    数百 ms 待ってから capture することで「1. Yes, ... / 2. ... / 3. ...」 が画面に
+    出てる状態を拾える。
+
+    抽出失敗時は agent_status.pending_plan.choices = [] で frontend が fallback の
+    固定 2 択 (1=Approve / 3=No) を出す。
+    """
+    await asyncio.sleep(0.5)
+    a = agent_status.get(session_id)
+    if a is None:
+        return
+    pending = a.get("pending_plan")
+    if not pending or pending.get("tool_use_id") != tool_use_id:
+        return  # 既に resolved or 別 plan に上書き
+    try:
+        raw = capture_tmux_scrollback(session_id, lines=120)
+    except Exception:
+        raw = b""
+    if not raw:
+        return
+    text = _strip_ansi(raw.decode("utf-8", errors="replace"))
+    # 直近の choice 行を抽出 (= 末尾近くにある番号付き行)
+    choices = []
+    seen_keys = set()
+    for m in _PLAN_CHOICE_RE.finditer(text):
+        key, label = m.group(1), m.group(2)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        # label の末尾に「 (esc to interrupt)」 等の補助文言が混ざる場合があるので捨てる
+        label = label.split("(")[0].strip()
+        if label:
+            choices.append({"key": key, "label": label})
+    # 「1. ... / 2. ... / 3. ...」 のように **連続した番号**だけ採用 (= 過去画面の番号付き
+    # リストが混ざるのを防ぐ)。 末尾近くから連続な keys を取る
+    if len(choices) >= 2:
+        # 末尾から「N, N-1, N-2 ...」 と降順で連続するブロックを抽出
+        tail = []
+        for c in reversed(choices):
+            if not tail:
+                tail.append(c)
+                continue
+            prev_key = int(tail[-1]["key"])
+            if int(c["key"]) == prev_key - 1:
+                tail.append(c)
+            else:
+                break
+        tail.reverse()
+        choices = tail
+
+    # state が他に上書きされてないか再確認 → set
+    pending = a.get("pending_plan")
+    if pending and pending.get("tool_use_id") == tool_use_id:
+        a["pending_plan"] = {**pending, "choices": choices}
+        state = stream_states.get(session_id)
+        if state is not None:
+            state.status_event.set()
 
 logger = logging.getLogger(__name__)
 
@@ -307,9 +381,20 @@ def _mutate_agent_status(session_id: str, line: dict) -> bool:
                     if todos is not None and a.get("todos") != todos:
                         a["todos"] = todos
                         changed = True
-                elif name == "ExitPlanMode" and a.get("plan_mode"):
-                    a["plan_mode"] = False
+                elif name == "ExitPlanMode":
+                    # plan_mode フラグは落とす (= 旧経路と同じ semantics)
+                    if a.get("plan_mode"):
+                        a["plan_mode"] = False
+                        changed = True
+                    # 承認待ち状態を立てる → frontend が PlanApprovalBubble を表示する
+                    a["pending_plan"] = {
+                        "tool_use_id": tool_id,
+                        "plan": inp.get("plan", ""),
+                        "choices": [],  # 0.5s 後に tmux capture-pane で抽出
+                    }
                     changed = True
+                    # 選択肢抽出は async タスクで遅延実行 (= claude TUI の prompt 描画待ち)
+                    asyncio.create_task(_capture_plan_choices(session_id, tool_id))
                 elif name == "EnterPlanMode" and not a.get("plan_mode"):
                     a["plan_mode"] = True
                     changed = True
@@ -334,9 +419,15 @@ def _mutate_agent_status(session_id: str, line: dict) -> bool:
             for block in content:
                 if not isinstance(block, dict) or block.get("type") != "tool_result":
                     continue
+                tu_id = block.get("tool_use_id")
                 cur = a.get("current_tool")
-                if cur and cur.get("id") == block.get("tool_use_id"):
+                if cur and cur.get("id") == tu_id:
                     a["current_tool"] = None
+                    changed = True
+                # ExitPlanMode の承認 / 拒否が tool_result で返ったら pending_plan を解除
+                pending = a.get("pending_plan")
+                if pending and pending.get("tool_use_id") == tu_id:
+                    a["pending_plan"] = None
                     changed = True
     return changed
 

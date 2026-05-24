@@ -329,6 +329,7 @@ def _build_status(session_id: str) -> dict:
         "current_tool": a["current_tool"],
         "todos": a["todos"],
         "subagent": a["subagent"],
+        "pending_plan": a.get("pending_plan"),
         "five_hour_pct": rl["five_hour_pct"] if rl.get("five_hour_pct") is not None else shared_status["five_hour_pct"],
         "seven_day_pct": rl["seven_day_pct"] if rl.get("seven_day_pct") is not None else shared_status["seven_day_pct"],
         "five_hour_resets_at": rl.get("five_hour_resets_at") or shared_status["five_hour_resets_at"],

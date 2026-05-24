@@ -6,6 +6,7 @@ import ActivityBar from './components/ActivityBar.jsx'
 import StatusBar from './components/StatusBar.jsx'
 import StorageWarning from './components/StorageWarning.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
+import PlanApprovalBubble from './components/PlanApprovalBubble.jsx'
 import { API_BASE, LS_SESSION_ACTIVITY } from './constants.js'
 import { useStatus } from './hooks/useStatus.js'
 import { useAttachments } from './hooks/useAttachments.js'
@@ -636,6 +637,22 @@ export default function App() {
             <button className="picker-close" onClick={() => setPickerOpen(null)}>Close</button>
           </div>
         </div>
+      )}
+
+      {/* claude が ExitPlanMode で出した承認プロンプトを overlay として表示。
+          backend がアクティブ session の agent_status.pending_plan を SSE で流す。 */}
+      {status?.pending_plan && (
+        <PlanApprovalBubble
+          pendingPlan={status.pending_plan}
+          onChoose={async (key) => {
+            if (!activeSid) return
+            await fetch(`${API_BASE}/pty/${encodeURIComponent(activeSid)}/send`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: key, enter: true }),
+            }).catch(() => {})
+          }}
+        />
       )}
 
       <ConfirmDialog

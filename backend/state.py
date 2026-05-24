@@ -242,6 +242,10 @@ def _make_agent_status(agent_id: str) -> dict:
         "current_tool": None,
         "todos": None,
         "subagent": None,
+        # ExitPlanMode の承認待ち情報。 tool_use 発火で set / tool_result で clear。
+        # frontend が PlanApprovalBubble を表示するためのソース。
+        # {tool_use_id: str, plan: str, choices: [{key: str, label: str}, ...]} または None
+        "pending_plan": None,
     }
 
 
