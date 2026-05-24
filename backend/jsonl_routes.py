@@ -154,6 +154,28 @@ def _read_complete_lines(path: Path, pos: int) -> tuple[list[str], int]:
     return lines, new_pos
 
 
+def _read_tail(path: Path, pos: int) -> tuple[list[str], int, str]:
+    """path を pos から tail する共通プリミティブ (= SSE 配信 / push 監視で共用)。
+
+    返り値 (lines, new_pos, status):
+      - "ok"        : 新規完全行あり (lines / new_pos が進む)
+      - "nochange"  : 新着なし (new_pos == pos)
+      - "truncated" : size < pos (= rotate / truncate。 new_pos = 現 size)
+      - "error"     : stat 失敗 (= ファイル消失等)
+    truncate 後にどこから読み直すかは呼び側の方針 (= SSE は先頭再生、 monitor は末尾再同期)。
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return [], pos, "error"
+    if size < pos:
+        return [], size, "truncated"
+    if size <= pos:
+        return [], pos, "nochange"
+    lines, new_pos = _read_complete_lines(path, pos)
+    return lines, new_pos, "ok"
+
+
 # sid → 直近 user 発話 (= turn 開始) の unix epoch。 stop_reason 確定行を見たら
 # (現在の確定行の timestamp - 開始) を duration_ms として result event に inject する。
 # プロセス内 dict なので backend 再起動で消える、 中断中の turn は duration 取得不可。
@@ -489,19 +511,17 @@ async def _jsonl_sse(session_id: str, start_pos: int | None = None):
     for frame in _lines_to_sse(lines, pos, session_id):
         yield frame
 
-    # tail: 新規追記行を追従する
+    # tail: 新規追記行を追従する (= stat/truncate/read は _read_tail に集約)
     while True:
         await asyncio.sleep(POLL_INTERVAL)
-        try:
-            size = path.stat().st_size
-        except OSError:
+        lines, pos, status = _read_tail(path, pos)
+        if status == "error":
             # ファイルが消えた (= セッション破棄等) → 終了
             return
-        if size < pos:
-            # truncate / rotate された → 先頭から読み直す
-            pos = 0
-        if size > pos:
-            lines, pos = _read_complete_lines(path, pos)
+        if status == "truncated":
+            # truncate / rotate → 先頭から読み直す
+            lines, pos, status = _read_tail(path, 0)
+        if status == "ok":
             frames = _lines_to_sse(lines, pos, session_id)
             if frames:
                 for frame in frames:
@@ -569,24 +589,21 @@ async def monitor_all_sessions_loop():
                     path = _latest_jsonl(sid)
                     if path is None:
                         continue
-                    try:
-                        size = path.stat().st_size
-                    except OSError:
-                        continue
                     prev = state.get(sid)
                     if prev is None or prev[0] != path:
                         # 初回 or path 切替: 末尾から開始 (= 過去行を再通知しない)
-                        state[sid] = (path, size)
+                        try:
+                            state[sid] = (path, path.stat().st_size)
+                        except OSError:
+                            pass
                         continue
-                    _prev_path, prev_pos = prev
-                    if size < prev_pos:
-                        # rotate / truncate: 末尾再同期
-                        state[sid] = (path, size)
+                    lines, new_pos, status = _read_tail(path, prev[1])
+                    if status == "error":
                         continue
-                    if size <= prev_pos:
-                        continue
-                    lines, new_pos = _read_complete_lines(path, prev_pos)
+                    # truncated → 末尾再同期 (new_pos=size) / ok → 進行 / nochange → 据置
                     state[sid] = (path, new_pos)
+                    if status != "ok":
+                        continue
                     for raw in lines:
                         raw = raw.strip()
                         if not raw:
