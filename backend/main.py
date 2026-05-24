@@ -153,8 +153,10 @@ async def lifespan(app: FastAPI):
     uploads_gc_task = _asyncio.create_task(_uploads_tmp_gc_loop())
 
     # backend.error.log / backend.access.log は RotatingFileHandler で自動 rotate。
-    # StandardOutPath (= backend.log) は launchd 管理で rotate されないので起動時に上限を切る。
-    _truncate_if_oversized(LOG_DIR / "backend.log", LOG_MAX_BYTES)
+    # launchd の StandardOutPath (= backend.log) / StandardErrorPath (= backend.boot.log) は
+    # launchd 管理で rotate されないので起動時に上限超過を切る (= app の rotate 系とは別ファイル)。
+    for _log_name in ("backend.log", "backend.boot.log"):
+        _truncate_if_oversized(LOG_DIR / _log_name, LOG_MAX_BYTES)
 
     yield
 
