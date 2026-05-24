@@ -83,7 +83,8 @@ export function processStreamEvent(deps, sid, event) {
       const msgs = [...cur]
       const last = msgs[msgs.length - 1]
       if (last?.role !== 'agent') return prev
-      msgs[msgs.length - 1] = { ...last, meta }
+      // turn 完了: meta 反映 + streaming flag を落とす (= tool-pending「…」 / 推論中バブルを止める)
+      msgs[msgs.length - 1] = { ...last, meta, streaming: false }
       return { ...prev, [sid]: msgs }
     })
     if (typeof onResultMessage === 'function') onResultMessage(sid, event.request_id)

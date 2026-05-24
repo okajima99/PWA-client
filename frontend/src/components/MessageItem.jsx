@@ -240,7 +240,7 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
   if (msg.role === '__loading__') {
     return (
       <div className="message agent">
-        <span className="bubble dim">…</span>
+        <span className="bubble dim">推論中…</span>
       </div>
     )
   }

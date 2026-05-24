@@ -55,8 +55,19 @@ export function useChatStream({
         buffer.cancelAndFlush(curSid)
         setMessages(prev => {
           const cur = prev[curSid] || []
+          // 既知 uuid なら何もしない
           if (event.uuid && cur.some(m => m.role === 'user' && m.uuid === event.uuid)) {
             return prev
+          }
+          // sendMessage が挿入した optimistic user bubble (uuid 無し、 同 text) と
+          // 同一発話なら、 uuid を補完して optimistic フラグを外す (= 二重表示防止)。
+          const optimIdx = cur.findIndex(
+            m => m.role === 'user' && m.optimistic && m.text === (event.text || '')
+          )
+          if (optimIdx >= 0) {
+            const next = [...cur]
+            next[optimIdx] = { ...next[optimIdx], uuid: event.uuid || null, optimistic: false }
+            return { ...prev, [curSid]: next }
           }
           return {
             ...prev,
@@ -124,10 +135,27 @@ export function useChatStream({
     setLoading(prev => ({ ...prev, [sid]: true }))
     // backend が assistant を JSONL に書くまでの間、 楽観的に停止ボタンを出す。
     pendingSendUntilRef.current[sid] = Date.now() + 1500
+    // 旧 chat UI 互換: 送信直後に user bubble + 空 streaming agent bubble を即挿入。
+    // claude が JSONL に書き始めるまで数秒沈黙するので、 placeholder が無いと「無反応」 に
+    // 見える。 useStreamBuffer.flushStreamBuf は空 streaming agent を見つけたら中身を埋める
+    // (= dedup 動作) ので、 ここで挿入しても assistant event 到着で自然に埋まる。
+    // user bubble は JSONL の user_message event でも追加されるが、 uuid 重複は handleEvent
+    // 側で dedup される。
+    setMessages(prev => {
+      const cur = prev[sid] || []
+      return {
+        ...prev,
+        [sid]: [
+          ...cur,
+          { id: generateId(), role: 'user', text, optimistic: true },
+          { id: generateId(), role: 'agent', text: '', tools: [], streaming: true },
+        ],
+      }
+    })
     if (isAtBottomRef) isAtBottomRef.current = true
     scrollToBottom()
     await sendToPty(sid, { text, enter: true })
-  }, [sid, input, loading, setInput, scrollToBottom, sendToPty, isAtBottomRef])
+  }, [sid, input, loading, setInput, setMessages, scrollToBottom, sendToPty, isAtBottomRef])
 
   const stopMessage = useCallback(async () => {
     if (!sid) return

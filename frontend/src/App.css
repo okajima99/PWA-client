@@ -175,6 +175,14 @@ textarea:focus {
   position: relative;
 }
 
+/* terminal モード時は textarea / 送信ボタンが消えて .buttons だけが残るので、
+   flex の左寄せで左端に張り付く + action-menu (right:0, min-width:140px) が
+   画面外に膨らむ。 margin-left:auto で .buttons 自体を右端に押し出して、
+   popup が画面内右寄せで出るようにする。 */
+.buttons.terminal-only {
+  margin-left: auto;
+}
+
 button {
   padding: 8px 14px;
   border: none;

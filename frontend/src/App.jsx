@@ -578,7 +578,7 @@ export default function App() {
             disabled={inputDisabled}
           />
         )}
-        <div className="buttons" ref={menuRef}>
+        <div className={`buttons ${activeViewMode === 'terminal' ? 'terminal-only' : ''}`} ref={menuRef}>
           {menuOpen && (
             <div className="action-menu">
               <button onClick={() => { fileInputRef.current?.click(); setMenuOpen(false) }} className="menu-item">
