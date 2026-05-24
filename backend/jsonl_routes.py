@@ -26,6 +26,7 @@ from fastapi.responses import StreamingResponse
 
 from config import TMUX_SESSION_MAP_DIR
 from jsonl_events import jsonl_line_to_events
+from push import broadcast_push, notification_title_for
 from pty_routes import _resolve_cwd
 from pty_runner import _tmux_session_name
 from state import agent_status, stream_states
@@ -182,6 +183,83 @@ def _attach_duration_to_result(session_id: str, line: dict, events: list[dict]) 
             ev["duration_ms"] = duration_ms
 
 
+# 推論が止まる原因として通知すべき stop_reason → ユーザ向けラベル。 旧 SDK 経路で
+# StopReasonChip として MessageItem に表示してたのと同じ集合 + tool_use は除外
+# (= turn 継続中なので止まりではない)。
+_STOP_REASON_NOTIF_LABELS = {
+    "max_tokens": "⚠ トークン上限で停止",
+    "refusal": "🚫 拒否されました",
+    "pause_turn": "⏸ 一時停止",
+    "model_context_window_exceeded": "⚠ コンテキスト窓超過",
+}
+
+# JSONL 行の `timestamp` (ISO 8601) が現在時刻から N 秒以内なら「新着 tail」 とみなす。
+# 初回 replay (= 500 行) で過去行を読み返した時に古い AskUserQuestion / stop_reason
+# 異常を再通知しないための gate。
+_PUSH_FRESH_WINDOW_SEC = 60.0
+
+
+def _is_fresh_line(line: dict) -> bool:
+    """line の timestamp が直近 _PUSH_FRESH_WINDOW_SEC 内ならば True。"""
+    ts = line.get("timestamp")
+    if not ts or not isinstance(ts, str):
+        return False
+    try:
+        line_time = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return False
+    return (time.time() - line_time) < _PUSH_FRESH_WINDOW_SEC
+
+
+def _maybe_push_blockers(session_id: str, line: dict) -> None:
+    """推論を止める要因 (= AskUserQuestion 発火 / stop_reason 異常) を JSONL 上で検出して
+    Web Push に流す。 旧 SDK 経路の make_permission_handler / _on_result_msg の役割を
+    PTY/JSONL 経路で再現する箇所。
+
+    - AskUserQuestion: assistant 行の tool_use(name="AskUserQuestion") を見つけたら
+      質問本文を通知に乗せる (= 旧 SDK の AskUserQuestion 通知と同 spec)。
+    - stop_reason 異常系 (max_tokens / refusal / pause_turn /
+      model_context_window_exceeded): label を通知に乗せる。 end_turn / tool_use は
+      正常系なので除外 (= turn 完了の通知は Stop hook 経路で別に飛ぶ)。
+
+    初回 replay で過去行が再流入した時の再通知を防ぐため、 `_is_fresh_line` で
+    タイムスタンプが直近 60 秒以内の行のみ push 発火する。
+    """
+    if line.get("type") != "assistant" or line.get("isSidechain") or line.get("isMeta"):
+        return
+    if not _is_fresh_line(line):
+        return
+    msg = line.get("message") or {}
+
+    # AskUserQuestion 発火
+    content = msg.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if block.get("name") != "AskUserQuestion":
+                continue
+            inp = block.get("input") or {}
+            questions = inp.get("questions") or []
+            first_q = questions[0] if isinstance(questions, list) and questions else {}
+            question_text = (
+                first_q.get("question") if isinstance(first_q, dict) else None
+            )
+            if question_text:
+                title = notification_title_for(session_id)
+                asyncio.create_task(
+                    broadcast_push(f"❓ {question_text}", title, session_id)
+                )
+                return  # 1 行から複数 push を発火させない
+
+    # stop_reason 異常系
+    stop_reason = msg.get("stop_reason")
+    label = _STOP_REASON_NOTIF_LABELS.get(stop_reason)
+    if label:
+        title = notification_title_for(session_id)
+        asyncio.create_task(broadcast_push(label, title, session_id))
+
+
 def _mutate_agent_status(session_id: str, line: dict) -> bool:
     """JSONL 1 行から agent_status を更新する。 変化があれば True を返す
     (= caller が status_event.set() するための合図)。
@@ -288,6 +366,7 @@ def _lines_to_sse(lines: list[str], pos: int, session_id: str) -> list[str]:
         _track_turn_start(session_id, obj)
         if _mutate_agent_status(session_id, obj):
             status_dirty = True
+        _maybe_push_blockers(session_id, obj)
         evts = jsonl_line_to_events(obj)
         _attach_duration_to_result(session_id, obj, evts)
         for event in evts:
