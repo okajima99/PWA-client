@@ -46,7 +46,14 @@ Claude Code をスマートフォンから操作するための PWA クライア
                             └──────────────┘
 ```
 
-- バックエンドは Mac 上で常駐、 Claude Code CLI を subprocess として呼び出す
+- バックエンドは Mac 上で常駐し、 `claude` CLI を**実 PTY (= 疑似端末) + tmux で対話起動**する。
+  claude が書く会話ログ (JSONL) を backend が tail して SSE でチャット UI に流し、 入力は
+  tmux 経由でそのセッションへ送る (= 出力 = JSONL tail、 入力 = キー送出 に分離した設計)
+- **`claude -p` / `--print` ・ Agent SDK ・ API プロキシは一切使わない**。 ターミナルで直接
+  `claude` を打つのと区別できない first-party な対話セッションとして動かすことで、 3rd-party
+  programmatic ツール判定による使用量ペナルティを構造的に回避する (= 旧 SDK + proxy 経路は
+  この判定で素の数倍の subscription budget を消費していた。 経緯と実測は
+  `docs/pty-migration.md` / `docs/penalty-baseline.md` を参照)
 - iPhone / Android からは Tailscale 経由で Mac の HTTPS にアクセス
 - インターネット公開はしない、 Tailscale tailnet 内のみ
 
@@ -374,8 +381,8 @@ http://<your-tailscale-ip>:8000
 }
 ```
 
-- `claude_path`: `claude` コマンドのフルパス (`which claude` で確認)。 未指定だと
-  SDK が PATH から拾うが、 conda 等の環境差で読めない場合は明示する
+- `claude_path`: `claude` コマンドのフルパス (`which claude` で確認)。 PTY 起動時の存在
+  チェックに使う (= 未設定 / 不正パスなら起動を拒否)。 conda 等で PATH が通らない環境では明示する
 - 各エージェントの `cwd` に置かれた `CLAUDE.md` が `claude` コマンド起動時に自動 load
   される
 - `launch_alias` (任意): タブを**新規**作成した時に tmux pane で自動入力する文字列。
@@ -403,13 +410,19 @@ VITE_API_BASE=https://<your-host>.tail<xxxx>.ts.net
 ```
 claude-pwa-client/
 ├── backend/                 # FastAPI バックエンド (Python)
-│   ├── main.py              # エントリポイント + ルータ集約
-│   ├── chat_routes.py       # /chat/stream, /reconnect, /stop, /end
+│   ├── main.py              # エントリポイント + ルータ集約 + lifespan task
+│   ├── pty_runner.py        # claude を実 PTY + tmux で起動・駆動
+│   ├── pty_routes.py        # /ws/pty (ターミナル) + /pty/{sid}/send (入力経路)
+│   ├── jsonl_routes.py      # /jsonl/stream (claude の JSONL を tail → SSE 出力)
+│   ├── jsonl_events.py      # JSONL 1 行 → chat UI イベント変換
+│   ├── jsonl_watcher.py     # ~/.claude/projects 監視で session ↔ JSONL を確定紐付け
+│   ├── chat_routes.py       # session メタ / status / model・effort config
+│   ├── hooks_router.py      # /hooks/event (claude CLI hooks → Web Push)
 │   ├── files_routes.py      # /file, /files/tree
-│   ├── proxy_routes.py      # /proxy/... (Anthropic API リバプロ)
 │   ├── push.py              # Web Push + 通知履歴 + SSE listener
-│   ├── sdk_runner.py        # Claude Code CLI subprocess 管理
-│   ├── session_logging.py   # セッション単位ログ
+│   ├── usage.py             # 使用率 (5h/7d/ctx) 組み立て
+│   ├── chat_content.py      # 添付ファイル保存 (uploads/tmp)
+│   ├── state.py             # プロセス共有状態
 │   ├── config.example.json
 │   └── requirements.txt
 └── frontend/                # React + Vite
