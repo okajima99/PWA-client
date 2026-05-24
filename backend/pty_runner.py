@@ -96,11 +96,17 @@ async def spawn_pty_session(
     cwd: str | None = None,
     initial_rows: int = 40,
     initial_cols: int = 120,
+    launch_alias: str | None = None,
 ) -> PtySession:
     """claude を PTY 経由で起動して PtySession を返す。
 
     起動時 sanity check: ANTHROPIC_BASE_URL が親 env に残ってたら起動を拒否。
     残ってると子 claude が proxy 経由になって penalty trigger を踏む。
+
+    `launch_alias` 指定時、 tmux session を**新規**作成する場合に限り、 zsh prompt が
+    出るのを少し待ってから `tmux send-keys` でその alias + Enter を流す。 これでタブ
+    生成直後に claude TUI まで自動で立ち上がる。 既存 tmux session への reattach 時
+    (= backend 再起動跨ぎ / タブ切替後) は claude が既に走ってるので alias は送らない。
     """
     if os.environ.get("ANTHROPIC_BASE_URL"):
         raise RuntimeError(
@@ -125,8 +131,11 @@ async def spawn_pty_session(
 
     # 実行コマンド組み立て: tmux wrap 時は `tmux new-session -A -s <name> claude`、
     # 直接時は `claude` 単独。 tmux の -A は「既存なら attach、 無ければ作って attach」。
+    # 新規作成判定は spawn 前にやらないと「-A」 が走ったあとは区別不能。
+    is_new_tmux_session = False
     if USE_TMUX_WRAP:
         tmux_name = _tmux_session_name(session_id)
+        is_new_tmux_session = not has_tmux_session(session_id)
         argv = [TMUX_BIN, "new-session", "-A", "-s", tmux_name, *PTY_INITIAL_ARGV]
     else:
         argv = list(PTY_INITIAL_ARGV)
@@ -158,7 +167,27 @@ async def spawn_pty_session(
     _attach_reader(session)
     asyncio.create_task(_wait_for_exit(session))
     logger.info("spawned PTY session=%s pid=%s cwd=%s", session_id, proc.pid, cwd)
+    # 新規 tmux session かつ launch_alias 指定時のみ、 zsh prompt 出現を待ってから alias 送出。
+    # 既存 reattach では中で既に claude が走ってる可能性が高いので何もしない。
+    if launch_alias and is_new_tmux_session and USE_TMUX_WRAP:
+        asyncio.create_task(_send_launch_alias(session_id, launch_alias))
     return session
+
+
+async def _send_launch_alias(session_id: str, alias: str, delay: float = 1.0) -> None:
+    """zsh -il の起動完了 (= prompt 表示) を `delay` 秒で待ってから tmux に alias+Enter を送る。
+
+    1 秒は経験則: rcfile 読み込みと line editor 初期化を含めて zsh が input を受ける
+    状態になるまでの目安。 早すぎても tmux send-keys 自体は buffer に積まれるが、
+    zsh が読みに来てない時は alias がエコーされない見え方になるので少し待つ。
+    """
+    try:
+        await asyncio.sleep(delay)
+        ok = tmux_send_keys(session_id, text=alias, enter=True)
+        if not ok:
+            logger.warning("launch alias send failed session=%s alias=%s", session_id, alias)
+    except Exception:
+        logger.exception("_send_launch_alias error session=%s", session_id)
 
 
 def _attach_reader(session: PtySession) -> None:

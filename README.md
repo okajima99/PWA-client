@@ -363,7 +363,8 @@ http://<your-tailscale-ip>:8000
   "agents": {
     "session_default": {
       "cwd": "/path/to/workdir",
-      "model": "Opus"
+      "model": "Opus",
+      "launch_alias": "my_alias"
     }
   },
   "claude_path": "/path/to/claude",
@@ -377,6 +378,11 @@ http://<your-tailscale-ip>:8000
   SDK が PATH から拾うが、 conda 等の環境差で読めない場合は明示する
 - 各エージェントの `cwd` に置かれた `CLAUDE.md` が `claude` コマンド起動時に自動 load
   される
+- `launch_alias` (任意): タブを**新規**作成した時に tmux pane で自動入力する文字列。
+  `~/.zshrc` で `alias my_alias='cd /path/to/workdir && claude'` のような起動 wrapper
+  を定義しておくと、 タブを開いた直後に claude TUI まで自動で立ち上がる。 未指定なら
+  zsh prompt で止まりユーザが手動で起動コマンドを打つ。 既存 tmux session への再接続時
+  (= backend 再起動跨ぎ / タブ切替後) は中で claude が走ってる前提で何も送らない
 - `cors_allow_origins`: 通常は `[]` (= backend が同一オリジンで frontend を配信するので
   CORS 不要)。 Vite dev server から叩く場合は `["http://localhost:5173"]` 等を入れる
 

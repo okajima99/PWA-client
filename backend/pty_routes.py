@@ -45,14 +45,18 @@ def _resolve_cwd(session_id: str) -> str | None:
            AGENTS から取得 (= UI でセッションタブを作る通常経路)
         3. どちらも該当なし → None (= backend の起動 cwd で zsh が立ち上がる)
     """
+    cfg = _resolve_agent_cfg(session_id)
+    return cfg.get("cwd") if cfg else None
+
+
+def _resolve_agent_cfg(session_id: str) -> dict | None:
+    """session_id から AGENTS の cfg dict を解決する (= cwd と launch_alias の共通解決)。"""
     cfg = AGENTS.get(session_id)
     if cfg:
-        return cfg.get("cwd")
+        return cfg
     meta = sessions_meta.get(session_id)
     if meta is not None:
-        agent_cfg = AGENTS.get(meta.agent_id)
-        if agent_cfg:
-            return agent_cfg.get("cwd")
+        return AGENTS.get(meta.agent_id)
     return None
 
 logger = logging.getLogger(__name__)
@@ -74,9 +78,13 @@ async def pty_socket(ws: WebSocket, session_id: str) -> None:
 
     session = pty_sessions.get(session_id)
     if session is None or session.exit_event.is_set():
-        cwd = _resolve_cwd(session_id)
+        cfg = _resolve_agent_cfg(session_id) or {}
+        cwd = cfg.get("cwd")
+        launch_alias = cfg.get("launch_alias")
         try:
-            session = await spawn_pty_session(session_id, cwd=cwd)
+            session = await spawn_pty_session(
+                session_id, cwd=cwd, launch_alias=launch_alias,
+            )
         except Exception as e:
             logger.exception("PTY spawn failed session=%s", session_id)
             try:
