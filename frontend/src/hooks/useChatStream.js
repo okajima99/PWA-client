@@ -1,8 +1,28 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { API_BASE, MAX_MESSAGES } from '../constants.js'
+import { API_BASE, LS_JSONL_OFFSET, MAX_MESSAGES } from '../constants.js'
 import { generateId } from '../utils/id.js'
 import { useStreamBuffer } from './internal/useStreamBuffer.js'
 import { processStreamEvent } from './internal/processStreamEvent.js'
+
+// session_id → JSONL byte offset の永続化。 タブ切替 / リロードを跨いで「ここまで読んだ」 を
+// 保持し、 新規 EventSource 接続時に `?from=<offset>` で渡す。 backend は offset 以降の
+// 完全行だけ流すので、 初回 replay の重さがほぼゼロになる。
+function loadOffsets() {
+  try {
+    const raw = localStorage.getItem(LS_JSONL_OFFSET)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') return parsed
+    }
+  } catch { /* ignore */ }
+  return {}
+}
+
+function persistOffsets(offsets) {
+  try {
+    localStorage.setItem(LS_JSONL_OFFSET, JSON.stringify(offsets))
+  } catch { /* ignore */ }
+}
 
 // chat 1 セッションの送受信・状態管理を束ねる公開フック (= TUI / JSONL 版)。
 //
@@ -31,7 +51,9 @@ export function useChatStream({
   const visibilitySuppressUntilRef = useRef(0)
   // session ごとの最後に受信した byte offset。 タブ切替で再接続する時、 ここから差分だけ
   // 取り直すことで全 replay を避ける (= 切替を軽く + localStorage 即復元と併用)。
-  const offsetRef = useRef({})
+  // localStorage に永続化することで、 アプリ再起動 / リロードを跨いでも継続。
+  const offsetRef = useRef(loadOffsets())
+  const offsetPersistTimerRef = useRef(null)
 
   const buffer = useStreamBuffer({ setMessages })
 
@@ -99,7 +121,15 @@ export function useChatStream({
       : `${API_BASE}/jsonl/stream/${encodeURIComponent(sid)}`
     const es = new EventSource(url)
     es.onmessage = (e) => {
-      if (e.lastEventId) offsetRef.current[sid] = e.lastEventId
+      if (e.lastEventId) {
+        offsetRef.current[sid] = e.lastEventId
+        // 連続イベントで毎回 localStorage write すると重いので 1s debounce。
+        if (offsetPersistTimerRef.current) clearTimeout(offsetPersistTimerRef.current)
+        offsetPersistTimerRef.current = setTimeout(() => {
+          offsetPersistTimerRef.current = null
+          persistOffsets(offsetRef.current)
+        }, 1000)
+      }
       if (!e.data) return
       let event
       try {

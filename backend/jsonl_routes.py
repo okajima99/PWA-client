@@ -42,7 +42,10 @@ CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 TMUX_SESSION_MAP = Path(TMUX_SESSION_MAP_DIR).expanduser() if TMUX_SESSION_MAP_DIR else None
 
 # 初回接続時に遡って replay する最大行数 (= 長い履歴で初回ペイロードが膨らむのを防ぐ)。
-INITIAL_REPLAY_LINES = 2000
+# frontend は localStorage に最終 byte offset を保存して `?from=<offset>` で渡してくるので、
+# 「初めて開くタブ」 や localStorage を消した時のフォールバックとして使われる。 ここを
+# 小さくすればタブ切替がさらに軽くなる、 ただし長い履歴を初訪問で取りこぼす量も増える。
+INITIAL_REPLAY_LINES = 500
 
 # tail の polling 間隔。 JSONL は message 確定単位 (= 1〜数秒粒度) で追記されるので
 # 0.5s で十分追従でき、 かつ CPU を食わない。
