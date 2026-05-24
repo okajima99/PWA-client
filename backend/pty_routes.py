@@ -26,7 +26,6 @@ from chat_content import save_to_tmp
 from config import AGENTS, USE_PTY_RUNNER
 from pty_runner import (
     PtySession,
-    capture_tmux_scrollback,
     has_tmux_session,
     pty_sessions,
     resize_pty,

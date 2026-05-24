@@ -1,13 +1,13 @@
-"""Anthropic API のレスポンス (= ヘッダ + ResultMessage) を解析して、
-state.shared_status / state.agent_status の使用率系フィールドを更新する層。
+"""使用率系の状態 (= 5h/7d/ctx/model) を組み立てる層。
 
-state.py から責務分離した (2026-05-17): state.py は純粋な state 定義・lifecycle に
-専念し、 「使用率の計算」 や「ヘッダの key 名/形式の知識」 は usage.py に集約する。
+rate-limits.jsonl (= statusline 記録) の読み取りと、 ResultMessage.usage からの
+context 使用率計算を担当し、 agent_status を更新する。 state.py は純粋な state 定義・
+lifecycle に専念し、 「使用率の計算」 はここに集約する (= 2026-05-17 責務分離)。
 """
 import json
 
 from config import RATE_LIMITS_LOG_PATH
-from state import DEFAULT_CTX_WINDOW, agent_status, shared_status
+from state import DEFAULT_CTX_WINDOW, agent_status
 
 
 def read_latest_rate_limits() -> dict:
