@@ -210,7 +210,10 @@ export function useChatStream({
 
   const endSession = useCallback(async () => {
     if (!sid) return
-    await sendToPty(sid, { text: '/exit', enter: true })
+    // `/clear` で claude TUI の context をリセットする (= 新 claude_sid が振られて新 JSONL に
+    // 切り替わる、 旧会話の JSONL は ~/.claude/projects/ にファイルとして永続)。 claude 自体は
+    // 同じ tmux プロセスで動き続けるので起動エイリアス再入力は不要、 即時。
+    await sendToPty(sid, { text: '/clear', enter: true })
   }, [sid, sendToPty])
 
   // 常時 tail + EventSource 自動再接続なので明示 fetch は不要。 scroll だけ最新へ寄せる。
