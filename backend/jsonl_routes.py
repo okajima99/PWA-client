@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -120,6 +121,65 @@ def _read_complete_lines(path: Path, pos: int) -> tuple[list[str], int]:
     text = complete.decode("utf-8", errors="replace")
     lines = [ln for ln in text.split("\n") if ln]
     return lines, new_pos
+
+
+# sid → 直近 user 発話 (= turn 開始) の unix epoch。 stop_reason 確定行を見たら
+# (現在の確定行の timestamp - 開始) を duration_ms として result event に inject する。
+# プロセス内 dict なので backend 再起動で消える、 中断中の turn は duration 取得不可。
+_turn_started_at: dict[str, float] = {}
+
+
+def _parse_jsonl_timestamp(ts: str | None) -> float | None:
+    """JSONL 行の `timestamp` (= ISO 8601 "Z" 終端) を unix epoch に変換。"""
+    if not ts or not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _track_turn_start(session_id: str, line: dict) -> None:
+    """素プロンプト (= ユーザ発言) の user 行で turn 開始時刻を記録する。
+    tool_result の user 行 (= content が list で type=tool_result を含む) は除外。"""
+    if line.get("type") != "user" or line.get("isSidechain") or line.get("isMeta"):
+        return
+    content = (line.get("message") or {}).get("content")
+    is_prompt = False
+    if isinstance(content, str) and content.strip():
+        is_prompt = True
+    elif isinstance(content, list):
+        is_prompt = any(
+            isinstance(b, dict) and b.get("type") == "text" and (b.get("text") or "").strip()
+            for b in content
+        )
+    if not is_prompt:
+        return
+    ts = _parse_jsonl_timestamp(line.get("timestamp"))
+    if ts is not None:
+        _turn_started_at[session_id] = ts
+
+
+def _attach_duration_to_result(session_id: str, line: dict, events: list[dict]) -> None:
+    """assistant 行で確定 stop_reason の時、 (確定行 ts - turn 開始 ts) を duration_ms として
+    events 内 result に in-place で乗せる。 開始が記録されてない (= backend 再起動跨ぎ等)
+    なら何もしない。"""
+    if line.get("type") != "assistant":
+        return
+    msg = line.get("message") or {}
+    stop_reason = msg.get("stop_reason")
+    if not stop_reason or stop_reason == "tool_use":
+        return
+    start = _turn_started_at.pop(session_id, None)
+    if start is None:
+        return
+    end = _parse_jsonl_timestamp(line.get("timestamp"))
+    if end is None:
+        return
+    duration_ms = max(0, int((end - start) * 1000))
+    for ev in events:
+        if ev.get("type") == "result":
+            ev["duration_ms"] = duration_ms
 
 
 def _mutate_agent_status(session_id: str, line: dict) -> bool:
@@ -225,9 +285,12 @@ def _lines_to_sse(lines: list[str], pos: int, session_id: str) -> list[str]:
             obj = json.loads(raw)
         except json.JSONDecodeError:
             continue
+        _track_turn_start(session_id, obj)
         if _mutate_agent_status(session_id, obj):
             status_dirty = True
-        for event in jsonl_line_to_events(obj):
+        evts = jsonl_line_to_events(obj)
+        _attach_duration_to_result(session_id, obj, evts)
+        for event in evts:
             frames.append(f"id: {pos}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n")
     if status_dirty and state is not None:
         state.status_event.set()
