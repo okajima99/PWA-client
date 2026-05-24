@@ -55,6 +55,10 @@ class _ClaudeBinding:
 
 # tmux_sid → binding
 _bindings: dict[str, _ClaudeBinding] = {}
+# tmux_sid → 確定 JSONL path (= SessionStart hook / persist 由来のみ)。 _bindings の
+# jsonl_path が再 attach / restart の race で失われても、 こちらから self-heal で復元する。
+# PWA_SID 確定だけが入るので Desktop Claude 等の cwd 一致プロセス混入は構造的に起きない。
+_confirmed_paths: dict[str, Path] = {}
 _observer: Optional[Observer] = None
 
 
@@ -177,6 +181,7 @@ def register_pending(
 
 
 def unregister(tmux_sid: str) -> None:
+    _confirmed_paths.pop(tmux_sid, None)
     if _bindings.pop(tmux_sid, None) is not None:
         _save_bindings()
 
@@ -205,6 +210,7 @@ def confirm_bind(pwa_sid: str, claude_sid: str, transcript_path: str) -> Optiona
         _bindings[pwa_sid] = binding
     binding.jsonl_path = path
     binding.confirmed = True
+    _confirmed_paths[pwa_sid] = path
     # race 救済: on_created の確率マッチが先に走って別 binding (= confirmed でない古いタブ)
     # に同 JSONL が bind されてた場合、 ここで剥がして二重所有を解消する。 同じ JSONL を
     # 2 タブで tail すると同 chat が複数タブに流れる cross-contamination 再発。
@@ -217,6 +223,9 @@ def confirm_bind(pwa_sid: str, claude_sid: str, transcript_path: str) -> Optiona
                 other.tmux_sid,
             )
             other.jsonl_path = None
+            # self-heal 経路でこの path に復帰させない (= 所有権は pwa_sid に移った)
+            if _confirmed_paths.get(other.tmux_sid) == path:
+                _confirmed_paths.pop(other.tmux_sid, None)
     logger.info(
         "jsonl_watcher confirm_bound pwa_sid=%s claude_sid=%s -> %s",
         pwa_sid, claude_sid, path.name,
@@ -259,13 +268,33 @@ def list_bindings() -> dict[str, dict]:
 
 
 def get_jsonl_for(tmux_sid: str) -> Optional[Path]:
-    """確定済の JSONL path を返す。 未確定 / ファイル消失なら None。"""
+    """確定済の JSONL path を返す。 未確定 / ファイル消失なら None。
+
+    in-mem の _bindings が再 attach / restart の race で jsonl_path を失っても、
+    SessionStart hook / persist 由来の確定 path (_confirmed_paths) が生きていれば
+    そこから self-heal して in-mem を復元する。 _confirmed_paths は PWA_SID 確定だけが
+    入るので、 同 cwd の Desktop Claude 等を誤って bind することはない。
+    """
     binding = _bindings.get(tmux_sid)
-    if binding is None or binding.jsonl_path is None:
-        return None
-    if not binding.jsonl_path.is_file():
-        return None
-    return binding.jsonl_path
+    if binding is not None and binding.jsonl_path is not None and binding.jsonl_path.is_file():
+        return binding.jsonl_path
+    healed = _confirmed_paths.get(tmux_sid)
+    if healed is not None and healed.is_file():
+        if binding is None:
+            binding = _ClaudeBinding(
+                tmux_sid=tmux_sid, claude_pid=0,
+                claude_cwd=str(healed.parent), start_time=time.time(),
+            )
+            _bindings[tmux_sid] = binding
+        if binding.jsonl_path != healed or not binding.confirmed:
+            binding.jsonl_path = healed
+            binding.confirmed = True
+            logger.info(
+                "jsonl_watcher self-healed binding from confirmed path: sid=%s -> %s",
+                tmux_sid, healed.name,
+            )
+        return healed
+    return None
 
 
 def _save_bindings() -> None:
@@ -325,6 +354,7 @@ def _load_bindings() -> None:
             jsonl_path=path,
             confirmed=bool(d.get("confirmed", True)),
         )
+        _confirmed_paths[sid] = path
         restored += 1
     if restored:
         logger.info("jsonl_watcher _load_bindings: restored %d binding(s)", restored)
