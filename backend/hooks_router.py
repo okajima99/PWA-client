@@ -95,6 +95,15 @@ async def hooks_event(request: Request) -> dict:
         "hooks/event recv: event=%s claude_sid=%s cwd=%s -> pwa_sid=%s",
         event, claude_sid, cwd, pwa_session_id,
     )
+    # debug: 実 payload 構造を把握するため full dump (= Stop / Notification の
+    # 公式 spec が手元に無いので、 実機 1 turn で structure を観測してから正規実装に倒す)。
+    # 規模が分かったら削除する。
+    try:
+        import json as _json
+        logger.info("hooks/event payload (debug dump): %s",
+                    _json.dumps(payload, ensure_ascii=False)[:2000])
+    except Exception:
+        pass
 
     if pwa_session_id is None:
         # AGENTS が空 = 何もできない、 ただ ack する
