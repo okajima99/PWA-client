@@ -25,6 +25,7 @@ from fastapi import APIRouter, Request
 
 from config import AGENTS
 from push import broadcast_push, notification_title_for
+from state import agent_status, stream_states
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,16 @@ async def hooks_event(request: Request) -> dict:
         # 載せる (= 2026-05-24 実機ダンプで確認、 spec で `output` ではない)。
         body_raw = payload.get("last_assistant_message") or payload.get("output") or ""
         body = _truncate(body_raw) if body_raw else "(turn 完了)"
+        # turn 完了の即時通知: agent_status の current_tool / subagent を解放 + status SSE を
+        # 即発火することで、 JSONL の result 行 tail 待ち (= 数百 ms-数秒) を待たずに
+        # PWA 側の停止ボタン → 送信ボタン切替を ms 単位で確定させる。
+        a = agent_status.get(pwa_session_id)
+        if a is not None:
+            a["current_tool"] = None
+            a["subagent"] = None
+        state = stream_states.get(pwa_session_id)
+        if state is not None:
+            state.status_event.set()
         await broadcast_push(body, title, pwa_session_id)
         return {"ok": True, "pushed": "Stop"}
 
