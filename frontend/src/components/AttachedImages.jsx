@@ -26,10 +26,13 @@ export default function AttachedImages({ imageRefs, imageUrls }) {
     }
   }, [imageRefs])
 
-  const allUrls = [
-    ...(imageUrls || []),
-    ...(refUrls.filter(Boolean)),
-  ]
+  // imageRefs (= IndexedDB key) が有る message は **そちらを真値**にする (= 一度
+  // 永続化された画像は ObjectURL 失効後も復元可)。 imageRefs が空 / 未定義の
+  // 旧 message だけ imageUrls フォールバックを使う。 両者を merge して並べる旧実装は
+  // リロード後に「失効 URL = ?表示」 と「IndexedDB 復元 URL = 正常表示」 が
+  // 並列に出て二重 + 片方が ? になる原因だった。
+  const hasRefs = imageRefs && imageRefs.length > 0
+  const allUrls = hasRefs ? refUrls.filter(Boolean) : (imageUrls || [])
   if (allUrls.length === 0) return null
   return (
     <div className="attach-images">

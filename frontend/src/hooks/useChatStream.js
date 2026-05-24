@@ -188,6 +188,7 @@ export function useChatStream({
     setMessages(prev => {
       const cur = prev[sid] || []
       const imageUrls = files.filter(f => f.url).map(f => f.url)
+      const imageRefs = files.filter(f => f.imageId).map(f => f.imageId)
       const fileNames = files.map(f => f.file.name)
       return {
         ...prev,
@@ -198,7 +199,10 @@ export function useChatStream({
             role: 'user',
             text,
             optimistic: true,
+            // imageUrls = ObjectURL (= 一時表示用、 リロードで失効)、
+            // imageRefs = IndexedDB key (= 永続、 リロード後 AttachedImages が復元)
             imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+            imageRefs: imageRefs.length > 0 ? imageRefs : undefined,
             fileNames: fileNames.length > 0 ? fileNames : undefined,
           },
           { id: generateId(), role: 'agent', text: '', tools: [], streaming: true },

@@ -520,6 +520,7 @@ export default function App() {
 
       <ActivityBar status={status} />
 
+      {activeViewMode !== 'terminal' && (
       <div className="inputarea">
         <input
           ref={fileInputRef}
@@ -529,16 +530,14 @@ export default function App() {
           style={{ display: 'none' }}
           onChange={handleFileSelect}
         />
-        {activeViewMode !== 'terminal' && (
-          <textarea
-            value={activeSid ? (input[activeSid] || '') : ''}
-            onChange={e => activeSid && setInput(prev => ({ ...prev, [activeSid]: e.target.value }))}
-            placeholder={activeSession ? 'メッセージを入力...' : '左の ☰ から会話を作成してください'}
-            rows={2}
-            disabled={inputDisabled}
-          />
-        )}
-        <div className={`buttons ${activeViewMode === 'terminal' ? 'terminal-only' : ''}`} ref={menuRef}>
+        <textarea
+          value={activeSid ? (input[activeSid] || '') : ''}
+          onChange={e => activeSid && setInput(prev => ({ ...prev, [activeSid]: e.target.value }))}
+          placeholder={activeSession ? 'メッセージを入力...' : '左の ☰ から会話を作成してください'}
+          rows={2}
+          disabled={inputDisabled}
+        />
+        <div className="buttons" ref={menuRef}>
           {menuOpen && (
             <div className="action-menu">
               <button onClick={() => { fileInputRef.current?.click(); setMenuOpen(false) }} className="menu-item">
@@ -583,7 +582,7 @@ export default function App() {
           >
             ⋯
           </button>
-          {activeViewMode !== 'terminal' && (showStopButton ? (
+          {showStopButton ? (
             <button onClick={() => setConfirmStop(true)} className="stop" aria-label="停止">■</button>
           ) : (
             <button
@@ -594,9 +593,10 @@ export default function App() {
             >
               送信
             </button>
-          ))}
+          )}
         </div>
       </div>
+      )}
 
       {pickerOpen === 'config' && activeSid && (
         <div className="picker-overlay" onClick={() => setPickerOpen(null)}>

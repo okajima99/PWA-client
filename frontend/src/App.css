@@ -175,12 +175,13 @@ textarea:focus {
   position: relative;
 }
 
-/* terminal モード時は textarea / 送信ボタンが消えて .buttons だけが残るので、
-   flex の左寄せで左端に張り付く + action-menu (right:0, min-width:140px) が
-   画面外に膨らむ。 margin-left:auto で .buttons 自体を右端に押し出して、
-   popup が画面内右寄せで出るようにする。 */
+/* terminal モード時は .buttons 自体を非表示にする。 chat ↔ terminal 切替は
+   topbar の 💬 復帰ボタン 1 本に集約 (= ⋯メニュー popup の hit test 不具合と
+   無関係に押せる経路を保証する設計)。 terminal は元々デバッグ用なので、
+   chat に戻る以外の操作 (= ファイル添付 / セッション終了 / Model&Effort) は
+   chat モードでやる前提。 */
 .buttons.terminal-only {
-  margin-left: auto;
+  display: none;
 }
 
 button {
