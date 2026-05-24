@@ -26,11 +26,9 @@ from fastapi.responses import StreamingResponse
 
 import re
 
-from config import TMUX_SESSION_MAP_DIR
 from jsonl_events import jsonl_line_to_events
 from push import broadcast_push, notification_title_for
-from pty_routes import _resolve_cwd
-from pty_runner import _tmux_session_name, capture_tmux_scrollback
+from pty_runner import capture_tmux_scrollback, jsonl_path_for_session
 from state import agent_status, stream_states
 from usage import compute_ctx_pct, format_model_name
 
@@ -110,67 +108,25 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
-
-# statusline が「tmux session 名 → claude session id」 を 1 session = 1 ファイルで書き出す
-# ディレクトリ (= config 経由)。 複数タブが同じ cwd を共有しても、 これで JSONL を一意に
-# 特定できる (= 単純な最新 mtime だと別タブの会話が混入する)。 未設定なら None。
-TMUX_SESSION_MAP = Path(TMUX_SESSION_MAP_DIR).expanduser() if TMUX_SESSION_MAP_DIR else None
-
-# 初回接続時に遡って replay する最大行数 (= 長い履歴で初回ペイロードが膨らむのを防ぐ)。
-# frontend は localStorage に最終 byte offset を保存して `?from=<offset>` で渡してくるので、
-# 「初めて開くタブ」 や localStorage を消した時のフォールバックとして使われる。 ここを
-# 小さくすればタブ切替がさらに軽くなる、 ただし長い履歴を初訪問で取りこぼす量も増える。
+# 初回接続時に遡って replay する最大行数。 frontend は localStorage に最終 byte offset を
+# 保存して `?from=<offset>` で渡してくるので、 これは初訪問 / localStorage が消えた時の
+# フォールバックとして使われる。
 INITIAL_REPLAY_LINES = 500
 
-# tail の polling 間隔。 JSONL は message 確定単位 (= 1〜数秒粒度) で追記されるので
-# 0.5s で十分追従でき、 かつ CPU を食わない。
+# tail の polling 間隔 (秒)。
 POLL_INTERVAL = 0.5
 
 
-def _cwd_to_project_dir(cwd: str) -> Path:
-    """cwd を claude projects のフォルダ名に変換する。
-
-    claude Code の規則: パス中の `/` と `.` を `-` に置換 (先頭 `/` も `-` になる)。
-    例: /Users/me/projects/foo → -Users-me-projects-foo
-    """
-    safe = cwd.replace("/", "-").replace(".", "-")
-    return CLAUDE_PROJECTS / safe
-
-
-def _claude_sid_for(session_id: str) -> str | None:
-    """statusline が記録した tmux session 名 → claude session id を引く。"""
-    if TMUX_SESSION_MAP is None:
-        return None
-    f = TMUX_SESSION_MAP / _tmux_session_name(session_id)
-    if f.is_file():
-        sid = f.read_text(encoding="utf-8", errors="replace").strip()
-        return sid or None
-    return None
-
-
 def _latest_jsonl(session_id: str) -> Path | None:
-    """PWA session_id から、 対応する claude セッションの JSONL ファイルを解決する。
+    """PWA session_id から claude JSONL を解決する。
 
-    厳密解決: statusline が記録した tmux↔claude_sid マップで JSONL を一意特定する
-    (= 同じ cwd を共有する複数タブを区別)。 マップが無ければ cwd フォルダの最新 mtime に
-    fallback (= 単一セッション時は十分、 hook 記録前の既存セッション救済)。
+    実装は pty_runner.jsonl_path_for_session (= tmux pane → claude PID → lsof で
+    open file を直接取得) に委譲する。 同じ cwd で動く他の claude プロセス
+    (Claude Desktop App / ターミナル直叩き) の JSONL を絶対に拾わない。
+
+    解決失敗時 (= tmux 未生成 / claude 未起動 / lsof で JSONL 未検出) は None。
     """
-    cwd = _resolve_cwd(session_id)
-    if not cwd:
-        return None
-    proj = _cwd_to_project_dir(str(Path(cwd).expanduser()))
-    if not proj.is_dir():
-        return None
-    # 厳密: session-map から claude_sid → そのファイルを直接指す
-    claude_sid = _claude_sid_for(session_id)
-    if claude_sid:
-        exact = proj / f"{claude_sid}.jsonl"
-        if exact.is_file():
-            return exact
-    # fallback: 最新 mtime
-    jsonls = sorted(proj.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return jsonls[0] if jsonls else None
+    return jsonl_path_for_session(session_id)
 
 
 def _read_complete_lines(path: Path, pos: int) -> tuple[list[str], int]:

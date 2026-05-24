@@ -37,9 +37,11 @@ import re
 import struct
 import subprocess
 import termios
+import time
 from dataclasses import dataclass
+from pathlib import Path
 
-from config import CLAUDE_PATH
+from config import CLAUDE_PATH, TMUX_SESSION_MAP_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -381,6 +383,200 @@ def kill_tmux_session(session_id: str) -> bool:
         text=True,
     )
     return result.returncode == 0
+
+
+# ---- JSONL 解決 (= 「このタブの tmux pane で走ってる claude プロセスが書いてる JSONL」) ----
+# 経路:
+#   1. tmux pane の PID → 子孫プロセスから comm='claude' を発見
+#   2. ps -o lstart で claude プロセスの起動時刻を取得
+#   3. lsof で claude プロセスの cwd を取得
+#   4. tmux session 対応の map ファイル
+#      `<TMUX_SESSION_MAP_DIR>/pwa-<sid>` を読んで claude_sid を取得
+#      (map は statusline が claude TUI の hook として書き出す、 1 tmux = 1 ファイル)
+#   5. map ファイルの mtime が claude プロセス起動時刻以降であることを確認
+#      (= 過去 claude が残した古い sid を棄却。 新 claude の statusline 初回描画後
+#      は mtime が更新されるので採用される)
+#   6. cwd → ~/.claude/projects/<cwd-hash>/<claude_sid>.jsonl を確定
+#
+# 観察事実 (= 検証済み):
+#   - claude プロセスは JSONL を write→close を繰り返す。 lsof で JSONL は捕まらない
+#   - claude TUI は起動時に直近セッションを resume することがあり、 過去 JSONL に
+#     追記する。 birthtime ≧ claude 起動時刻 の前提は崩れる
+#   - map ファイルは statusline 経由で claude プロセス自身が知る sid を書く
+
+_CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
+_TMUX_SESSION_MAP = (
+    Path(TMUX_SESSION_MAP_DIR).expanduser() if TMUX_SESSION_MAP_DIR else None
+)
+
+# 解決結果を一時記憶。 PID 生存 + path 存在 + キャッシュ TTL 内なら hit。 /clear で
+# path が切り替わるラグは最大 _PID_CACHE_TTL 秒。
+_PID_CACHE_TTL = 5.0
+_jsonl_pid_cache: dict[str, tuple[int, Path, float]] = {}
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return False
+
+
+def _tmux_pane_pids(session_id: str) -> list[int]:
+    if not USE_TMUX_WRAP:
+        return []
+    tmux_name = _tmux_session_name(session_id)
+    try:
+        result = subprocess.run(
+            [TMUX_BIN, "list-panes", "-t", tmux_name, "-F", "#{pane_pid}"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [int(s) for s in result.stdout.split() if s.strip().isdigit()]
+
+
+def _find_claude_descendant(root_pid: int, max_depth: int = 6) -> int | None:
+    """BFS で子孫プロセスを辿り、 ps の comm の basename が 'claude' のものを返す。"""
+    queue: list[tuple[int, int]] = [(root_pid, 0)]
+    while queue:
+        pid, depth = queue.pop(0)
+        if depth >= max_depth:
+            continue
+        try:
+            result = subprocess.run(
+                ["pgrep", "-P", str(pid)],
+                capture_output=True, text=True, timeout=2,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode != 0:
+            continue
+        for child_str in result.stdout.split():
+            child_str = child_str.strip()
+            if not child_str.isdigit():
+                continue
+            child_pid = int(child_str)
+            try:
+                ps = subprocess.run(
+                    ["ps", "-p", str(child_pid), "-o", "comm="],
+                    capture_output=True, text=True, timeout=2,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+            comm = ps.stdout.strip()
+            if comm and Path(comm).name == "claude":
+                return child_pid
+            queue.append((child_pid, depth + 1))
+    return None
+
+
+def _process_start_time(pid: int) -> float | None:
+    """`ps -o lstart=` で取得した起動時刻文字列を unix epoch に変換。"""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    s = result.stdout.strip()
+    if not s:
+        return None
+    # macOS lstart 形式: "Sun May 24 20:24:00 2026"
+    try:
+        return time.mktime(time.strptime(s, "%a %b %d %H:%M:%S %Y"))
+    except ValueError:
+        return None
+
+
+def _process_cwd(pid: int) -> str | None:
+    """lsof で cwd エントリを取得。 macOS は /proc が無いので lsof 経由。"""
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.split("\n"):
+        if line.startswith("n"):
+            return line[1:]
+    return None
+
+
+def _cwd_to_project_dir(cwd: str) -> Path:
+    """claude Code の規約: パス中の `/` と `.` を `-` に置換 (先頭 `/` も `-`)。"""
+    safe = cwd.replace("/", "-").replace(".", "-")
+    return _CLAUDE_PROJECTS / safe
+
+
+def _fresh_map_sid(session_id: str, claude_start_time: float) -> str | None:
+    """tmux session map ファイルを読み、 mtime が claude 起動時刻以降なら sid を返す。
+
+    過去 claude プロセスが残した古い map (= mtime 古い) は棄却する。 statusline が
+    claude 起動後に走って map を上書きするまで None を返す。 これで「claude プロセス
+    起動 → statusline 初回描画」 までの数秒は frontend に「準備中」 を返す経路に
+    倒れる。
+    """
+    if _TMUX_SESSION_MAP is None:
+        return None
+    f = _TMUX_SESSION_MAP / _tmux_session_name(session_id)
+    try:
+        stat = f.stat()
+    except OSError:
+        return None
+    if stat.st_mtime < claude_start_time - 1.0:
+        return None
+    try:
+        sid = f.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    return sid or None
+
+
+def jsonl_path_for_session(session_id: str) -> Path | None:
+    """tmux pane 配下の claude プロセスが書いてる JSONL ファイルを返す。
+
+    解決失敗時 (= tmux 未生成 / claude 未起動 / map 古い / JSONL 無し) は None。
+    caller は frontend にエラー event を返して EventSource 再接続を待つ。
+    """
+    now = time.time()
+    cached = _jsonl_pid_cache.get(session_id)
+    if cached:
+        cpid, cpath, cts = cached
+        if (now - cts) < _PID_CACHE_TTL and _pid_alive(cpid) and cpath.is_file():
+            return cpath
+
+    for pane_pid in _tmux_pane_pids(session_id):
+        claude_pid = _find_claude_descendant(pane_pid)
+        if claude_pid is None:
+            continue
+        start_time = _process_start_time(claude_pid)
+        cwd = _process_cwd(claude_pid)
+        if start_time is None or cwd is None:
+            continue
+        sid = _fresh_map_sid(session_id, start_time)
+        if sid is None:
+            continue
+        proj = _cwd_to_project_dir(str(Path(cwd).expanduser()))
+        path = proj / f"{sid}.jsonl"
+        if not path.is_file():
+            continue
+        _jsonl_pid_cache[session_id] = (claude_pid, path, now)
+        return path
+
+    _jsonl_pid_cache.pop(session_id, None)
+    return None
 
 
 async def shutdown_all() -> None:
