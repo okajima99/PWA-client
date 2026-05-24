@@ -5,6 +5,7 @@ httpx
 claude-agent-sdk>=0.1.63
 pywebpush>=2.0.0
 cryptography>=42
+watchdog>=4
 
 # dev / lint / test (= task lint, task test:unit)
 flake8>=7

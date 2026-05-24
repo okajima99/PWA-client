@@ -133,13 +133,15 @@ async def delete_session(session_id: str):
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
     # SDK client + persistent receive task を切断してから state を破棄
     await disconnect_client(session_id)
-    # PTY 経路を併用してる場合は tmux session も殺す (= 残骸が tmux 内に居続けるのを防ぐ)。
-    # 旧 chat 経路だけ使ってる場合は has_tmux_session が False で no-op。
+    # PTY + tmux + JSONL binding を一括 cleanup
     try:
-        from pty_runner import kill_tmux_session  # noqa: PLC0415
+        from pty_runner import kill_tmux_session, pty_sessions  # noqa: PLC0415
+        import jsonl_watcher  # noqa: PLC0415
         kill_tmux_session(session_id)
+        pty_sessions.pop(session_id, None)
+        jsonl_watcher.unregister(session_id)
     except Exception:
-        logger.debug("kill_tmux_session failed for %s", session_id, exc_info=True)
+        logger.debug("session cleanup failed for %s", session_id, exc_info=True)
     # 一時ファイルをクリーンアップ
     for p in session_tmp_files.pop(session_id, []):
         try:

@@ -41,7 +41,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from config import CLAUDE_PATH, TMUX_SESSION_MAP_DIR
+from config import CLAUDE_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -173,16 +173,14 @@ async def spawn_pty_session(
     # 既存 reattach では中で既に claude が走ってる可能性が高いので何もしない。
     if launch_alias and is_new_tmux_session and USE_TMUX_WRAP:
         asyncio.create_task(_send_launch_alias(session_id, launch_alias))
+    # 新規 tmux session でも reattach でも、 claude プロセス起動 (= launch_alias 後の数秒、
+    # 既存セッションなら即時) を待って backend mem の binding に登録する
+    asyncio.create_task(_register_claude_when_ready(session_id))
     return session
 
 
 async def _send_launch_alias(session_id: str, alias: str, delay: float = 1.0) -> None:
-    """zsh -il の起動完了 (= prompt 表示) を `delay` 秒で待ってから tmux に alias+Enter を送る。
-
-    1 秒は経験則: rcfile 読み込みと line editor 初期化を含めて zsh が input を受ける
-    状態になるまでの目安。 早すぎても tmux send-keys 自体は buffer に積まれるが、
-    zsh が読みに来てない時は alias がエコーされない見え方になるので少し待つ。
-    """
+    """zsh -il の起動完了 (= prompt 表示) を `delay` 秒待ってから tmux に alias+Enter を送る。"""
     try:
         await asyncio.sleep(delay)
         ok = tmux_send_keys(session_id, text=alias, enter=True)
@@ -190,6 +188,31 @@ async def _send_launch_alias(session_id: str, alias: str, delay: float = 1.0) ->
             logger.warning("launch alias send failed session=%s alias=%s", session_id, alias)
     except Exception:
         logger.exception("_send_launch_alias error session=%s", session_id)
+
+
+async def _register_claude_when_ready(
+    session_id: str, max_wait: float = 8.0, interval: float = 0.5,
+) -> None:
+    """tmux pane の子 claude プロセスが立ち上がるのを polling で待ち、 jsonl_watcher に登録する。
+
+    launch_alias 経由だと claude 起動まで 1-2 秒、 環境次第でもう少しかかる。
+    `max_wait` 秒以内に claude プロセスが見つからなければ諦める (= 既存 zsh のみで claude
+    起動しないケース等)。
+    """
+    import jsonl_watcher  # 循環 import 回避のため遅延 import
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        await asyncio.sleep(interval)
+        for pane_pid in _tmux_pane_pids(session_id):
+            claude_pid = _find_claude_descendant(pane_pid)
+            if claude_pid is None:
+                continue
+            start_time = _process_start_time(claude_pid)
+            cwd = _process_cwd(claude_pid)
+            if start_time is None or cwd is None:
+                continue
+            jsonl_watcher.register_pending(session_id, claude_pid, cwd, start_time)
+            return
 
 
 def _attach_reader(session: PtySession) -> None:
@@ -385,45 +408,7 @@ def kill_tmux_session(session_id: str) -> bool:
     return result.returncode == 0
 
 
-# ---- JSONL 解決 (= 「このタブの tmux pane で走ってる claude プロセスが書いてる JSONL」) ----
-# 経路:
-#   1. tmux pane の PID → 子孫プロセスから comm='claude' を発見
-#   2. ps -o lstart で claude プロセスの起動時刻を取得
-#   3. lsof で claude プロセスの cwd を取得
-#   4. tmux session 対応の map ファイル
-#      `<TMUX_SESSION_MAP_DIR>/pwa-<sid>` を読んで claude_sid を取得
-#      (map は statusline が claude TUI の hook として書き出す、 1 tmux = 1 ファイル)
-#   5. map ファイルの mtime が claude プロセス起動時刻以降であることを確認
-#      (= 過去 claude が残した古い sid を棄却。 新 claude の statusline 初回描画後
-#      は mtime が更新されるので採用される)
-#   6. cwd → ~/.claude/projects/<cwd-hash>/<claude_sid>.jsonl を確定
-#
-# 観察事実 (= 検証済み):
-#   - claude プロセスは JSONL を write→close を繰り返す。 lsof で JSONL は捕まらない
-#   - claude TUI は起動時に直近セッションを resume することがあり、 過去 JSONL に
-#     追記する。 birthtime ≧ claude 起動時刻 の前提は崩れる
-#   - map ファイルは statusline 経由で claude プロセス自身が知る sid を書く
-
-_CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
-_TMUX_SESSION_MAP = (
-    Path(TMUX_SESSION_MAP_DIR).expanduser() if TMUX_SESSION_MAP_DIR else None
-)
-
-# 解決結果を一時記憶。 PID 生存 + path 存在 + キャッシュ TTL 内なら hit。 /clear で
-# path が切り替わるラグは最大 _PID_CACHE_TTL 秒。
-_PID_CACHE_TTL = 5.0
-_jsonl_pid_cache: dict[str, tuple[int, Path, float]] = {}
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return False
-
+# ---- claude プロセス調査ヘルパ (= jsonl_watcher.register_pending への入力収集) ----
 
 def _tmux_pane_pids(session_id: str) -> list[int]:
     if not USE_TMUX_WRAP:
@@ -514,94 +499,15 @@ def _process_cwd(pid: int) -> str | None:
     return None
 
 
-def _cwd_to_project_dir(cwd: str) -> Path:
-    """claude Code の規約: パス中の `/` と `.` を `-` に置換 (先頭 `/` も `-`)。"""
-    safe = cwd.replace("/", "-").replace(".", "-")
-    return _CLAUDE_PROJECTS / safe
-
-
-def _fresh_map_sid(session_id: str, claude_start_time: float) -> str | None:
-    """tmux session map ファイルを読み、 mtime が claude 起動時刻以降なら sid を返す。
-
-    過去 claude プロセスが残した古い map (= mtime 古い) は棄却する。 statusline が
-    claude 起動後に走って map を上書きするまで None を返す。 これで「claude プロセス
-    起動 → statusline 初回描画」 までの数秒は frontend に「準備中」 を返す経路に
-    倒れる。
-    """
-    if _TMUX_SESSION_MAP is None:
-        return None
-    f = _TMUX_SESSION_MAP / _tmux_session_name(session_id)
-    try:
-        stat = f.stat()
-    except OSError:
-        return None
-    if stat.st_mtime < claude_start_time - 1.0:
-        return None
-    try:
-        sid = f.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return None
-    return sid or None
-
-
 def jsonl_path_for_session(session_id: str) -> Path | None:
     """tmux pane 配下の claude プロセスが書いてる JSONL ファイルを返す。
 
-    解決失敗時 (= tmux 未生成 / claude 未起動 / map 古い / JSONL 無し) は None。
-    caller は frontend にエラー event を返して EventSource 再接続を待つ。
+    `jsonl_watcher` の backend mem registry を引くだけ。 spawn 時に
+    `_register_claude_when_ready` 経由で binding を登録、 watchdog が新規 JSONL の
+    birth event を見て紐付ける。 紐付け未完なら None。
     """
-    now = time.time()
-    cached = _jsonl_pid_cache.get(session_id)
-    if cached:
-        cpid, cpath, cts = cached
-        if (now - cts) < _PID_CACHE_TTL and _pid_alive(cpid) and cpath.is_file():
-            return cpath
-
-    for pane_pid in _tmux_pane_pids(session_id):
-        claude_pid = _find_claude_descendant(pane_pid)
-        if claude_pid is None:
-            continue
-        start_time = _process_start_time(claude_pid)
-        cwd = _process_cwd(claude_pid)
-        if start_time is None or cwd is None:
-            continue
-        proj = _cwd_to_project_dir(str(Path(cwd).expanduser()))
-        if not proj.is_dir():
-            continue
-
-        # 主経路: statusline が書いた map が claude プロセス起動以降の mtime で、
-        # かつそれが指す JSONL が実在する
-        sid = _fresh_map_sid(session_id, start_time)
-        if sid:
-            path = proj / f"{sid}.jsonl"
-            if path.is_file():
-                _jsonl_pid_cache[session_id] = (claude_pid, path, now)
-                return path
-
-        # 副経路: claude プロセス起動時刻以降に birth した JSONL のみ採用、 mtime 最新を選ぶ。
-        # 既存 JSONL (= 別 claude プロセスが過去に書いたもの) は birthtime が claude 起動時刻
-        # より古いので構造的に除外される。 同 cwd で並行する他 claude プロセスが同タイミング
-        # で /clear して新 JSONL を birth させた場合のみ衝突するが、 通常運用では ms オーダ
-        # の衝突は起きない。
-        candidates: list[tuple[Path, float]] = []
-        for j in proj.glob("*.jsonl"):
-            try:
-                stat = j.stat()
-            except OSError:
-                continue
-            birth = getattr(stat, "st_birthtime", None)
-            if birth is None:
-                continue
-            if birth >= start_time - 1.0:
-                candidates.append((j, stat.st_mtime))
-        if candidates:
-            candidates.sort(key=lambda x: x[1], reverse=True)
-            chosen = candidates[0][0]
-            _jsonl_pid_cache[session_id] = (claude_pid, chosen, now)
-            return chosen
-
-    _jsonl_pid_cache.pop(session_id, None)
-    return None
+    import jsonl_watcher
+    return jsonl_watcher.get_jsonl_for(session_id)
 
 
 async def shutdown_all() -> None:

@@ -114,6 +114,14 @@ async def lifespan(app: FastAPI):
     # stop_reason 異常を Web Push に流す (= jsonl_routes SSE 経路と独立)。
     blocker_monitor_task = _asyncio.create_task(jsonl_routes.monitor_all_sessions_loop())
 
+    # JSONL watcher: ~/.claude/projects/ を fsevents で監視して、 各 PWA session の
+    # claude プロセスが書く JSONL を backend mem に確定保持する。
+    import jsonl_watcher  # noqa: PLC0415, E402
+    jsonl_watcher.start_watcher()
+    # 既存 tmux session (= backend 再起動跨ぎ) の claude プロセスを registry に登録
+    for sid in list(sessions_meta.keys()):
+        _asyncio.create_task(pty_runner._register_claude_when_ready(sid))
+
     cutoff = time.time() - 24 * 3600
     if UPLOADS_TMP.exists():
         for f in UPLOADS_TMP.iterdir():
@@ -146,6 +154,8 @@ async def lifespan(app: FastAPI):
     for session_id in list(stream_states.keys()):
         await disconnect_client(session_id)
     await pty_runner.shutdown_all()
+    import jsonl_watcher  # noqa: PLC0415, E402
+    jsonl_watcher.stop_watcher()
     close_all_session_logs()
     await http_client.aclose()
 
