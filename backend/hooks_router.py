@@ -95,15 +95,6 @@ async def hooks_event(request: Request) -> dict:
         "hooks/event recv: event=%s claude_sid=%s cwd=%s -> pwa_sid=%s",
         event, claude_sid, cwd, pwa_session_id,
     )
-    # debug: 実 payload 構造を把握するため full dump (= Stop / Notification の
-    # 公式 spec が手元に無いので、 実機 1 turn で structure を観測してから正規実装に倒す)。
-    # 規模が分かったら削除する。
-    try:
-        import json as _json
-        logger.info("hooks/event payload (debug dump): %s",
-                    _json.dumps(payload, ensure_ascii=False)[:2000])
-    except Exception:
-        pass
 
     if pwa_session_id is None:
         # AGENTS が空 = 何もできない、 ただ ack する
@@ -112,8 +103,10 @@ async def hooks_event(request: Request) -> dict:
     title = notification_title_for(pwa_session_id)
 
     if event == "Stop":
-        output = payload.get("output") or ""
-        body = _truncate(output) if output else "(turn 完了)"
+        # Stop hook payload は `last_assistant_message` に直近の assistant 発言全文を
+        # 載せる (= 2026-05-24 実機ダンプで確認、 spec で `output` ではない)。
+        body_raw = payload.get("last_assistant_message") or payload.get("output") or ""
+        body = _truncate(body_raw) if body_raw else "(turn 完了)"
         await broadcast_push(body, title, pwa_session_id)
         return {"ok": True, "pushed": "Stop"}
 
