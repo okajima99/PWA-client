@@ -20,8 +20,9 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, Body, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, File, Form, UploadFile, WebSocket, WebSocketDisconnect
 
+from chat_content import save_to_tmp
 from config import AGENTS, USE_PTY_RUNNER
 from pty_runner import (
     PtySession,
@@ -183,6 +184,42 @@ async def pty_send(session_id: str, payload: dict = Body(...)) -> dict:
         enter=bool(payload.get("enter", False)),
     )
     return {"ok": ok}
+
+
+@router.post("/pty/{session_id}/send-with-files")
+async def pty_send_with_files(
+    session_id: str,
+    text: str = Form(default=""),
+    files: list[UploadFile] = File(default=[]),
+) -> dict:
+    """添付ファイル付きで text を tmux session に送る。 file は uploads/tmp に保存して
+    保存先 path を本文末尾に追記する形で claude に投入する (= claude が Read tool で
+    自分で読む経路、 旧 SDK 経路の base64 image 同梱と違って tmux 打鍵が軽い)。
+
+    payload (multipart/form-data):
+        text  (str):              本文
+        files (list[UploadFile]): 添付ファイル群 (画像 / テキスト / その他何でも)
+    """
+    if not USE_PTY_RUNNER:
+        return {"ok": False, "reason": "USE_PTY_RUNNER is false"}
+    saved = await save_to_tmp(files, session_id)
+    parts: list[str] = []
+    if text.strip():
+        parts.append(text.strip())
+    if saved:
+        # 改行込みの本文を tmux send-keys に渡すと claude の入力欄で意図せぬ確定が起きうるので
+        # 1 行に押し込む (= 「[添付ファイル: /path/to/a, /path/to/b]」)。 path に空白は入らない
+        # 前提 (= chat_content.save_to_tmp が uuid.hex + 元拡張子で命名するので安全)。
+        paths = ", ".join(s["path"] for s in saved)
+        parts.append(f"[添付ファイル: {paths}]")
+    full_text = " ".join(parts)
+    if not full_text:
+        return {"ok": False, "reason": "empty"}
+    ok = tmux_send_keys(session_id, text=full_text, enter=True)
+    return {
+        "ok": ok,
+        "saved_files": [{"name": s["name"], "path": s["path"]} for s in saved],
+    }
 
 
 @router.get("/api/agents")

@@ -40,7 +40,7 @@ export function useChatStream({
   sessions, // eslint-disable-line no-unused-vars
   setMessages,
   input, setInput,
-  attachments, clearAttachments, // eslint-disable-line no-unused-vars
+  attachments, clearAttachments,
   scrollToBottom, isAtBottomRef,
 }) {
   const sid = activeSession?.id || null
@@ -159,32 +159,55 @@ export function useChatStream({
   const sendMessage = useCallback(async () => {
     if (!sid) return
     const text = (input[sid] || '').trim()
-    if (!text || loading[sid]) return
+    const files = attachments[sid] || []
+    if ((!text && files.length === 0) || loading[sid]) return
     setInput(prev => ({ ...prev, [sid]: '' }))
     setLoading(prev => ({ ...prev, [sid]: true }))
-    // backend が assistant を JSONL に書くまでの間、 楽観的に停止ボタンを出す。
     pendingSendUntilRef.current[sid] = Date.now() + 1500
-    // 旧 chat UI 互換: 送信直後に user bubble + 空 streaming agent bubble を即挿入。
-    // claude が JSONL に書き始めるまで数秒沈黙するので、 placeholder が無いと「無反応」 に
-    // 見える。 useStreamBuffer.flushStreamBuf は空 streaming agent を見つけたら中身を埋める
-    // (= dedup 動作) ので、 ここで挿入しても assistant event 到着で自然に埋まる。
-    // user bubble は JSONL の user_message event でも追加されるが、 uuid 重複は handleEvent
-    // 側で dedup される。
+    // 楽観 user bubble + 空 streaming agent bubble を即挿入。 添付があれば user bubble に
+    // 表示用の imageUrls / fileNames を載せる (= MessageItem の user-block 経路で render)。
+    // imageUrls は ObjectURL なのでアプリリロード後は消えるが、 当該セッション中は見える。
     setMessages(prev => {
       const cur = prev[sid] || []
+      const imageUrls = files.filter(f => f.url).map(f => f.url)
+      const fileNames = files.map(f => f.file.name)
       return {
         ...prev,
         [sid]: [
           ...cur,
-          { id: generateId(), role: 'user', text, optimistic: true },
+          {
+            id: generateId(),
+            role: 'user',
+            text,
+            optimistic: true,
+            imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+            fileNames: fileNames.length > 0 ? fileNames : undefined,
+          },
           { id: generateId(), role: 'agent', text: '', tools: [], streaming: true },
         ],
       }
     })
     if (isAtBottomRef) isAtBottomRef.current = true
     scrollToBottom()
-    await sendToPty(sid, { text, enter: true })
-  }, [sid, input, loading, setInput, setMessages, scrollToBottom, sendToPty, isAtBottomRef])
+    if (files.length > 0) {
+      // multipart: backend がファイルを uploads/tmp に保存して path を本文に追記して
+      // tmux に送る (= claude が Read tool で読む)。
+      const form = new FormData()
+      form.append('text', text)
+      for (const item of files) {
+        form.append('files', item.file)
+      }
+      try {
+        await fetch(`${API_BASE}/pty/${encodeURIComponent(sid)}/send-with-files`, {
+          method: 'POST',
+          body: form,
+        })
+      } catch { /* 送信失敗は握りつぶす、 次操作で復帰 */ }
+      clearAttachments(sid)
+    } else {
+      await sendToPty(sid, { text, enter: true })
+    }
+  }, [sid, input, attachments, loading, setInput, setMessages, clearAttachments, scrollToBottom, sendToPty, isAtBottomRef])
 
   const stopMessage = useCallback(async () => {
     if (!sid) return
