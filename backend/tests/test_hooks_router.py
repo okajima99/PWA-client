@@ -31,6 +31,20 @@ def fake_agents(monkeypatch, tmp_path):
     return {"cwd": str(cwd_path), "id": "primary"}
 
 
+@pytest.fixture
+def fake_tmux_map(monkeypatch, tmp_path):
+    """tmux session map を tmp に作って、 PWA セッション扱いの claude_sid を登録する。
+    PWA 経由判定 (= `_pwa_session_for_claude_sid`) を test 内で再現するため。"""
+    map_dir = tmp_path / "tmux-session-map"
+    map_dir.mkdir()
+    monkeypatch.setattr(hooks_router, "_TMUX_MAP", map_dir)
+
+    def register(pwa_sid: str, claude_sid: str) -> None:
+        (map_dir / f"pwa-{pwa_sid}").write_text(claude_sid, encoding="utf-8")
+
+    return register
+
+
 def test_pwa_session_for_cwd_exact_match(fake_agents):
     """agent.cwd と同一の path → その agent の id を返す。"""
     assert hooks_router._pwa_session_for_cwd(fake_agents["cwd"]) == "primary"
@@ -64,11 +78,12 @@ def test_truncate_long_appends_ellipsis():
     assert result == "xxxxxxxxxx…"
 
 
-def test_endpoint_stop_event_pushes_output(fake_agents, captured_pushes):
-    """Stop イベントは output を本文に push する。"""
+def test_endpoint_stop_event_pushes_output(fake_agents, fake_tmux_map, captured_pushes):
+    """Stop イベントは last_assistant_message を本文に push する。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    fake_tmux_map("primary", "claude-internal-uuid")
     monkeypatch_app = FastAPI()
     monkeypatch_app.include_router(hooks_router.router)
     client = TestClient(monkeypatch_app)
@@ -77,7 +92,7 @@ def test_endpoint_stop_event_pushes_output(fake_agents, captured_pushes):
         "hook_event_name": "Stop",
         "session_id": "claude-internal-uuid",
         "cwd": fake_agents["cwd"],
-        "output": "task completed successfully",
+        "last_assistant_message": "task completed successfully",
     }
     response = client.post("/hooks/event", json=payload)
     assert response.status_code == 200
@@ -88,10 +103,11 @@ def test_endpoint_stop_event_pushes_output(fake_agents, captured_pushes):
     assert sid == "primary"
 
 
-def test_endpoint_notification_event_pushes_message(fake_agents, captured_pushes):
+def test_endpoint_notification_event_pushes_message(fake_agents, fake_tmux_map, captured_pushes):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    fake_tmux_map("primary", "claude-internal-uuid")
     app = FastAPI()
     app.include_router(hooks_router.router)
     client = TestClient(app)
@@ -109,24 +125,48 @@ def test_endpoint_notification_event_pushes_message(fake_agents, captured_pushes
     assert captured_pushes[0][0] == "permission needed"
 
 
-def test_endpoint_unknown_event_acks_without_push(fake_agents, captured_pushes):
+def test_endpoint_unknown_event_acks_without_push(fake_agents, fake_tmux_map, captured_pushes):
     """未対応イベントは受信 ack のみ、 push しない。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    fake_tmux_map("primary", "claude-internal-uuid")
     app = FastAPI()
     app.include_router(hooks_router.router)
     client = TestClient(app)
 
     payload = {
         "hook_event_name": "FileChanged",
-        "session_id": "x",
+        "session_id": "claude-internal-uuid",
         "cwd": fake_agents["cwd"],
         "file_path": "/foo",
     }
     response = client.post("/hooks/event", json=payload)
     assert response.status_code == 200
     assert response.json() == {"ok": True, "ignored": "FileChanged"}
+    assert captured_pushes == []
+
+
+def test_endpoint_non_pwa_session_is_ignored(fake_agents, fake_tmux_map, captured_pushes):
+    """tmux_session_map に登録されてない claude_sid (= デスクトップ公式 / ターミナル直叩き)
+    は ignored で push されないこと。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    # fake_tmux_map で primary を登録しないので claude_sid は孤立
+    app = FastAPI()
+    app.include_router(hooks_router.router)
+    client = TestClient(app)
+
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "desktop-claude-uuid",
+        "cwd": fake_agents["cwd"],
+        "last_assistant_message": "this should not reach Web Push",
+    }
+    response = client.post("/hooks/event", json=payload)
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "ignored": "non_pwa_session"}
     assert captured_pushes == []
 
 

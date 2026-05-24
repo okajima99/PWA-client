@@ -23,13 +23,38 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 
-from config import AGENTS
+from config import AGENTS, TMUX_SESSION_MAP_DIR
 from push import broadcast_push, notification_title_for
 from state import agent_status, stream_states
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+_TMUX_MAP = Path(TMUX_SESSION_MAP_DIR).expanduser() if TMUX_SESSION_MAP_DIR else None
+
+
+def _pwa_session_for_claude_sid(claude_sid: str | None) -> str | None:
+    """claude が hook payload で渡してくる claude session_id (= JSONL ファイル名と一致)
+    を逆引きして、 PWA のタブ識別子 (= `ses_xxxx`) を返す。 PWA 経由で起動した
+    claude セッションだけが `tmux_session_map_dir` に登録される (= 起動時 statusline が
+    書く)。 デスクトップ公式 / ターミナル直叩きは登録されないので、 ここで弾いて
+    Web Push を抑制する。 マッチしなければ None。
+    """
+    if not claude_sid or _TMUX_MAP is None or not _TMUX_MAP.is_dir():
+        return None
+    for f in _TMUX_MAP.iterdir():
+        if not f.is_file():
+            continue
+        try:
+            if f.read_text(encoding="utf-8", errors="replace").strip() == claude_sid:
+                name = f.name
+                # ファイル名は `pwa-<session_id>` 規約 (= pty_runner._tmux_session_name)
+                return name[4:] if name.startswith("pwa-") else name
+        except OSError:
+            continue
+    return None
 
 
 def _pwa_session_for_cwd(cwd: str | None) -> str | None:
@@ -87,19 +112,25 @@ async def hooks_event(request: Request) -> dict:
     event = payload.get("hook_event_name") or "?"
     claude_sid = payload.get("session_id")
     cwd = payload.get("cwd")
-    pwa_session_id = _pwa_session_for_cwd(cwd)
-    if pwa_session_id is None and AGENTS:
-        # フォールバック: 最初の agent (= 設定上 default 扱い)
-        pwa_session_id = next(iter(AGENTS.keys()))
+
+    # PWA 経由で起動した claude セッションだけ通知する。 claude CLI の hook 設定は
+    # `~/.claude/settings.json` 経由でグローバルなので、 デスクトップ公式 / ターミナル
+    # 直叩きでも curl が飛んでくる。 tmux_session_map に登録された claude_sid のみが
+    # PWA タブ経由 (= statusline が起動時に書く) なので、 ここで厳密判別して除外する。
+    pwa_session_id = _pwa_session_for_claude_sid(claude_sid)
+    if pwa_session_id is None:
+        # cwd フォールバックは不採用 (= デスクトップ公式が AGENTS と同じ cwd で動いた時に
+        # 誤マッチして通知が飛ぶ要因だった)。 確実に PWA 経由でない claude は ack だけ。
+        logger.info(
+            "hooks/event ignored (not a PWA session): event=%s claude_sid=%s cwd=%s",
+            event, claude_sid, cwd,
+        )
+        return {"ok": True, "ignored": "non_pwa_session"}
 
     logger.info(
         "hooks/event recv: event=%s claude_sid=%s cwd=%s -> pwa_sid=%s",
         event, claude_sid, cwd, pwa_session_id,
     )
-
-    if pwa_session_id is None:
-        # AGENTS が空 = 何もできない、 ただ ack する
-        return {"ok": True, "ignored": "no_agent"}
 
     title = notification_title_for(pwa_session_id)
 
