@@ -4,9 +4,45 @@ state.shared_status / state.agent_status の使用率系フィールドを更新
 state.py から責務分離した (2026-05-17): state.py は純粋な state 定義・lifecycle に
 専念し、 「使用率の計算」 や「ヘッダの key 名/形式の知識」 は usage.py に集約する。
 """
+import json
 from datetime import datetime
 
+from config import RATE_LIMITS_LOG_PATH
 from state import DEFAULT_CTX_WINDOW, agent_status, shared_status
+
+
+def read_latest_rate_limits() -> dict:
+    """rate-limits.jsonl (= statusline が記録) の最終行から 5h/7d/ctx/model を読む。
+
+    proxy を一切使わず、 claude CLI 自身が statusline subprocess に渡す使用率を
+    ファイル経由で拾う。 ファイル末尾の数 KB だけ読んで最終行を取る (= 大きくても軽い)。
+    値が取れなければ空 dict (= 呼び出し側は既存 shared_status を維持)。
+    """
+    if not RATE_LIMITS_LOG_PATH:
+        return {}
+    try:
+        with open(RATE_LIMITS_LOG_PATH, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 4096))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return {}
+    lines = [ln for ln in tail.splitlines() if ln.strip()]
+    if not lines:
+        return {}
+    try:
+        last = json.loads(lines[-1])
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return {
+        "five_hour_pct": last.get("five_hour_pct"),
+        "seven_day_pct": last.get("seven_day_pct"),
+        "five_hour_resets_at": last.get("five_hour_resets_at"),
+        "seven_day_resets_at": last.get("seven_day_resets_at"),
+        "context_pct": last.get("context_pct"),
+        "model": last.get("model"),
+    }
 
 
 def update_shared_from_headers(headers) -> None:

@@ -27,6 +27,7 @@ from fastapi.responses import Response, StreamingResponse
 from chat_content import build_content, save_to_tmp
 from config import AGENTS
 from sdk_runner import disconnect_client, ensure_client
+from usage import read_latest_rate_limits
 from session_logging import (
     delete_session_log,
     mark_session_end,
@@ -313,20 +314,25 @@ async def end_session(session_id: str):
 
 
 def _build_status(session_id: str) -> dict:
-    """/status と /status/.../stream で共有する status payload 生成。"""
+    """/status と /status/.../stream で共有する status payload 生成。
+
+    使用率系 (5h/7d/ctx/model) は proxy を使わず rate-limits.jsonl (= statusline 記録)
+    から取る。 取れない項目は従来の shared_status / agent_status に fallback。
+    """
     a = agent_status[session_id]
     state = stream_states[session_id]
+    rl = read_latest_rate_limits()
     return {
-        "model": a["model"],
-        "ctx_pct": a["ctx_pct"],
+        "model": rl.get("model") or a["model"],
+        "ctx_pct": rl["context_pct"] if rl.get("context_pct") is not None else a["ctx_pct"],
         "plan_mode": a["plan_mode"],
         "current_tool": a["current_tool"],
         "todos": a["todos"],
         "subagent": a["subagent"],
-        "five_hour_pct": shared_status["five_hour_pct"],
-        "seven_day_pct": shared_status["seven_day_pct"],
-        "five_hour_resets_at": shared_status["five_hour_resets_at"],
-        "seven_day_resets_at": shared_status["seven_day_resets_at"],
+        "five_hour_pct": rl["five_hour_pct"] if rl.get("five_hour_pct") is not None else shared_status["five_hour_pct"],
+        "seven_day_pct": rl["seven_day_pct"] if rl.get("seven_day_pct") is not None else shared_status["seven_day_pct"],
+        "five_hour_resets_at": rl.get("five_hour_resets_at") or shared_status["five_hour_resets_at"],
+        "seven_day_resets_at": rl.get("seven_day_resets_at") or shared_status["seven_day_resets_at"],
         "streaming": not state.complete,
         "buffer_length": len(state.buffer),
         "buffer_id": state.buffer_id,
@@ -366,7 +372,10 @@ async def status_stream(session_id: str):
                 state.status_event.clear()
                 yield f"data: {json.dumps(_build_status(session_id))}\n\n"
             except asyncio.TimeoutError:
-                yield ": keep-alive\n\n"
+                # keep-alive 兼 status 更新: TUI 経路は status_event がほぼ発火しないので、
+                # この timeout で rate-limits 込みの最新 status を定期 push する
+                # (= 5h/7d を ~20 秒粒度で更新)。
+                yield f"data: {json.dumps(_build_status(session_id))}\n\n"
 
     return StreamingResponse(
         gen(),
