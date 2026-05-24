@@ -233,9 +233,25 @@ function CompactBanner({ msg }) {
   )
 }
 
+function SessionEndBanner() {
+  // 「セッション終了」 を区切る横線 + ラベル。 旧 chat UI と同じ見た目。
+  return (
+    <div className="message system compact-banner">
+      <span className="compact-line">
+        <span className="compact-rule" />
+        <span className="compact-label">セッション終了</span>
+        <span className="compact-rule" />
+      </span>
+    </div>
+  )
+}
+
 const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKeySource, activeSubagentTool }) {
   if (msg.role === 'system' && msg.kind === 'compact') {
     return <CompactBanner msg={msg} />
+  }
+  if (msg.role === 'system' && msg.kind === 'session_end') {
+    return <SessionEndBanner />
   }
   if (msg.role === '__loading__') {
     return (

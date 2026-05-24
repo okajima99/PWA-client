@@ -53,6 +53,9 @@ export function useChatStream({
   // localStorage に永続化することで、 アプリ再起動 / リロードを跨いでも継続。
   const offsetRef = useRef(loadOffsets())
   const offsetPersistTimerRef = useRef(null)
+  // EventSource 再接続トリガ。 endSession (/clear) で新 claude_sid に切り替わるとき、
+  // backend の JSONL 解決を新 sid に向けるためここを +1 して useEffect を再実行させる。
+  const [reconnectKey, setReconnectKey] = useState(0)
 
   const buffer = useStreamBuffer({ setMessages })
 
@@ -158,7 +161,7 @@ export function useChatStream({
       es.close()
       buffer.cancelAndFlush(sid)
     }
-  }, [sid]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sid, reconnectKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // chat UI の操作 → tmux session にキー送信 (= 出力 SSE と分離)。
   const sendToPty = useCallback(async (targetSid, body) => {
@@ -251,7 +254,24 @@ export function useChatStream({
     // 切り替わる、 旧会話の JSONL は ~/.claude/projects/ にファイルとして永続)。 claude 自体は
     // 同じ tmux プロセスで動き続けるので起動エイリアス再入力は不要、 即時。
     await sendToPty(sid, { text: '/clear', enter: true })
-  }, [sid, sendToPty])
+    // UI 上のセッション区切りを messages に挿入 (= 旧 chat UI の「セッション終了」 マーカー)。
+    // MessageItem 側で system / kind=session_end の分岐で横線 + ラベル描画。
+    setMessages(prev => ({
+      ...prev,
+      [sid]: [
+        ...(prev[sid] || []),
+        { id: generateId(), role: 'system', kind: 'session_end', ts: Date.now() },
+      ],
+    }))
+    // 旧 JSONL を読み続けないよう offset をクリア (= 新 claude_sid に切り替わったら新 JSONL の
+    // 末尾近くから tail 開始させる)。 statusline が新 sid を tmux_session_map に書くまで
+    // 1-2 秒かかるので、 少し待ってから EventSource を張り直す。
+    delete offsetRef.current[sid]
+    persistOffsets(offsetRef.current)
+    setTimeout(() => {
+      setReconnectKey(k => k + 1)
+    }, 2000)
+  }, [sid, sendToPty, setMessages])
 
   // 常時 tail + EventSource 自動再接続なので明示 fetch は不要。 scroll だけ最新へ寄せる。
   const fetchLatest = useCallback(() => {
