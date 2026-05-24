@@ -419,6 +419,19 @@ export default function App() {
           ☰
         </button>
         <span className="topbar-title">{activeSession?.title || '会話なし'}</span>
+        {/* terminal モード時の chat 復帰ボタン: ⋯メニュー経由が hit test 等で詰まっても
+            ここから確実に戻れるよう topbar に独立表示。 chat モード時は出さない
+            (= ターミナル表示への切替は ⋯メニュー側でやる、 戻る経路だけ常駐保証する設計)。 */}
+        {activeViewMode === 'terminal' && activeSid && (
+          <button
+            className="topbar-icon-btn"
+            onClick={() => setViewModes(prev => ({ ...prev, [activeSid]: 'chat' }))}
+            aria-label="チャット表示に戻す"
+            title="チャット表示に戻す"
+          >
+            💬
+          </button>
+        )}
         {/* 画面共有 (= moonlight-web-stream を iframe で埋め込み) ON/OFF。
             backend で /moonlight/ プロキシが有効な場合 (= Path B セットアップ済) だけ
             表示。 chat + 通知だけのユーザにはアイコン自体出さない (= 押しても 404)。 */}
