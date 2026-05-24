@@ -185,3 +185,32 @@ def test_slash_command_xml_with_leading_whitespace_skipped():
         },
     }
     assert jsonl_line_to_events(line) == []
+
+
+def test_local_command_stdout_skipped():
+    # `/model sonnet` 実行後、 claude が応答を <local-command-stdout> XML で JSONL に書く。
+    # これは harness の内部 stdout なので chat には出さない。
+    line = {
+        "type": "user",
+        "uuid": "u-stdout",
+        "message": {
+            "role": "user",
+            "content": (
+                "<local-command-stdout>Set model to Sonnet 4.6 for this session"
+                "</local-command-stdout>"
+            ),
+        },
+    }
+    assert jsonl_line_to_events(line) == []
+
+
+def test_local_command_stderr_skipped():
+    line = {
+        "type": "user",
+        "uuid": "u-stderr",
+        "message": {
+            "role": "user",
+            "content": "<local-command-stderr>error</local-command-stderr>",
+        },
+    }
+    assert jsonl_line_to_events(line) == []

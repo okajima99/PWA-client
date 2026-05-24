@@ -160,6 +160,12 @@ async def hooks_event(request: Request) -> dict:
         message = payload.get("message") or ""
         if not message:
             return {"ok": True, "ignored": "empty_message"}
+        # claude が permission prompt 等で発火する generic な「待ち」 通知は skip。
+        # 中身が "Claude is waiting for your input" 系の固定文の時は知らせても情報量ゼロ、
+        # AskUserQuestion の質問本文等のシグナルとは別物。
+        msg_lower = message.lower()
+        if "is waiting" in msg_lower or "needs your input" in msg_lower:
+            return {"ok": True, "ignored": "generic_waiting"}
         body = _truncate(message)
         asyncio.create_task(broadcast_push(body, title, pwa_session_id))
         return {"ok": True, "pushed": "Notification"}

@@ -17,9 +17,18 @@ from __future__ import annotations
 
 import re
 
-# `/clear` / `/model` / `/effort` 等の slash command 発動時、 claude が JSONL に書く
-# 内部表現の検出用。 行頭に `<command-name>` が来ることで判別。
-_COMMAND_XML_RE = re.compile(r"^\s*<command-name>")
+# claude が JSONL の user 行に書く harness 内部表現を検出するための regex。
+# 該当行はユーザ発話ではないので chat には出さない。
+# 既知パターン (= 2026-05-24 実機 dump で確認):
+#   <command-name>/clear</command-name>           ← slash command 起動
+#   <command-message>clear</command-message>      ← 上記の続き
+#   <command-args>sonnet</command-args>           ← 上記の続き (引数)
+#   <local-command-stdout>...ANSI...</local-command-stdout>  ← slash command の応答
+#   <local-command-stderr>...</local-command-stderr>         ← 上記の error 版 (将来用)
+# 後発の `<local-command-*>` を catch-all で潰すため、 prefix で広めに wildcard 一致。
+_HARNESS_XML_RE = re.compile(
+    r"^\s*<(command-name|command-message|command-args|local-command-[a-z-]+)\b"
+)
 
 
 def jsonl_line_to_events(line: dict) -> list[dict]:
@@ -100,8 +109,8 @@ def _user_events(line: dict) -> list[dict]:
         text = content.strip()
         if not text:
             return []
-        # claude TUI の slash command 内部表現は user 発話ではないので chat には出さない
-        if _COMMAND_XML_RE.match(text):
+        # claude TUI の slash command / stdout 内部表現は user 発話ではないので chat には出さない
+        if _HARNESS_XML_RE.match(text):
             return []
         return [{"type": "user_message", "text": content, "uuid": line.get("uuid")}]
 
