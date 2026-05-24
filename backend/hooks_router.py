@@ -114,6 +114,36 @@ async def hooks_event(request: Request) -> dict:
     claude_sid = payload.get("session_id")
     cwd = payload.get("cwd")
 
+    # SessionStart: PWA タブ起動時に発火する確定 binding 経路。 PWA spawn 時に tmux
+    # session env に `PWA_SID=ses_xxx` を注入してるので、 PWA タブで起動した claude が
+    # 呼ぶ hook だけ X-PWA-SID header を持つ (= Desktop App / ターミナル直叩きの claude は
+    # PWA_SID env が無いので header が空 → ここで弾かれる)。 /clear で source=clear で
+    # 再発火するので新 claude_sid に自動追従する。
+    if event == "SessionStart":
+        pwa_sid_hdr = request.headers.get("x-pwa-sid", "").strip()
+        transcript = payload.get("transcript_path")
+        source = payload.get("source")
+        if not pwa_sid_hdr:
+            logger.info(
+                "SessionStart ignored (no PWA_SID): claude_sid=%s source=%s cwd=%s",
+                claude_sid, source, cwd,
+            )
+            return {"ok": True, "ignored": "non_pwa_session"}
+        if not transcript:
+            logger.warning(
+                "SessionStart missing transcript_path: pwa_sid=%s claude_sid=%s",
+                pwa_sid_hdr, claude_sid,
+            )
+            return {"ok": False, "reason": "no_transcript_path"}
+        import jsonl_watcher  # noqa: PLC0415
+        path = jsonl_watcher.confirm_bind(pwa_sid_hdr, claude_sid or "", transcript)
+        logger.info(
+            "SessionStart bound: pwa_sid=%s source=%s claude_sid=%s -> %s",
+            pwa_sid_hdr, source, claude_sid, path.name if path else None,
+        )
+        return {"ok": path is not None, "pwa_sid": pwa_sid_hdr,
+                "bound": str(path) if path else None}
+
     # PWA 経由で起動した claude セッションだけ通知する。 claude CLI の hook 設定は
     # `~/.claude/settings.json` 経由でグローバルなので、 デスクトップ公式 / ターミナル
     # 直叩きでも curl が飛んでくる。 tmux_session_map に登録された claude_sid のみが

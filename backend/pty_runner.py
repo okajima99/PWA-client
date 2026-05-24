@@ -138,7 +138,16 @@ async def spawn_pty_session(
     if USE_TMUX_WRAP:
         tmux_name = _tmux_session_name(session_id)
         is_new_tmux_session = not has_tmux_session(session_id)
-        argv = [TMUX_BIN, "new-session", "-A", "-s", tmux_name, *PTY_INITIAL_ARGV]
+        # `-e PWA_SID=<sid>` で tmux session env に PWA タブ識別子を注入する。 これは
+        # session 配下の全 pane に継承され、 zsh → claude → SessionStart hook の curl まで
+        # 環境変数として伝わる。 backend の hooks_router が X-PWA-SID header としてこれを
+        # 受けて、 claude_sid / transcript_path を確定 bind するための tag になる。
+        # `-e` は tmux 3.2+ で対応、 reattach 時は無視される (= 既存 env を優先)。
+        argv = [
+            TMUX_BIN, "new-session", "-A", "-s", tmux_name,
+            "-e", f"PWA_SID={session_id}",
+            *PTY_INITIAL_ARGV,
+        ]
     else:
         argv = list(PTY_INITIAL_ARGV)
 

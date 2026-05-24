@@ -493,6 +493,13 @@ async def _jsonl_sse(session_id: str, start_pos: int | None = None):
         yield ": keep-alive\n\n"
 
 
+@router.get("/jsonl/_debug/bindings")
+async def jsonl_debug_bindings() -> dict:
+    """debug: 現在 backend mem に持ってる watcher binding 一覧。"""
+    import jsonl_watcher
+    return jsonl_watcher.list_bindings()
+
+
 @router.get("/jsonl/stream/{session_id}")
 async def jsonl_stream(session_id: str, request: Request):
     """指定 PWA session の claude JSONL を tail して SSE で event を流す。
