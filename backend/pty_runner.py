@@ -71,6 +71,18 @@ def _tmux_session_name(session_id: str) -> str:
     return f"pwa-{safe}"
 
 
+def _run_tmux(*args: str, timeout: float = 2.0, text: bool = False):
+    """tmux サブコマンドの共通実行ラッパ。 [TMUX_BIN] prefix 付与 + capture_output 固定 +
+    timeout、 TimeoutExpired / OSError は None を返す (= 呼び側で失敗扱い)。 成功時は
+    CompletedProcess。 tmux 操作の subprocess.run はこれ経由に統一する。"""
+    try:
+        return subprocess.run(
+            [TMUX_BIN, *args], capture_output=True, timeout=timeout, text=text,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
 @dataclass
 class PtySession:
     """1 セッション = 1 claude プロセス + master fd + 出力 queue。"""
@@ -324,12 +336,8 @@ def has_tmux_session(session_id: str) -> bool:
     """指定 session の tmux session が既存か。 USE_TMUX_WRAP=False なら常に False。"""
     if not USE_TMUX_WRAP:
         return False
-    tmux_name = _tmux_session_name(session_id)
-    result = subprocess.run(
-        [TMUX_BIN, "has-session", "-t", tmux_name],
-        capture_output=True,
-    )
-    return result.returncode == 0
+    r = _run_tmux("has-session", "-t", _tmux_session_name(session_id))
+    return r is not None and r.returncode == 0
 
 
 def capture_tmux_scrollback(session_id: str, lines: int = 5000) -> bytes:
@@ -341,21 +349,12 @@ def capture_tmux_scrollback(session_id: str, lines: int = 5000) -> bytes:
     """
     if not USE_TMUX_WRAP:
         return b""
-    tmux_name = _tmux_session_name(session_id)
-    try:
-        result = subprocess.run(
-            [TMUX_BIN, "capture-pane", "-p", "-e", "-J", "-S", f"-{lines}", "-t", tmux_name],
-            capture_output=True,
-            timeout=2,
-        )
-    except subprocess.TimeoutExpired:
-        logger.warning("tmux capture-pane timed out for session=%s", session_id)
-        return b""
-    if result.returncode != 0:
+    r = _run_tmux("capture-pane", "-p", "-e", "-J", "-S", f"-{lines}", "-t", _tmux_session_name(session_id))
+    if r is None or r.returncode != 0:
         return b""
     # tmux capture-pane の出力は行末 LF。 そのまま xterm に流すと最終行に余分な改行が
     # 入って claude の現在カーソル位置とズレるので末尾 LF を 1 個だけ剥がす。
-    return result.stdout.rstrip(b"\n")
+    return r.stdout.rstrip(b"\n")
 
 
 def tmux_send_keys(
@@ -381,21 +380,21 @@ def tmux_send_keys(
     if not has_tmux_session(session_id):
         return False
     tmux_name = _tmux_session_name(session_id)
-    commands: list[list[str]] = []
+    arg_sets: list[list[str]] = []
     if text:
-        commands.append([TMUX_BIN, "send-keys", "-t", tmux_name, "-l", text])
+        arg_sets.append(["send-keys", "-t", tmux_name, "-l", text])
     if key:
-        commands.append([TMUX_BIN, "send-keys", "-t", tmux_name, key])
+        arg_sets.append(["send-keys", "-t", tmux_name, key])
     if enter:
-        commands.append([TMUX_BIN, "send-keys", "-t", tmux_name, "Enter"])
-    if not commands:
+        arg_sets.append(["send-keys", "-t", tmux_name, "Enter"])
+    if not arg_sets:
         return False
     ok = True
-    for cmd in commands:
-        result = subprocess.run(cmd, capture_output=True)
-        if result.returncode != 0:
+    for args in arg_sets:
+        r = _run_tmux(*args)
+        if r is None or r.returncode != 0:
             ok = False
-            logger.warning("tmux send-keys failed session=%s cmd=%s", session_id, cmd[-2:])
+            logger.warning("tmux send-keys failed session=%s cmd=%s", session_id, args[-2:])
     return ok
 
 
@@ -408,13 +407,8 @@ def kill_tmux_session(session_id: str) -> bool:
     """
     if not USE_TMUX_WRAP:
         return False
-    tmux_name = _tmux_session_name(session_id)
-    result = subprocess.run(
-        [TMUX_BIN, "kill-session", "-t", tmux_name],
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0
+    r = _run_tmux("kill-session", "-t", _tmux_session_name(session_id), text=True)
+    return r is not None and r.returncode == 0
 
 
 # ---- claude プロセス調査ヘルパ (= jsonl_watcher.register_pending への入力収集) ----
@@ -422,17 +416,10 @@ def kill_tmux_session(session_id: str) -> bool:
 def _tmux_pane_pids(session_id: str) -> list[int]:
     if not USE_TMUX_WRAP:
         return []
-    tmux_name = _tmux_session_name(session_id)
-    try:
-        result = subprocess.run(
-            [TMUX_BIN, "list-panes", "-t", tmux_name, "-F", "#{pane_pid}"],
-            capture_output=True, text=True, timeout=2,
-        )
-    except (subprocess.TimeoutExpired, OSError):
+    r = _run_tmux("list-panes", "-t", _tmux_session_name(session_id), "-F", "#{pane_pid}", text=True)
+    if r is None or r.returncode != 0:
         return []
-    if result.returncode != 0:
-        return []
-    return [int(s) for s in result.stdout.split() if s.strip().isdigit()]
+    return [int(s) for s in r.stdout.split() if s.strip().isdigit()]
 
 
 def _find_claude_descendant(root_pid: int, max_depth: int = 6) -> int | None:
