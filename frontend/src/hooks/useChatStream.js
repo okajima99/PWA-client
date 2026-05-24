@@ -1,303 +1,175 @@
-import { useState, useRef, useEffect } from 'react'
-import { flushSync } from 'react-dom'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { API_BASE, MAX_MESSAGES } from '../constants.js'
 import { generateId } from '../utils/id.js'
-import { putImage } from '../utils/imageStore.js'
-import { describeError } from '../utils/format.js'
 import { useStreamBuffer } from './internal/useStreamBuffer.js'
-import { useStreamReconnect } from './internal/useStreamReconnect.js'
 import { processStreamEvent } from './internal/processStreamEvent.js'
 
-// チャット 1 ターンの送受信・再接続・状態管理を束ねた公開フック。
-// セッション (= UI 上のタブ) を session_id (sid) で識別する。
+// chat 1 セッションの送受信・状態管理を束ねる公開フック (= TUI / JSONL 版)。
+//
+// 旧 SDK + proxy 版を置き換えたもの。 App.jsx 側のインターフェース
+// (loading / sendMessage / stopMessage / apiKeySource / sendAnswer / fetchLatest /
+//  endSession / setLoading / pendingSendUntilRef / visibilitySuppressUntilRef) は維持し、
+// App.jsx はほぼ無改修で動く。
+//
+// 受信: 常時 /jsonl/stream を EventSource で購読 (= claude が書く JSONL を backend が tail)。
+//       event は processStreamEvent + useStreamBuffer で旧 chat と同じ message state に組む。
+// 送信: POST /pty/{sid}/send (= tmux send-keys、 text+Enter / Escape)。
+// 表示資産 (MessageItem / scroll / localStorage) は App.jsx 側のものをそのまま使う。
 export function useChatStream({
   activeSession,
-  sessions,
+  sessions, // eslint-disable-line no-unused-vars
   setMessages,
   input, setInput,
-  attachments, clearAttachments,
+  attachments, clearAttachments, // eslint-disable-line no-unused-vars
   scrollToBottom, isAtBottomRef,
 }) {
-  // loading / apiKeySource は session_id をキーに動的に増減する dict
+  const sid = activeSession?.id || null
   const [loading, setLoading] = useState({})
   const [apiKeySource, setApiKeySource] = useState({})
-
-  const abortControllers = useRef({})
-  const loadingRef = useRef(loading)
-  useEffect(() => { loadingRef.current = loading }, [loading])
-
-  // fetchLatest 等から最新の activeSession / sessions を読むための ref
-  const activeSessionRef = useRef(activeSession)
-  useEffect(() => { activeSessionRef.current = activeSession }, [activeSession])
-  const sessionsRef = useRef(sessions)
-  useEffect(() => { sessionsRef.current = sessions }, [sessions])
-
-  // 送信世代カウンタ (session_id 単位)。 stop → 新 send の race 防止。
-  const sendGenRef = useRef({})
-
-  // 直近 POST が発行した user_request_id を保持
-  const pendingRequestIdRef = useRef({})
-
-  // 楽観的 pending: send ボタン押下 → POST 開始時点で短期 (= 1.5 秒) deadline を立てる。
-  // backend が state.complete=False に倒して status SSE で streaming=true を push してくるまで
-  // の数百 ms 間、 「送信ボタン → 一瞬送信ボタン → 停止ボタン」 のフラッシュを防ぐ。
-  // status.streaming=true / loading[sid]=true / pendingSendUntil > now の OR で停止ボタン表示。
+  // App.jsx の showStopButton が参照する楽観 deadline / visibility 抑止 (= インターフェース維持)。
   const pendingSendUntilRef = useRef({})
+  const visibilitySuppressUntilRef = useRef(0)
+  // session ごとの最後に受信した byte offset。 タブ切替で再接続する時、 ここから差分だけ
+  // 取り直すことで全 replay を避ける (= 切替を軽く + localStorage 即復元と併用)。
+  const offsetRef = useRef({})
 
   const buffer = useStreamBuffer({ setMessages })
 
-  const onUserRequestId = (sid, request_id) => {
-    pendingRequestIdRef.current[sid] = request_id || null
-  }
-
-  const onResultMessage = (sid, request_id) => {
-    const pending = pendingRequestIdRef.current[sid]
-    if (!pending || pending !== request_id) return
-    pendingRequestIdRef.current[sid] = null
-    buffer.cancelAndFlush(sid)
-    setLoading(prev => ({ ...prev, [sid]: false }))
-    setMessages(prev => {
-      const cur = prev[sid] || []
-      const msgs = [...cur]
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i].role === 'agent' && msgs[i].streaming) {
-          msgs[i] = { ...msgs[i], streaming: false }
-          break
-        }
-      }
-      return { ...prev, [sid]: msgs }
-    })
-  }
-
-  const reconnect = useStreamReconnect({
+  const eventDeps = {
     setMessages,
-    setLoading,
     setApiKeySource,
-    buffer,
-    scrollToBottom,
-    isAtBottomRef,
-    loadingRef,
-    abortControllers,
-    activeSessionRef,
-    sessionsRef,
-    onUserRequestId,
-    onResultMessage,
+    cancelAndFlush: buffer.cancelAndFlush,
+    scheduleFlush: buffer.scheduleFlush,
+    streamBufRef: buffer.streamBufRef,
+    bufFor: buffer.bufFor,
+    onUserRequestId: () => {},
+    onResultMessage: () => {},
+  }
+
+  // event ハンドラを ref に逃がして、 EventSource は sid 変更時だけ張り直す。
+  // ref 更新は render 中でなく effect で行う (= react-hooks/refs ルール)。
+  const handleEventRef = useRef(null)
+  useEffect(() => {
+    handleEventRef.current = (curSid, event) => {
+      if (event.type === 'user_message') {
+        buffer.cancelAndFlush(curSid)
+        setMessages(prev => {
+          const cur = prev[curSid] || []
+          if (event.uuid && cur.some(m => m.role === 'user' && m.uuid === event.uuid)) {
+            return prev
+          }
+          return {
+            ...prev,
+            [curSid]: [
+              ...cur,
+              { id: generateId(), uuid: event.uuid || null, role: 'user', text: event.text || '' },
+            ].slice(-MAX_MESSAGES),
+          }
+        })
+        return
+      }
+      if (event.type === 'assistant') {
+        setLoading(prev => (prev[curSid] ? prev : { ...prev, [curSid]: true }))
+      } else if (event.type === 'result') {
+        setLoading(prev => (prev[curSid] === false ? prev : { ...prev, [curSid]: false }))
+      }
+      try {
+        processStreamEvent(eventDeps, curSid, event)
+      } catch { /* 1 event の失敗で stream を落とさない */ }
+    }
   })
 
-  const sendMessage = async () => {
-    const sid = activeSession?.id
-    if (!sid) return
-    const text = (input[sid] || '').trim()
-    const items = attachments[sid] || []
-    if (!text && items.length === 0) return
-    if (loading[sid]) return
-
-    const myGen = (sendGenRef.current[sid] || 0) + 1
-    sendGenRef.current[sid] = myGen
-    const isCurrentGen = () => sendGenRef.current[sid] === myGen
-
-    // 楽観的 pending deadline: 1.5 秒間「停止ボタン」 を即出す。 backend status SSE 到達遅延を救済。
-    pendingSendUntilRef.current[sid] = Date.now() + 1500
-
-    const imageItems = items.filter(item => item.url)
-    const fileNames = items.filter(item => !item.url).map(item => item.file.name)
-
-    // 画像は IndexedDB に Blob で保存して、 message には参照 ID だけ持つ。
-    // data URL を localStorage に詰めるより圧縮コスト・容量圧迫が小さい。
-    const imageRefs = (await Promise.all(
-      imageItems.map(item => putImage(item.file).catch(() => null))
-    )).filter(Boolean)
-    // 一覧プレビュー用の BlobURL は使い終わったので解放
-    imageItems.forEach(item => URL.revokeObjectURL(item.url))
-
-    isAtBottomRef.current = true
-    const userMsg = { id: generateId(), role: 'user', text, imageRefs, fileNames }
-    const agentMsg = { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }
-    flushSync(() => {
-      setMessages(prev => {
-        const cur = prev[sid] || []
-        return { ...prev, [sid]: [...cur, userMsg, agentMsg].slice(-MAX_MESSAGES) }
-      })
-      setInput(prev => ({ ...prev, [sid]: '' }))
-      clearAttachments(sid)
-      setLoading(prev => ({ ...prev, [sid]: true }))
-    })
-    scrollToBottom()
-
-    const controller = new AbortController()
-    abortControllers.current[sid] = controller
-
+  useEffect(() => {
+    if (!sid) return undefined
     buffer.resetBuf(sid)
-
-    try {
-      const formData = new FormData()
-      formData.append('message', text)
-      for (const item of items) {
-        formData.append('files', item.file)
+    const from = offsetRef.current[sid]
+    const url = from != null
+      ? `${API_BASE}/jsonl/stream/${encodeURIComponent(sid)}?from=${encodeURIComponent(from)}`
+      : `${API_BASE}/jsonl/stream/${encodeURIComponent(sid)}`
+    const es = new EventSource(url)
+    es.onmessage = (e) => {
+      if (e.lastEventId) offsetRef.current[sid] = e.lastEventId
+      if (!e.data) return
+      let event
+      try {
+        event = JSON.parse(e.data)
+      } catch {
+        return
       }
-
-      const res = await fetch(`${API_BASE}/chat/${sid}/stream`, {
-        method: 'POST',
-        body: formData,
-        signal: controller.signal,
-      })
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n')
-        buf = lines.pop()
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const data = line.slice(6).trim()
-          if (!data) continue
-
-          try {
-            processStreamEvent(reconnect.eventDeps, sid, JSON.parse(data))
-          } catch { /* ignored */ }
-        }
-      }
-
-      if (await reconnect.reconnectIfStreaming(sid)) return
-    } catch (e) {
-      if (e.name === 'AbortError') return
-      if (!isCurrentGen()) return
-      const errText = describeError(e)
-      const recovered = await reconnect.reconnectIfStreaming(sid)
-      if (!recovered) {
-        if (!isCurrentGen()) return
-        buffer.cancelAndFlush(sid)
-        setMessages(prev => {
-          const msgs = prev[sid] || []
-          const last = msgs[msgs.length - 1]
-          if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
-          // 直前の空 streaming placeholder（推論中... 表示中の bubble）が残ってると
-          // 「推論中... + ネットワークエラー」 の見た目で固まってしまう。 中身ゼロなら削除してから error を入れる。
-          const isEmptyPlaceholder = (
-            last?.role === 'agent' &&
-            last.streaming &&
-            !last.text &&
-            !(last.tools?.length) &&
-            !last.askUserQuestion &&
-            !last.thinking
-          )
-          const base = isEmptyPlaceholder ? msgs.slice(0, -1) : msgs
-          return { ...prev, [sid]: [...base, { id: generateId(), role: 'error', text: errText }] }
-        })
-      }
-    } finally {
-      if (isCurrentGen()) {
-        buffer.cancelAndFlush(sid)
-        if (!reconnect.reconnectingRef.current[sid]) {
-          const handledByReconnect = await reconnect.reconnectIfStreaming(sid)
-          if (!handledByReconnect && isCurrentGen()) {
-            setLoading(prev => ({ ...prev, [sid]: false }))
-            setMessages(prev => {
-              if (!isCurrentGen()) return prev
-              const cur = prev[sid] || []
-              const msgs = [...cur]
-              if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
-                msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
-              }
-              return { ...prev, [sid]: msgs }
-            })
-            if (abortControllers.current[sid] === controller) {
-              abortControllers.current[sid] = null
-            }
-          }
-        }
-      }
+      handleEventRef.current?.(sid, event)
     }
-  }
+    es.onerror = () => { /* EventSource は自動再接続 (= Last-Event-ID で差分) */ }
+    return () => {
+      es.close()
+      buffer.cancelAndFlush(sid)
+    }
+  }, [sid]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const sendAnswer = async (sid, tool_use_id, answer) => {
-    setMessages(prev => {
-      const cur = prev[sid] || []
-      const msgs = cur.map(m => {
-        if (m.askUserQuestion?.tool_use_id !== tool_use_id) return m
-        return { ...m, askUserQuestion: { ...m.askUserQuestion, answered: true, selectedAnswer: answer, lastError: null } }
-      })
-      return { ...prev, [sid]: msgs }
-    })
+  // chat UI の操作 → tmux session にキー送信 (= 出力 SSE と分離)。
+  const sendToPty = useCallback(async (targetSid, body) => {
     try {
-      const res = await fetch(`${API_BASE}/chat/${sid}/answer`, {
+      await fetch(`${API_BASE}/pty/${encodeURIComponent(targetSid)}/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answer }),
+        body: JSON.stringify(body),
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    } catch (e) {
-      const errText = describeError(e)
-      setMessages(prev => {
-        const cur = prev[sid] || []
-        const msgs = cur.map(m => {
-          if (m.askUserQuestion?.tool_use_id !== tool_use_id) return m
-          return { ...m, askUserQuestion: { ...m.askUserQuestion, answered: false, selectedAnswer: null, lastError: errText } }
-        })
-        return { ...prev, [sid]: msgs }
-      })
-    }
-  }
+    } catch { /* 送信失敗は握りつぶす (= 次操作で復帰) */ }
+  }, [])
 
-  const stopMessage = async () => {
-    const sid = activeSession?.id
+  const sendMessage = useCallback(async () => {
     if (!sid) return
-    if (abortControllers.current[sid]) {
-      abortControllers.current[sid].abort()
-      abortControllers.current[sid] = null
-    }
-    try {
-      await fetch(`${API_BASE}/chat/${sid}/stop`, { method: 'POST' })
-    } catch { /* ignored */ }
-    pendingRequestIdRef.current[sid] = null
+    const text = (input[sid] || '').trim()
+    if (!text || loading[sid]) return
+    setInput(prev => ({ ...prev, [sid]: '' }))
+    setLoading(prev => ({ ...prev, [sid]: true }))
+    // backend が assistant を JSONL に書くまでの間、 楽観的に停止ボタンを出す。
+    pendingSendUntilRef.current[sid] = Date.now() + 1500
+    if (isAtBottomRef) isAtBottomRef.current = true
+    scrollToBottom()
+    await sendToPty(sid, { text, enter: true })
+  }, [sid, input, loading, setInput, scrollToBottom, sendToPty, isAtBottomRef])
+
+  const stopMessage = useCallback(async () => {
+    if (!sid) return
+    await sendToPty(sid, { key: 'Escape' })
     setLoading(prev => ({ ...prev, [sid]: false }))
-    buffer.cancelAndFlush(sid)
-    setMessages(prev => {
-      const cur = prev[sid] || []
-      const msgs = [...cur]
-      if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
-        msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
-      }
-      return { ...prev, [sid]: msgs }
-    })
-  }
+    pendingSendUntilRef.current[sid] = 0
+  }, [sid, sendToPty])
 
-  const endSession = async () => {
-    const sid = activeSession?.id
-    if (!sid) return
-    await fetch(`${API_BASE}/sessions/${sid}/end`, { method: 'POST' })
+  const sendAnswer = useCallback(async (targetSid, tool_use_id, answer) => {
+    // AskUserQuestion の回答を tmux に流す (= MVP は answer テキスト + Enter)。
+    await sendToPty(targetSid, { text: answer, enter: true })
     setMessages(prev => {
-      const cur = prev[sid] || []
-      // kind: 'session_end' を付けて prune ロジックの境界マーカーにする
-      const ended = [
-        ...cur,
-        { id: generateId(), role: 'system', kind: 'session_end', text: '--- セッション終了 ---' },
-      ]
-      return { ...prev, [sid]: ended }
+      const cur = prev[targetSid] || []
+      const msgs = cur.map(m =>
+        m.askUserQuestion?.tool_use_id === tool_use_id
+          ? { ...m, askUserQuestion: { ...m.askUserQuestion, answered: true, selectedAnswer: answer } }
+          : m,
+      )
+      return { ...prev, [targetSid]: msgs }
     })
-  }
+  }, [sendToPty, setMessages])
+
+  const endSession = useCallback(async () => {
+    if (!sid) return
+    await sendToPty(sid, { text: '/exit', enter: true })
+  }, [sid, sendToPty])
+
+  // 常時 tail + EventSource 自動再接続なので明示 fetch は不要。 scroll だけ最新へ寄せる。
+  const fetchLatest = useCallback(() => {
+    scrollToBottom()
+  }, [scrollToBottom])
 
   return {
     loading,
-    setLoading,  // App.jsx から status.streaming を直接反映するために expose
+    setLoading,
     apiKeySource,
     sendMessage,
     sendAnswer,
     stopMessage,
-    fetchLatest: reconnect.fetchLatest,
+    fetchLatest,
     endSession,
-    // visibility 復帰抑止の deadline (= App.jsx の buffer_length watcher が見る)
-    visibilitySuppressUntilRef: reconnect.visibilitySuppressUntilRef,
-    // 楽観的 pending deadline (= App.jsx の showStopButton 計算で OR 合成)
+    visibilitySuppressUntilRef,
     pendingSendUntilRef,
   }
 }

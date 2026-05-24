@@ -11,6 +11,7 @@
   },
   "claude_path": "/path/to/claude",
   "rate_limits_log": "/path/to/rate-limits.jsonl",
+  "tmux_session_map_dir": "/path/to/tmux-session-map",
   "vapid_sub": "mailto:you@example.com",
   "notification_title": "Notification",
   "cors_allow_origins": []

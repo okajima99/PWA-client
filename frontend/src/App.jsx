@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from 'react'
 import './App.css'
 import MessageItem from './components/MessageItem.jsx'
+import Terminal from './components/Terminal.jsx'
 import ActivityBar from './components/ActivityBar.jsx'
 import StatusBar from './components/StatusBar.jsx'
 import StorageWarning from './components/StorageWarning.jsx'
@@ -87,6 +88,26 @@ export default function App() {
   const activeSid = activeSession?.id || null
 
   const { messages, setMessages, input, setInput } = useChatStorage(sessions)
+  // タブごとの表示モード (= 'chat' | 'terminal')。 デバッグ用に生 xterm を見たいタブだけ
+  // terminal にし、 localStorage で永続化する (= そのタブはターミナル、 別タブは chat)。
+  const [viewModes, setViewModes] = useState(() => {
+    try {
+      const raw = localStorage.getItem('cpc_view_modes')
+      if (raw) return JSON.parse(raw) || {}
+    } catch { /* ignore */ }
+    return {}
+  })
+  useEffect(() => {
+    try { localStorage.setItem('cpc_view_modes', JSON.stringify(viewModes)) } catch { /* ignore */ }
+  }, [viewModes])
+  const activeViewMode = activeSid ? (viewModes[activeSid] || 'chat') : 'chat'
+  const toggleViewMode = useCallback(() => {
+    if (!activeSid) return
+    setViewModes(prev => ({
+      ...prev,
+      [activeSid]: (prev[activeSid] || 'chat') === 'terminal' ? 'chat' : 'terminal',
+    }))
+  }, [activeSid])
   const { attachments, fileInputRef, handleFileSelect, removeAttachment, clearAttachments } = useAttachments(activeSession)
   const status = useStatus(activeSession)
   const {
@@ -495,20 +516,26 @@ export default function App() {
       {/* メッセージ一覧。 .messages は通常 flex-direction: column、 古い→新しい が上→下。
         起動 / 新着時は useAutoScroll が JS で scrollTop = scrollHeight に送って底辺維持。 */}
       <div className="messages-container">
-        <div ref={scrollerDomRef} className="messages" onScroll={onScroll}>
-          {displayMessages.map((msg) => (
-            <MessageItem
-              key={msg.id}
-              msg={msg}
-              onOpenFile={handleOpenPath}
-              onAnswer={handleAnswer}
-              apiKeySource={activeSid ? apiKeySource[activeSid] : null}
-              activeSubagentTool={status?.subagent?.last_tool || null}
-            />
-          ))}
-        </div>
+        {activeViewMode === 'terminal' && activeSid ? (
+          /* デバッグ用 生 xterm (= このタブだけ terminal 表示、 設定は localStorage 永続)。
+             key=activeSid で session 単位に独立 instance を保つ。 */
+          <Terminal key={activeSid} sessionId={activeSid} />
+        ) : (
+          <div ref={scrollerDomRef} className="messages" onScroll={onScroll}>
+            {displayMessages.map((msg) => (
+              <MessageItem
+                key={msg.id}
+                msg={msg}
+                onOpenFile={handleOpenPath}
+                onAnswer={handleAnswer}
+                apiKeySource={activeSid ? apiKeySource[activeSid] : null}
+                activeSubagentTool={status?.subagent?.last_tool || null}
+              />
+            ))}
+          </div>
+        )}
 
-        {showScrollBtn && (
+        {activeViewMode !== 'terminal' && showScrollBtn && (
           <button className="scroll-btn" onClick={() => scrollToBottom()} aria-label="最新メッセージへ">
             ↓
             {hasNew && <span className="scroll-dot" />}
@@ -542,13 +569,15 @@ export default function App() {
           style={{ display: 'none' }}
           onChange={handleFileSelect}
         />
-        <textarea
-          value={activeSid ? (input[activeSid] || '') : ''}
-          onChange={e => activeSid && setInput(prev => ({ ...prev, [activeSid]: e.target.value }))}
-          placeholder={activeSession ? 'メッセージを入力...' : '左の ☰ から会話を作成してください'}
-          rows={2}
-          disabled={inputDisabled}
-        />
+        {activeViewMode !== 'terminal' && (
+          <textarea
+            value={activeSid ? (input[activeSid] || '') : ''}
+            onChange={e => activeSid && setInput(prev => ({ ...prev, [activeSid]: e.target.value }))}
+            placeholder={activeSession ? 'メッセージを入力...' : '左の ☰ から会話を作成してください'}
+            rows={2}
+            disabled={inputDisabled}
+          />
+        )}
         <div className="buttons" ref={menuRef}>
           {menuOpen && (
             <div className="action-menu">
@@ -557,6 +586,13 @@ export default function App() {
               </button>
               <button onClick={() => { setTreeOpen('~'); setMenuOpen(false) }} className="menu-item">
                 ファイルツリー
+              </button>
+              <button
+                onClick={() => { toggleViewMode(); setMenuOpen(false) }}
+                className="menu-item"
+                disabled={!activeSession}
+              >
+                {activeViewMode === 'terminal' ? '💬 チャットで表示' : '⌨ ターミナルで表示'}
               </button>
               {activeSession && (
                 <button
@@ -582,7 +618,7 @@ export default function App() {
           >
             ⋯
           </button>
-          {showStopButton ? (
+          {activeViewMode !== 'terminal' && (showStopButton ? (
             <button onClick={() => setConfirmStop(true)} className="stop" aria-label="停止">■</button>
           ) : (
             <button
@@ -593,7 +629,7 @@ export default function App() {
             >
               送信
             </button>
-          )}
+          ))}
         </div>
       </div>
 

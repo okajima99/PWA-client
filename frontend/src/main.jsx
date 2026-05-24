@@ -17,14 +17,14 @@ if ('serviceWorker' in navigator) {
 
 // ルーティング:
 //   `?terminal=<id>`      → xterm.js single-shot (= debug / 直リンク用)
-//   `?legacy=1`           → 旧 chat UI (= 移行期間の保険、 後で削除予定)
-//   それ以外              → TerminalApp (= 既存 UI + Terminal 差し替え)
+//   `?terminalapp=1`      → TerminalApp (= 生 xterm 版、 退路 / debug 用)
+//   それ以外              → App (= chat UI、 受信 JSONL / 送信 tmux send-keys に差し替え済み)
 const params = new URLSearchParams(window.location.search)
 const terminalSessionId = (() => {
   const sid = params.get('terminal')
   return sid && sid.trim() ? sid.trim() : null
 })()
-const legacyMode = params.get('legacy') === '1'
+const terminalAppMode = params.get('terminalapp') === '1'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -33,10 +33,10 @@ createRoot(document.getElementById('root')).render(
         <div style={{ position: 'fixed', inset: 0, background: '#0e0f12' }}>
           <Terminal sessionId={terminalSessionId} />
         </div>
-      ) : legacyMode ? (
-        <App />
-      ) : (
+      ) : terminalAppMode ? (
         <TerminalApp />
+      ) : (
+        <App />
       )}
     </ErrorBoundary>
   </StrictMode>,

@@ -41,6 +41,12 @@ RATE_LIMITS_LOG_PATH = config.get("rate_limits_log", "")
 # 切替は config.json に `use_pty_runner: true` を追加 + backend 再起動。
 USE_PTY_RUNNER: bool = bool(config.get("use_pty_runner", False))
 
+# --- chat UI の JSONL 解決 ---
+# statusline が「tmux session 名 → claude session id」 を 1 session = 1 ファイルで書き出す
+# ディレクトリ。 複数タブが同じ cwd を共有しても JSONL を一意特定するのに使う。 未設定なら
+# 最新 mtime の fallback だけで動く。
+TMUX_SESSION_MAP_DIR: str = config.get("tmux_session_map_dir", "")
+
 # --- Web Push 関連 ---
 # VAPID claim の sub (連絡先)。デフォルトは汎用 mailto。
 VAPID_SUB = config.get("vapid_sub", "mailto:admin@example.com")

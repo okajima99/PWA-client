@@ -20,7 +20,7 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, WebSocket, WebSocketDisconnect
 
 from config import AGENTS, USE_PTY_RUNNER
 from pty_runner import (
@@ -29,6 +29,7 @@ from pty_runner import (
     pty_sessions,
     resize_pty,
     spawn_pty_session,
+    tmux_send_keys,
     write_pty,
 )
 from state import sessions_meta
@@ -162,6 +163,26 @@ async def _pump_from_client(ws: WebSocket, session: PtySession) -> None:
         return
     except Exception:
         logger.exception("_pump_from_client error session=%s", session.session_id)
+
+
+@router.post("/pty/{session_id}/send")
+async def pty_send(session_id: str, payload: dict = Body(...)) -> dict:
+    """chat UI からの入力を tmux session に送る (= send-keys 経路、 PTY attach 不要)。
+
+    payload:
+        text  (str, optional): literal 文字列 (= プロンプト本文)
+        key   (str, optional): tmux キー名 (= "Escape" で停止、 "C-c" 等)
+        enter (bool, optional): 末尾に Enter (= 確定)
+    """
+    if not USE_PTY_RUNNER:
+        return {"ok": False, "reason": "USE_PTY_RUNNER is false"}
+    ok = tmux_send_keys(
+        session_id,
+        text=payload.get("text"),
+        key=payload.get("key"),
+        enter=bool(payload.get("enter", False)),
+    )
+    return {"ok": ok}
 
 
 @router.get("/api/agents")

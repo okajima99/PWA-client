@@ -9,6 +9,7 @@
 import { useMemo, useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react'
 import './App.css'
 import Terminal from './components/Terminal.jsx'
+import ChatView from './components/ChatView.jsx'
 import StorageWarning from './components/StorageWarning.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
 import { useSessions } from './hooks/useSessions.js'
@@ -42,6 +43,8 @@ export default function TerminalApp() {
 
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [desktopOpen, setDesktopOpen] = useState(false)
+  // 'chat' = JSONL 駆動の chat UI (= 主)、 'terminal' = 生 xterm (= 退路 / 複雑 TUI 操作用)
+  const [viewMode, setViewMode] = useState('chat')
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [treeOpen, setTreeOpen] = useState(null)
   const [previewPath, setPreviewPath] = useState(null)
@@ -84,6 +87,14 @@ export default function TerminalApp() {
         <span className="topbar-title">
           {activeSession?.title || 'terminal なし'}
         </span>
+        <button
+          className="view-toggle"
+          onClick={() => setViewMode(m => (m === 'chat' ? 'terminal' : 'chat'))}
+          aria-label={viewMode === 'chat' ? 'ターミナル表示に切替' : 'チャット表示に切替'}
+          title={viewMode === 'chat' ? 'ターミナル表示に切替' : 'チャット表示に切替'}
+        >
+          {viewMode === 'chat' ? '⌨' : '💬'}
+        </button>
         {moonlightAvailable && (
           <button
             className={`screen-toggle ${desktopOpen ? 'active' : ''}`}
@@ -124,23 +135,29 @@ export default function TerminalApp() {
         </Suspense>
       )}
 
-      <div style={{ flex: 1, minHeight: 0, position: 'relative', background: '#0e0f12' }}>
-        {/* 各セッションの Terminal を全部マウントして、 active 以外は display:none。
-            こうしないと activeId 変更で remount され、 xterm scrollback + ws + 描画
-            位置が毎回リセットされて「タブ切替後にスクロール基準点が壊れる」 症状が出る。
-            sessionId を key にして session 単位に独立 instance を保持。 */}
-        {sessions.map(s => (
-          <div
-            key={s.id}
-            style={{
-              position: 'absolute',
-              inset: 0,
-              display: s.id === activeId ? 'block' : 'none',
-            }}
-          >
-            <Terminal sessionId={s.id} />
-          </div>
-        ))}
+      <div style={{ flex: 1, minHeight: 0, position: 'relative', background: '#0e0f12', display: 'flex', flexDirection: 'column' }}>
+        {/* chat モード: JSONL 駆動の chat UI (= active session のみ mount、 履歴は SSE
+            replay で復元)。 terminal モード: 生 xterm (= 退路 / 複雑 TUI 操作用、 全 session を
+            mount して active 以外は display:none で scrollback / ws / 描画位置を保持)。 */}
+        <div style={{ display: viewMode === 'chat' ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+          {activeId && (
+            <ChatView activeSession={activeSession} onOpenFile={handleOpenPath} />
+          )}
+        </div>
+        <div style={{ display: viewMode === 'terminal' ? 'block' : 'none', flex: 1, minHeight: 0, position: 'relative' }}>
+          {sessions.map(s => (
+            <div
+              key={s.id}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: s.id === activeId ? 'block' : 'none',
+              }}
+            >
+              <Terminal sessionId={s.id} />
+            </div>
+          ))}
+        </div>
         {!activeId && (
           <div
             style={{

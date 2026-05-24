@@ -295,6 +295,47 @@ def capture_tmux_scrollback(session_id: str, lines: int = 5000) -> bytes:
     return result.stdout.rstrip(b"\n")
 
 
+def tmux_send_keys(
+    session_id: str,
+    text: str | None = None,
+    key: str | None = None,
+    enter: bool = False,
+) -> bool:
+    """tmux session に直接キーを送る (= chat UI の入力経路、 PTY attach 不要)。
+
+    出力は JSONL-SSE で取り、 入力はこの send-keys で送ることで、 chat UI が PTY に
+    attach せずに済む (= 生 terminal と干渉しない、 master fd の drain 不要)。
+
+    引数:
+        text: literal 文字列 (= `-l` で送る、 制御文字として解釈させない)
+        key:  tmux のキー名 (= "Escape" / "C-c" 等、 制御キー送信用)
+        enter: 末尾に Enter を送る (= プロンプト確定)
+
+    tmux session が存在しなければ False (= claude 未起動)。
+    """
+    if not USE_TMUX_WRAP:
+        return False
+    if not has_tmux_session(session_id):
+        return False
+    tmux_name = _tmux_session_name(session_id)
+    commands: list[list[str]] = []
+    if text:
+        commands.append([TMUX_BIN, "send-keys", "-t", tmux_name, "-l", text])
+    if key:
+        commands.append([TMUX_BIN, "send-keys", "-t", tmux_name, key])
+    if enter:
+        commands.append([TMUX_BIN, "send-keys", "-t", tmux_name, "Enter"])
+    if not commands:
+        return False
+    ok = True
+    for cmd in commands:
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode != 0:
+            ok = False
+            logger.warning("tmux send-keys failed session=%s cmd=%s", session_id, cmd[-2:])
+    return ok
+
+
 def kill_tmux_session(session_id: str) -> bool:
     """指定 session の tmux session を強制終了する (= 中の claude も死ぬ)。
 

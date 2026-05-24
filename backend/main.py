@@ -80,6 +80,7 @@ from state import sessions_meta, stream_states  # noqa: E402
 import chat_routes  # noqa: E402
 import files_routes  # noqa: E402
 import hooks_router  # noqa: E402
+import jsonl_routes  # noqa: E402
 import proxy_routes  # noqa: E402
 import pty_routes  # noqa: E402
 import pty_runner  # noqa: E402
@@ -158,6 +159,7 @@ if CORS_ALLOW_ORIGINS:
 app.include_router(chat_routes.router)
 app.include_router(files_routes.router)
 app.include_router(hooks_router.router)
+app.include_router(jsonl_routes.router)
 app.include_router(proxy_routes.router)
 app.include_router(pty_routes.router)
 app.include_router(push.router)
