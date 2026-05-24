@@ -350,6 +350,15 @@ export function formatToolResultContent(content) {
       .map(b => {
         if (b?.type === 'text') return stripAnsi(b.text ?? '')
         if (b?.type === 'image') return '[画像]'
+        // ToolSearch の result block: tool 名だけ抜き出す (= 旧経路では JSON.stringify
+        // で生表示されてた)
+        if (b?.type === 'tool_reference') return b.tool_name || '[tool_reference]'
+        // 未知 type: 既知 human-readable field を優先して生 JSON 表示を避ける。
+        // text / message / name / output 等が乗ってれば本文として扱う。
+        if (typeof b?.text === 'string') return stripAnsi(b.text)
+        if (typeof b?.message === 'string') return stripAnsi(b.message)
+        if (typeof b?.output === 'string') return stripAnsi(b.output)
+        if (typeof b?.name === 'string') return b.name
         return JSON.stringify(b)
       })
       .join('\n')
