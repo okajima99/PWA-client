@@ -2,7 +2,6 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
-import TerminalApp from './TerminalApp.jsx'
 import Terminal from './components/Terminal.jsx'
 import ErrorBoundary from './ErrorBoundary.jsx'
 
@@ -17,14 +16,13 @@ if ('serviceWorker' in navigator) {
 
 // ルーティング:
 //   `?terminal=<id>`      → xterm.js single-shot (= debug / 直リンク用)
-//   `?terminalapp=1`      → TerminalApp (= 生 xterm 版、 退路 / debug 用)
-//   それ以外              → App (= chat UI、 受信 JSONL / 送信 tmux send-keys に差し替え済み)
+//   それ以外              → App (= chat UI、 受信 JSONL / 送信 tmux send-keys。
+//                            生 xterm はタブ単位に ⋯メニューの「ターミナルで表示」 で切替)
 const params = new URLSearchParams(window.location.search)
 const terminalSessionId = (() => {
   const sid = params.get('terminal')
   return sid && sid.trim() ? sid.trim() : null
 })()
-const terminalAppMode = params.get('terminalapp') === '1'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -33,8 +31,6 @@ createRoot(document.getElementById('root')).render(
         <div style={{ position: 'fixed', inset: 0, background: '#0e0f12' }}>
           <Terminal sessionId={terminalSessionId} />
         </div>
-      ) : terminalAppMode ? (
-        <TerminalApp />
       ) : (
         <App />
       )}
