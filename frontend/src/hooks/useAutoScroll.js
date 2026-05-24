@@ -40,6 +40,14 @@ export function useAutoScroll({ messages, activeSession }) {
     el.scrollTop = el.scrollHeight
   }, [])
 
+  // sid 切替 / 初期マウント後の遅延 layout 追従用。 ユーザが既に上スクロールしてれば
+  // (= isAtBottomRef=false) 何もしない、 末尾追従中だけ底辺へ寄せ直す。
+  const scrollToBottomIfFollowing = useCallback(() => {
+    const el = scrollerDomRef.current
+    if (!el || !isAtBottomRef.current) return
+    el.scrollTop = el.scrollHeight
+  }, [])
+
   // 公開: 「↓ 最新へ」 ボタン or send 直後に呼ぶ用
   const scrollToBottom = useCallback(() => {
     const el = scrollerDomRef.current
@@ -54,7 +62,12 @@ export function useAutoScroll({ messages, activeSession }) {
     }, PROGRAMMATIC_SCROLL_GUARD_MS)
   }, [])
 
-  // 起動 / タブ切替: paint 前に底へ flush (= 前 session の scroll 残留防止)
+  // 起動 / タブ切替: paint 前に底へ flush (= 前 session の scroll 残留防止)。
+  // 加えて、 JSONL 初回 replay (= 数百〜2000 行が EventSource で順次到着) や
+  // localStorage 復元後の画像 / Markdown / コードブロックの遅延 layout で
+  // scrollHeight が paint 後にも伸び続ける。 複数 timing で末尾追従中の場合だけ
+  // 底辺へ寄せ直して、 「タブ切替したけど最下部じゃない」 を取り逃さない。
+  // ユーザが意図的に上スクロールしたら scrollToBottomIfFollowing 側で no-op になる。
   useLayoutEffect(() => {
     if (!sid) return
     isAtBottomRef.current = true
@@ -62,6 +75,10 @@ export function useAutoScroll({ messages, activeSession }) {
     setHasNew(false)
     msgLengthRef.current[sid] = (messages[sid] || []).length
     scrollToBottomSync()
+    const ids = [50, 150, 400, 1000, 2500].map(ms =>
+      setTimeout(scrollToBottomIfFollowing, ms)
+    )
+    return () => ids.forEach(clearTimeout)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid])
 
