@@ -57,14 +57,21 @@ def _assistant_events(line: dict) -> list[dict]:
                 "input": block.get("input") or {},
             })
 
-    # turn 完了時のメタ (= 直近 agent bubble に token / model を埋める)
-    if msg.get("stop_reason") == "end_turn":
+    # turn 完了時のメタ (= 直近 agent bubble に token / model を埋める)。
+    # tool_use は turn 継続中 (= 次の assistant 行で続く) なので result を合成しない。
+    # それ以外の確定 stop_reason (end_turn / max_tokens / refusal / pause_turn /
+    # model_context_window_exceeded 等) は全部 result として送って、 MessageItem の
+    # StopReasonChip / MetaLine / streaming flag を正しく落とす。
+    stop_reason = msg.get("stop_reason")
+    if stop_reason and stop_reason != "tool_use":
         model = msg.get("model")
         events.append({
             "type": "result",
             "usage": msg.get("usage"),
-            "stop_reason": "end_turn",
+            "stop_reason": stop_reason,
             "modelUsage": {model: {}} if model else None,
+            # refusal は MessageItem 側で danger chip を出させる。
+            "is_error": stop_reason == "refusal",
         })
 
     return events

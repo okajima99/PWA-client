@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -26,6 +27,8 @@ from config import TMUX_SESSION_MAP_DIR
 from jsonl_events import jsonl_line_to_events
 from pty_routes import _resolve_cwd
 from pty_runner import _tmux_session_name
+from state import agent_status, stream_states
+from usage import compute_ctx_pct, format_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -116,14 +119,101 @@ def _read_complete_lines(path: Path, pos: int) -> tuple[list[str], int]:
     return lines, new_pos
 
 
-def _lines_to_sse(lines: list[str], pos: int) -> list[str]:
+def _mutate_agent_status(session_id: str, line: dict) -> bool:
+    """JSONL 1 行から agent_status を更新する。 変化があれば True を返す
+    (= caller が status_event.set() するための合図)。
+
+    旧 sdk_runner._on_assistant_msg / _on_system_msg と同等の責務を JSONL 由来で果たす。
+    PTY 経路では SDK の structured message が無いので、 JSONL の type/content から
+    todos / plan_mode / current_tool / ctx_pct / model を直接拾う。
+    """
+    if not isinstance(line, dict) or line.get("isSidechain") or line.get("isMeta"):
+        return False
+    if session_id not in agent_status:
+        return False
+    a = agent_status[session_id]
+    changed = False
+    line_type = line.get("type")
+
+    if line_type == "assistant":
+        msg = line.get("message") or {}
+        # model 表示用 (= StatusBar 5h/7d/ctx と並ぶ model 名)
+        model_raw = msg.get("model")
+        if model_raw:
+            new_model = format_model_name(model_raw)
+            if a.get("model") != new_model:
+                a["model"] = new_model
+                changed = True
+        # usage → ctx_pct (= rate-limits.jsonl 由来とは別経路の保険)
+        usage = msg.get("usage")
+        if usage:
+            ctx_window = a.get("ctx_window") or 1_000_000
+            new_pct = compute_ctx_pct(usage, ctx_window)
+            if a.get("ctx_pct") != new_pct:
+                a["ctx_pct"] = new_pct
+                changed = True
+        # tool_use 解析: TodoWrite (進捗) / Enter|ExitPlanMode (plan_mode) / current_tool
+        content = msg.get("content") or []
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = block.get("name")
+                tool_id = block.get("id")
+                inp = block.get("input") or {}
+                if name == "TodoWrite":
+                    todos = inp.get("todos")
+                    if todos is not None and a.get("todos") != todos:
+                        a["todos"] = todos
+                        changed = True
+                elif name == "ExitPlanMode" and a.get("plan_mode"):
+                    a["plan_mode"] = False
+                    changed = True
+                elif name == "EnterPlanMode" and not a.get("plan_mode"):
+                    a["plan_mode"] = True
+                    changed = True
+                # current_tool: ActivityBar / 旧 SDK 経路と同型の「今走ってる tool」 情報
+                a["current_tool"] = {
+                    "name": name,
+                    "id": tool_id,
+                    "started_at": time.time(),
+                }
+                changed = True
+        # stop_reason 確定 turn では current_tool を解放 (= 次 turn 開始まで空に)
+        stop_reason = msg.get("stop_reason")
+        if stop_reason and stop_reason != "tool_use":
+            if a.get("current_tool") is not None:
+                a["current_tool"] = None
+                changed = True
+    elif line_type == "user":
+        # tool_result が来たら、 対応する current_tool が居れば解放
+        msg = line.get("message") or {}
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                cur = a.get("current_tool")
+                if cur and cur.get("id") == block.get("tool_use_id"):
+                    a["current_tool"] = None
+                    changed = True
+    return changed
+
+
+def _lines_to_sse(lines: list[str], pos: int, session_id: str) -> list[str]:
     """JSONL 行 (文字列) のリストを SSE フレームのリストに変換する。
 
     各フレームに `id: <pos>` (= この行群を読み終えた後のバイト位置) を付ける。 EventSource は
     受信した最後の id を保持し、 再接続時に `Last-Event-ID` ヘッダで送るので、 backend は
     そこから続きだけ流せる (= backend 再起動後の全 replay を回避)。
+
+    副作用: 各行で `_mutate_agent_status` を呼び、 todos / plan_mode / current_tool /
+    ctx_pct / model を更新する。 変化があれば最後に status_event.set() を打って
+    `/status/{sid}/stream` SSE を即時 push (= ActivityBar / StopReasonChip を再描画)。
     """
     frames: list[str] = []
+    state = stream_states.get(session_id)
+    status_dirty = False
     for raw in lines:
         raw = raw.strip()
         if not raw:
@@ -132,8 +222,12 @@ def _lines_to_sse(lines: list[str], pos: int) -> list[str]:
             obj = json.loads(raw)
         except json.JSONDecodeError:
             continue
+        if _mutate_agent_status(session_id, obj):
+            status_dirty = True
         for event in jsonl_line_to_events(obj):
             frames.append(f"id: {pos}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n")
+    if status_dirty and state is not None:
+        state.status_event.set()
     return frames
 
 
@@ -176,7 +270,7 @@ async def _jsonl_sse(session_id: str, start_pos: int | None = None):
 
     # 初回 replay (= 再接続時は start_pos 以降のみ = 差分)
     lines, pos = _read_complete_lines(path, pos)
-    for frame in _lines_to_sse(lines, pos):
+    for frame in _lines_to_sse(lines, pos, session_id):
         yield frame
 
     # tail: 新規追記行を追従する
@@ -192,7 +286,7 @@ async def _jsonl_sse(session_id: str, start_pos: int | None = None):
             pos = 0
         if size > pos:
             lines, pos = _read_complete_lines(path, pos)
-            frames = _lines_to_sse(lines, pos)
+            frames = _lines_to_sse(lines, pos, session_id)
             if frames:
                 for frame in frames:
                     yield frame
