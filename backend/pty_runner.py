@@ -565,15 +565,40 @@ def jsonl_path_for_session(session_id: str) -> Path | None:
         cwd = _process_cwd(claude_pid)
         if start_time is None or cwd is None:
             continue
-        sid = _fresh_map_sid(session_id, start_time)
-        if sid is None:
-            continue
         proj = _cwd_to_project_dir(str(Path(cwd).expanduser()))
-        path = proj / f"{sid}.jsonl"
-        if not path.is_file():
+        if not proj.is_dir():
             continue
-        _jsonl_pid_cache[session_id] = (claude_pid, path, now)
-        return path
+
+        # 主経路: statusline が書いた map が claude プロセス起動以降の mtime で、
+        # かつそれが指す JSONL が実在する
+        sid = _fresh_map_sid(session_id, start_time)
+        if sid:
+            path = proj / f"{sid}.jsonl"
+            if path.is_file():
+                _jsonl_pid_cache[session_id] = (claude_pid, path, now)
+                return path
+
+        # 副経路: claude プロセス起動時刻以降に birth した JSONL のみ採用、 mtime 最新を選ぶ。
+        # 既存 JSONL (= 別 claude プロセスが過去に書いたもの) は birthtime が claude 起動時刻
+        # より古いので構造的に除外される。 同 cwd で並行する他 claude プロセスが同タイミング
+        # で /clear して新 JSONL を birth させた場合のみ衝突するが、 通常運用では ms オーダ
+        # の衝突は起きない。
+        candidates: list[tuple[Path, float]] = []
+        for j in proj.glob("*.jsonl"):
+            try:
+                stat = j.stat()
+            except OSError:
+                continue
+            birth = getattr(stat, "st_birthtime", None)
+            if birth is None:
+                continue
+            if birth >= start_time - 1.0:
+                candidates.append((j, stat.st_mtime))
+        if candidates:
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            chosen = candidates[0][0]
+            _jsonl_pid_cache[session_id] = (claude_pid, chosen, now)
+            return chosen
 
     _jsonl_pid_cache.pop(session_id, None)
     return None

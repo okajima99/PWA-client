@@ -446,6 +446,11 @@ def _initial_offset(path: Path) -> int:
 
 
 async def _jsonl_sse(session_id: str, start_pos: int | None = None):
+    # チャット画面のみ開いてターミナル画面に切り替えていないタブでも claude を起動させる。
+    # 既に tmux + claude が動いていれば no-op。
+    from pty_routes import ensure_pty_session_for
+    await ensure_pty_session_for(session_id)
+
     path = _latest_jsonl(session_id)
     if path is None:
         yield f"data: {json.dumps({'type': 'error', 'message': 'no JSONL found for session'})}\n\n"

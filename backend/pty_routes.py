@@ -27,6 +27,7 @@ from config import AGENTS, USE_PTY_RUNNER
 from pty_runner import (
     PtySession,
     capture_tmux_scrollback,
+    has_tmux_session,
     pty_sessions,
     resize_pty,
     spawn_pty_session,
@@ -58,6 +59,36 @@ def _resolve_agent_cfg(session_id: str) -> dict | None:
     if meta is not None:
         return AGENTS.get(meta.agent_id)
     return None
+
+
+async def ensure_pty_session_for(session_id: str) -> None:
+    """指定 session の tmux + claude を起動 (既にあれば何もしない)。
+
+    `/ws/pty/{sid}` (= ターミナル画面) 経由だけでなく、 `/jsonl/stream/{sid}`
+    (= チャット画面) からも呼ぶことで、 ターミナル画面を一度も開いていないタブでも
+    claude が立ち上がって JSONL が作られるようにする。
+    """
+    if not USE_PTY_RUNNER:
+        return
+    existing = pty_sessions.get(session_id)
+    if existing is not None and not existing.exit_event.is_set():
+        return
+    if has_tmux_session(session_id):
+        # tmux session は生きてるが backend 側に PtySession 記録が無い (= backend 再起動跨ぎ)。
+        # チャット画面側からは attach の必要なし。 JSONL は claude プロセスが書き続けてるので
+        # 解決経路 (= jsonl_path_for_session) が拾える。 spawn 重複も避ける
+        return
+    cfg = _resolve_agent_cfg(session_id) or {}
+    cwd = cfg.get("cwd")
+    launch_alias = cfg.get("launch_alias")
+    try:
+        session = await spawn_pty_session(
+            session_id, cwd=cwd, launch_alias=launch_alias,
+        )
+    except Exception:
+        logger.exception("ensure_pty_session_for: spawn failed session=%s", session_id)
+        return
+    pty_sessions[session_id] = session
 
 logger = logging.getLogger(__name__)
 
