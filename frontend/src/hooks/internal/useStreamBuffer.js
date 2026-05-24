@@ -60,17 +60,26 @@ export function useStreamBuffer({ setMessages }) {
         && !last.askUserQuestion
 
       if (snap.needsNewBubble) {
-        // 重複 dedup (= reconnect / replay 時): 同じ AssistantMessage uuid を持つ bubble が
-        // 既に messages 内にあれば、 content を上書きして補完する。 通常受信中は同 uuid が
-        // 2 度来ることは無いので無害、 replay では partial bubble が完全形に埋め直される。
+        // 同 uuid (= Anthropic message.id) の追加 frame と reconnect / replay 時の
+        // 二重到着を兼用で吸収する。 JSONL は 1 つの assistant message を複数行に分けて
+        // partial で書く (= tool_use を別行で追記する等) ので、 後から来たフレームの
+        // content (= 新規 tool_use) を**既存 bubble に追記マージ**する。
+        // 上書きでなくマージなのが重要: 旧実装は tools = [...snap.newTools] で
+        // 既存 tool を消してた → multi-frame の 2 個目で 1 個目が消える bug。
         if (snap.uuid) {
           const existIdx = msgs.findIndex(m => m.uuid === snap.uuid)
           if (existIdx >= 0) {
+            const existing = msgs[existIdx]
+            const existingTools = existing.tools || []
+            const existingIds = new Set(existingTools.map(t => t.id))
+            const addedTools = (snap.newTools || []).filter(t => !existingIds.has(t.id))
             msgs[existIdx] = {
-              ...msgs[existIdx],
-              text: snap.text || '',
-              thinking: snap.thinking || null,
-              tools: [...(snap.newTools || [])],
+              ...existing,
+              // text / thinking は frame ごとに完全形で来るので、 非空なら新値、 空なら既存維持
+              text: snap.text || existing.text || '',
+              thinking: snap.thinking || existing.thinking || null,
+              tools: addedTools.length > 0 ? [...existingTools, ...addedTools] : existingTools,
+              streaming: existing.streaming,
             }
             return { ...prev, [sid]: msgs }
           }

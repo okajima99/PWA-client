@@ -40,10 +40,15 @@ def _assistant_events(line: dict) -> list[dict]:
     if not isinstance(content, list):
         return []
 
+    # claude は 1 Anthropic message を複数 JSONL 行に分けて書く (= 同 message.id で
+    # tool_use ブロックを別行で出す等)。 frontend の useStreamBuffer は uuid 単位で
+    # bubble を dedup / merge するので、 行固有の line uuid ではなく message.id を
+    # 使うことで「同じ assistant 発言」 を 1 bubble に集約させる。
+    bubble_uuid = msg.get("id") or line.get("uuid")
     events: list[dict] = [{
         "type": "assistant",
         "message": {"content": content},
-        "uuid": line.get("uuid"),
+        "uuid": bubble_uuid,
     }]
 
     # AskUserQuestion は専用 bubble 用に別 event でも出す (= assistant 側は tool から除外される)
