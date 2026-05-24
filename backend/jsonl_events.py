@@ -49,7 +49,36 @@ def jsonl_line_to_events(line: dict) -> list[dict]:
         return _assistant_events(line)
     if line_type == "user":
         return _user_events(line)
+    if line_type == "system":
+        return _system_events(line)
     return []
+
+
+def _system_events(line: dict) -> list[dict]:
+    """system 行のうち frontend にとって意味があるものだけを event 化する。
+
+    - subtype=compact_boundary: 会話圧縮の境界。 CompactBanner として横線 + 圧縮メタを
+      表示するため `compactMetadata` を frontend 互換キー (旧 SDK SystemMessage と同型) で
+      載せる。 metadata 各 field は推測 spec (= 他 system subtype が top-level に同名 field を
+      持つ整合性ベース)、 取れなければ null で banner だけ出せばよい。
+
+    他 subtype (= stop_hook_summary / api_error / turn_duration / away_summary /
+    scheduled_task_fire / 等) は chat 表示に出さないので skip。
+    """
+    sub = line.get("subtype")
+    if sub != "compact_boundary":
+        return []
+    return [{
+        "type": "system",
+        "subtype": "compact_boundary",
+        "uuid": line.get("uuid"),
+        "compactMetadata": {
+            "trigger": line.get("trigger"),
+            "preTokens": line.get("preTokens"),
+            "postTokens": line.get("postTokens"),
+            "durationMs": line.get("durationMs"),
+        },
+    }]
 
 
 def _assistant_events(line: dict) -> list[dict]:

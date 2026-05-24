@@ -214,3 +214,45 @@ def test_local_command_stderr_skipped():
         },
     }
     assert jsonl_line_to_events(line) == []
+
+
+def test_compact_boundary_emits_event():
+    # spec 推測: system 行は top-level に subtype + metadata 各 field を直接持つ
+    # (= turn_duration が durationMs を top-level に持つのと同パターン)
+    line = {
+        "type": "system",
+        "subtype": "compact_boundary",
+        "uuid": "u-compact",
+        "trigger": "auto",
+        "preTokens": 180000,
+        "postTokens": 45000,
+        "durationMs": 1200,
+        "timestamp": "2026-05-24T18:30:00.000Z",
+    }
+    events = jsonl_line_to_events(line)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["type"] == "system"
+    assert ev["subtype"] == "compact_boundary"
+    assert ev["uuid"] == "u-compact"
+    assert ev["compactMetadata"] == {
+        "trigger": "auto",
+        "preTokens": 180000,
+        "postTokens": 45000,
+        "durationMs": 1200,
+    }
+
+
+def test_compact_boundary_with_missing_metadata():
+    # metadata 欠落でも banner だけ出せる (= 中身 None で frontend が安全に render)
+    line = {"type": "system", "subtype": "compact_boundary", "uuid": "u-compact-min"}
+    events = jsonl_line_to_events(line)
+    assert len(events) == 1
+    assert events[0]["compactMetadata"]["trigger"] is None
+
+
+def test_other_system_subtypes_skipped():
+    # turn_duration / api_error / stop_hook_summary 等は chat に出さない
+    for sub in ("turn_duration", "api_error", "stop_hook_summary", "away_summary"):
+        line = {"type": "system", "subtype": sub, "uuid": f"u-{sub}"}
+        assert jsonl_line_to_events(line) == [], f"failed for subtype={sub}"
