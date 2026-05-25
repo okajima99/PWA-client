@@ -119,6 +119,30 @@ async def hooks_event(request: Request) -> dict:
     # 呼ぶ hook だけ X-PWA-SID header を持つ (= Desktop App / ターミナル直叩きの claude は
     # PWA_SID env が無いので header が空 → ここで弾かれる)。 /clear で source=clear で
     # 再発火するので新 claude_sid に自動追従する。
+    # PreToolUse(AskUserQuestion): 質問が表示された瞬間にリアルタイム発火する
+    # (= JSONL は回答まで flush されないので tail では検出不可、 実測で確認済み)。
+    # ここで pending_question を立てて status SSE 経由で frontend にライブ表示させる。
+    # PWA 判定は X-PWA-SID header (= statusline map 逆引きに依存しない確定経路、
+    # SessionStart と同じ)。 tool_use_id は payload に無いので None で立て、 回答後 flush
+    # の JSONL AskUserQuestion tool_use 行から補完する (= jsonl_routes._mutate_agent_status)。
+    if event == "PreToolUse":
+        pwa_sid_hdr = request.headers.get("x-pwa-sid", "").strip()
+        tool_name = payload.get("tool_name")
+        tool_input = payload.get("tool_input") or {}
+        if tool_name == "AskUserQuestion" and pwa_sid_hdr:
+            questions = tool_input.get("questions") or []
+            a = agent_status.get(pwa_sid_hdr)
+            if a is not None and questions:
+                a["pending_question"] = {"tool_use_id": None, "questions": questions}
+                st = stream_states.get(pwa_sid_hdr)
+                if st is not None:
+                    st.status_event.set()
+                logger.info(
+                    "PreToolUse AskUserQuestion → pending_question set: pwa_sid=%s nq=%d",
+                    pwa_sid_hdr, len(questions),
+                )
+        return {"ok": True, "observed": tool_name}
+
     if event == "SessionStart":
         pwa_sid_hdr = request.headers.get("x-pwa-sid", "").strip()
         transcript = payload.get("transcript_path")

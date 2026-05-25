@@ -81,7 +81,9 @@ export function useChatStream({
       }
       if (event.type === 'assistant') {
         setLoading(prev => (prev[curSid] ? prev : { ...prev, [curSid]: true }))
-      } else if (event.type === 'result') {
+      } else if (event.type === 'result' || event.type === 'ask_user_question') {
+        // result = turn 完了。 ask_user_question = stop_reason=tool_use で result が
+        // 来ないまま回答待ちに入るので、 質問が出た時点で送信ボタンの推論中ロックを解く。
         setLoading(prev => (prev[curSid] === false ? prev : { ...prev, [curSid]: false }))
       }
       try {
@@ -201,6 +203,10 @@ export function useChatStream({
 
   const sendAnswer = useCallback(async (targetSid, tool_use_id, answer) => {
     // AskUserQuestion の回答を tmux に流す (= MVP は answer テキスト + Enter)。
+    // 回答 = turn 再開の合図なので、 送信 (sendMessage) と同じく loading を立てて
+    // 送信ボタン → 停止ボタンに切り替える (= 楽観的に pendingSend deadline も置く)。
+    setLoading(prev => ({ ...prev, [targetSid]: true }))
+    pendingSendUntilRef.current[targetSid] = Date.now() + 1500
     await sendToPty(targetSid, { text: answer, enter: true })
     setMessages(prev => {
       const cur = prev[targetSid] || []
@@ -211,7 +217,7 @@ export function useChatStream({
       )
       return { ...prev, [targetSid]: msgs }
     })
-  }, [sendToPty, setMessages])
+  }, [sendToPty, setMessages, setLoading])
 
   const endSession = useCallback(async () => {
     if (!sid) return

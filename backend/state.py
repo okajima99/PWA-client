@@ -223,6 +223,13 @@ def _make_agent_status(agent_id: str) -> dict:
         # frontend が PlanApprovalBubble を表示するためのソース。
         # {tool_use_id: str, plan: str, choices: [{key: str, label: str}, ...]} または None
         "pending_plan": None,
+        # AskUserQuestion のライブ表示用。 claude は AskUserQuestion で停止中、 会話ログ
+        # (JSONL) を回答までディスクに flush しないので、 JSONL tail では質問をライブ検出
+        # できない。 そこで PreToolUse hook (= 質問表示時にリアルタイム発火) で立て、
+        # 回答後 flush の JSONL tool_result で clear する。 tool_use_id は hook payload に
+        # 無いので None で立て、 JSONL の AskUserQuestion tool_use 行で補完する。
+        # {tool_use_id: str|None, questions: [...]} または None
+        "pending_question": None,
     }
 
 

@@ -317,11 +317,31 @@ export default function App() {
   const displayMessages = useMemo(() => {
     if (!activeSid) return []
     const msgs = messages[activeSid] || []
-    if (loading[activeSid] && !msgs.some(m => m.streaming)) {
-      return [...msgs, { id: '__loading__', role: '__loading__' }]
+    // AskUserQuestion のライブ表示: backend が PreToolUse hook で立てた pending_question を
+    // messages 末尾にバブルとして差し込む (= overlay でなく既存の chat 流れに乗せる)。
+    // 回答後は JSONL flush で本物の回答済みバブルが messages に入り、 同時に backend が
+    // pending_question を clear するので、 このライブバブルは自然に消える。
+    const pq = status?.pending_question
+    const base = (loading[activeSid] && !msgs.some(m => m.streaming) && !pq)
+      ? [...msgs, { id: '__loading__', role: '__loading__' }]
+      : msgs
+    if (pq) {
+      return [...base, {
+        id: '__pending_question__',
+        role: 'agent',
+        text: '',
+        tools: [],
+        streaming: false,
+        askUserQuestion: {
+          tool_use_id: pq.tool_use_id,
+          questions: pq.questions,
+          answered: false,
+          selectedAnswer: null,
+        },
+      }]
     }
-    return msgs
-  }, [messages, loading, activeSid])
+    return base
+  }, [messages, loading, activeSid, status?.pending_question])
 
   const handleEndSession = () => {
     setMenuOpen(false)

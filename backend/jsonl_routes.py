@@ -375,6 +375,14 @@ def _mutate_agent_status(session_id: str, line: dict) -> bool:
                 elif name == "EnterPlanMode" and not a.get("plan_mode"):
                     a["plan_mode"] = True
                     changed = True
+                elif name == "AskUserQuestion":
+                    # PreToolUse hook で先に立てた pending_question に、 JSONL 由来の
+                    # tool_use_id を補完する (= hook payload には id が無い)。 これで
+                    # 回答 tool_result との突合 (= clear 判定) ができる。
+                    pq = a.get("pending_question")
+                    if pq is not None and pq.get("tool_use_id") is None:
+                        a["pending_question"] = {**pq, "tool_use_id": tool_id}
+                        changed = True
                 # current_tool: ActivityBar / 旧 SDK 経路と同型の「今走ってる tool」 情報
                 a["current_tool"] = {
                     "name": name,
@@ -405,6 +413,12 @@ def _mutate_agent_status(session_id: str, line: dict) -> bool:
                 pending = a.get("pending_plan")
                 if pending and pending.get("tool_use_id") == tu_id:
                     a["pending_plan"] = None
+                    changed = True
+                # AskUserQuestion の回答が tool_result で返ったら pending_question を解除
+                # (= ライブ overlay を消す。 以降は JSONL 由来の回答済みバブルが chat に残る)
+                pq = a.get("pending_question")
+                if pq and pq.get("tool_use_id") == tu_id:
+                    a["pending_question"] = None
                     changed = True
     return changed
 
