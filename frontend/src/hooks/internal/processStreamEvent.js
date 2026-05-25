@@ -108,10 +108,14 @@ export function processStreamEvent(deps, sid, event) {
       const msgs = [...cur]
       const last = msgs[msgs.length - 1]
       const aq = { tool_use_id, questions, answered: false, selectedAnswer: null }
+      // 質問が出た時点で推論は止まり、 ユーザの回答待ちになる。 AskUserQuestion 行の
+      // stop_reason は tool_use なので result event が来ず streaming が落ちない。
+      // ここで明示的に streaming:false にして「推論中…」 インジケータを止める
+      // (= turn は止まっているのに回り続ける誤表示を防ぐ)。
       // last が「まだ AskUserQuestion を持ってない agent message」 なら同居、
       // それ以外 (= user / 既に別の question を持ってる) は新 bubble で push
       if (last?.role === 'agent' && !last.askUserQuestion) {
-        msgs[msgs.length - 1] = { ...last, askUserQuestion: aq }
+        msgs[msgs.length - 1] = { ...last, askUserQuestion: aq, streaming: false }
       } else {
         msgs.push({
           id: generateId(),
@@ -119,7 +123,7 @@ export function processStreamEvent(deps, sid, event) {
           text: '',
           tools: [],
           askUserQuestion: aq,
-          streaming: true,
+          streaming: false,
         })
       }
       return { ...prev, [sid]: msgs }
@@ -138,6 +142,31 @@ export function processStreamEvent(deps, sid, event) {
       const msgs = prev[sid] || []
       let mutated = false
       const updated = msgs.map(m => {
+        // AskUserQuestion バブルへの回答が tool_result で返ってきたら answered 化する。
+        // ターミナル側で回答した場合 (= チャットの sendAnswer を通らない) でも、 tool_use_id
+        // 一致で回答済みに畳んで「？ バブルがアクティブに居座る」 を解消する。 同時に
+        // streaming も落とす (= 質問バブルが推論中扱いで残らないように)。
+        // チャット回答由来の楽観 selectedAnswer は保持し、 未設定時のみ tool_result から復元。
+        if (m.askUserQuestion && !m.askUserQuestion.answered) {
+          const r = results.find(x => x.tool_use_id === m.askUserQuestion.tool_use_id)
+          if (r) {
+            mutated = true
+            const ans = typeof r.content === 'string'
+              ? r.content
+              : Array.isArray(r.content)
+                ? r.content.filter(b => b?.type === 'text').map(b => b.text).join('')
+                : null
+            return {
+              ...m,
+              streaming: false,
+              askUserQuestion: {
+                ...m.askUserQuestion,
+                answered: true,
+                selectedAnswer: m.askUserQuestion.selectedAnswer || ans || null,
+              },
+            }
+          }
+        }
         if (m.role !== 'agent' || !m.tools?.length) return m
         let toolMutated = false
         const newTools = m.tools.map(t => {
