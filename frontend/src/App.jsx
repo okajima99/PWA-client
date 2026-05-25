@@ -205,7 +205,9 @@ export default function App() {
   }, [activeSid, loading, status?.streaming])
   const isStreamingNow = !!(activeSid && status?.streaming)
   const isPendingSend = !!(activeSid && (pendingSendUntilRef.current[activeSid] || 0) > now)
-  const showStopButton = !!(activeSid && (loading[activeSid] || isStreamingNow || isPendingSend))
+  // AskUserQuestion 回答待ち (= pending_question) 中も停止ボタンにする。 質問が出てる間に
+  // メッセージボックスから通常メッセージを誤送信させない (= 送信は質問バブルの UI 経由のみ)。
+  const showStopButton = !!(activeSid && (loading[activeSid] || isStreamingNow || isPendingSend || status?.pending_question))
 
   // SW からの「push-received」 メッセージで即座に fetchLatest を発火させる。
   // status polling (idle 30 秒) の隙間で proactive turn が完了/進行してても、
@@ -230,9 +232,9 @@ export default function App() {
     }
   }, [])
 
-  const handleAnswer = useCallback((tool_use_id, answer) => {
+  const handleAnswer = useCallback((tool_use_id, answer, isFree, optionCount) => {
     if (!activeSid) return
-    sendAnswer(activeSid, tool_use_id, answer)
+    sendAnswer(activeSid, tool_use_id, answer, isFree, optionCount)
   }, [sendAnswer, activeSid])
 
   // click-outside listener: menu open/close で add/remove を繰り返さず、 mount 時 1 回登録。

@@ -48,9 +48,11 @@ function AskUserQuestionBubble({ askUserQuestion, onAnswer }) {
   }
 
   // ここから下は未回答経路だけ。 回答済は上で早期 return 済。
-  const submit = (answer) => {
+  // isFree = 自由記述 (= claude TUI の "Type something" 経由が必要)。 選択肢数を渡して
+  // sendAnswer 側が "Type something"(= 選択肢数+1 番) を選ぶ番号を算出できるようにする。
+  const submit = (answer, isFree = false) => {
     if (!answer) return
-    onAnswer(tool_use_id, answer)
+    onAnswer(tool_use_id, answer, isFree, options.length)
   }
 
   const handleOptionClick = (label) => {
@@ -69,7 +71,7 @@ function AskUserQuestionBubble({ askUserQuestion, onAnswer }) {
   const handleFreeSubmit = () => {
     const trimmed = freeText.trim()
     if (!trimmed) return
-    submit(trimmed)
+    submit(trimmed, true)
     setFreeText('')
   }
 

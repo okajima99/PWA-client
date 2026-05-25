@@ -81,9 +81,11 @@ export function useChatStream({
       }
       if (event.type === 'assistant') {
         setLoading(prev => (prev[curSid] ? prev : { ...prev, [curSid]: true }))
-      } else if (event.type === 'result' || event.type === 'ask_user_question') {
-        // result = turn 完了。 ask_user_question = stop_reason=tool_use で result が
-        // 来ないまま回答待ちに入るので、 質問が出た時点で送信ボタンの推論中ロックを解く。
+      } else if (event.type === 'result') {
+        // result = turn 完了でのみ loading 解放。 ask_user_question では解放しない:
+        // AskUserQuestion 中の停止ボタンは status.pending_question が担い、 回答後の
+        // JSONL flush で ask_user_question event が再発火しても loading を落とさない
+        // (= 回答直後に送信ボタンへ戻って誤送信できてしまう問題を防ぐ)。
         setLoading(prev => (prev[curSid] === false ? prev : { ...prev, [curSid]: false }))
       }
       try {
@@ -201,13 +203,24 @@ export function useChatStream({
     pendingSendUntilRef.current[sid] = 0
   }, [sid, sendToPty])
 
-  const sendAnswer = useCallback(async (targetSid, tool_use_id, answer) => {
-    // AskUserQuestion の回答を tmux に流す (= MVP は answer テキスト + Enter)。
+  const sendAnswer = useCallback(async (targetSid, tool_use_id, answer, isFree = false, optionCount = 0) => {
+    // AskUserQuestion の回答を tmux 経由で claude TUI に送る。
     // 回答 = turn 再開の合図なので、 送信 (sendMessage) と同じく loading を立てて
     // 送信ボタン → 停止ボタンに切り替える (= 楽観的に pendingSend deadline も置く)。
     setLoading(prev => ({ ...prev, [targetSid]: true }))
     pendingSendUntilRef.current[targetSid] = Date.now() + 1500
-    await sendToPty(targetSid, { text: answer, enter: true })
+    if (isFree) {
+      // 自由記述: claude TUI は選択肢リストの末尾に "Type something"(自由入力) を持つ。
+      // フォーカスは先頭選択肢にあるので、 素のテキストを送ると先頭が選ばれてしまう
+      // (= 自由記述が届かない原因)。 先に "Type something"(= 選択肢数+1 番) を選んで
+      // 自由入力モードに入れてから、 テキスト + Enter を送る。
+      const typeNum = String((optionCount || 0) + 1)
+      await sendToPty(targetSid, { text: typeNum, enter: false })
+      await new Promise(r => setTimeout(r, 150))
+      await sendToPty(targetSid, { text: answer, enter: true })
+    } else {
+      await sendToPty(targetSid, { text: answer, enter: true })
+    }
     setMessages(prev => {
       const cur = prev[targetSid] || []
       const msgs = cur.map(m =>
