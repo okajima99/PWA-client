@@ -381,11 +381,51 @@ def tmux_send_keys(
         return False
     tmux_name = _tmux_session_name(session_id)
     arg_sets: list[list[str]] = []
+    # text 送信:
+    #   - paste-buffer に `-p` を付けて bracketed paste mode で送る (= TUI が paste 全体を
+    #     一塊として認識、 paste 内の改行を確定として扱わない)。 これがないと、 長文中の
+    #     改行で claude TUI が途中で確定したり、 普通の連続キー入力扱いになる。
+    #   - text と Enter が 2 subprocess に分かれていると、 paste の pane feed が完了する
+    #     前に Enter が届いて取りこぼされる実機ケースがあるため、 tmux のコマンドチェーン
+    #     `;` で 1 invocation にまとめる (= tmux server 内の queue で順次処理が保証される)。
+    chained_enter = False
     if text:
-        arg_sets.append(["send-keys", "-t", tmux_name, "-l", text])
+        text_args = None
+        # 改行を含む text のみ paste-buffer 経路 (= claude TUI で `[Pasted text #N]`
+        # プレースホルダ化される対象)。 single-line は素の send-keys -l で安全に送れる上、
+        # paste-buffer を 2 回送る経路に乗せると 2 回目が「重複 paste」 になってしまうので
+        # 構造的に避ける。
+        if "\n" in text:
+            buf_name = f"pwa-paste-{int(time.time() * 1_000_000)}"
+            try:
+                proc = subprocess.run(
+                    ["tmux", "load-buffer", "-b", buf_name, "-"],
+                    input=text.encode("utf-8"),
+                    capture_output=True,
+                    timeout=2.0,
+                )
+                if proc.returncode == 0:
+                    # claude TUI の bracketed paste は 1 回目で `[Pasted text #N]` プレース
+                    # ホルダにまとめられ、 そこから展開して送信するには「同じ paste をもう
+                    # 一度」 送る必要がある (= TUI が "paste again to expand" と明示、 実機
+                    # capture で確認)。 paste-buffer を 2 回チェーンする: 1 回目は -d なしで
+                    # buffer 保持、 2 回目に -d で削除。
+                    text_args = [
+                        "paste-buffer", "-p", "-b", buf_name, "-t", tmux_name,
+                        ";",
+                        "paste-buffer", "-p", "-b", buf_name, "-t", tmux_name, "-d",
+                    ]
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        if text_args is None:
+            text_args = ["send-keys", "-t", tmux_name, "-l", text]
+        if enter:
+            text_args = [*text_args, ";", "send-keys", "-t", tmux_name, "Enter"]
+            chained_enter = True
+        arg_sets.append(text_args)
     if key:
         arg_sets.append(["send-keys", "-t", tmux_name, key])
-    if enter:
+    if enter and not chained_enter:
         arg_sets.append(["send-keys", "-t", tmux_name, "Enter"])
     if not arg_sets:
         return False
