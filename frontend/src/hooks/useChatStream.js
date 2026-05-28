@@ -192,9 +192,46 @@ export function useChatStream({
       } catch { /* 送信失敗は握りつぶす、 次操作で復帰 */ }
       clearAttachments(sid)
     } else {
-      await sendToPty(sid, { text, enter: true })
+      // 送信本文 (text + Enter): backend が JSONL に user 行が +1 されるかを最大 2s 監視 →
+      // なければ 1 回自動再送 → さらに 1.5s 待つ → ok/ng を返す。 ng (= claude TUI に届かなかった)
+      // 時は input に text を戻して再送可能にし、 楽観 user bubble に「届かなかった」 マークを付ける。
+      let result
+      try {
+        const r = await apiFetch(`/pty/${encodeURIComponent(sid)}/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, enter: true }),
+        })
+        result = r ? await r.json().catch(() => ({ ok: false })) : { ok: false }
+      } catch {
+        result = { ok: false }
+      }
+      if (!result.ok) {
+        // input に text を戻す (= ユーザが再入力済みなら prev を尊重)
+        setInput(prev => ({ ...prev, [sid]: prev[sid] || text }))
+        setMessages(prev => {
+          const msgs = [...(prev[sid] || [])]
+          // 末尾の空 streaming agent bubble を撤去 (= 推論されてないので)
+          while (msgs.length) {
+            const tail = msgs[msgs.length - 1]
+            if (tail.role === 'agent' && tail.streaming && !tail.text && !tail.thinking && (!tail.tools || !tail.tools.length)) {
+              msgs.pop()
+            } else break
+          }
+          // 末尾の楽観 user bubble に sendFailed: true を付ける (= MessageItem が ⚠ を出す)
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === 'user' && msgs[i].optimistic) {
+              msgs[i] = { ...msgs[i], sendFailed: true }
+              break
+            }
+          }
+          return { ...prev, [sid]: msgs }
+        })
+        setLoading(prev => ({ ...prev, [sid]: false }))
+        pendingSendUntilRef.current[sid] = 0
+      }
     }
-  }, [sid, input, attachments, loading, setInput, setMessages, clearAttachments, scrollToBottom, sendToPty, isAtBottomRef])
+  }, [sid, input, attachments, loading, setInput, setMessages, clearAttachments, scrollToBottom, sendToPty, isAtBottomRef, setLoading])
 
   const stopMessage = useCallback(async () => {
     if (!sid) return
@@ -234,12 +271,14 @@ export function useChatStream({
 
   const endSession = useCallback(async () => {
     if (!sid) return
-    // `/clear` で claude TUI の context をリセットする (= 新 claude_sid が振られて新 JSONL に
-    // 切り替わる、 旧会話の JSONL は ~/.claude/projects/ にファイルとして永続)。 claude 自体は
-    // 同じ tmux プロセスで動き続けるので起動エイリアス再入力は不要、 即時。
-    await sendToPty(sid, { text: '/clear', enter: true })
-    // UI 上のセッション区切りを messages に挿入 (= 旧 chat UI の「セッション終了」 マーカー)。
-    // MessageItem 側で system / kind=session_end の分岐で横線 + ラベル描画。
+    // セッション終了 = claude プロセスを kill + 新規 spawn する (= /clear と違って
+    // プロセスメモリも完全解放、 ターミナル描画の重さ / CPU 高負荷の根本対策)。
+    // 新 claude_sid に切り替わるが backend の SessionStart hook で bindings が更新されるので
+    // PWA タブはそのまま続けて使える。 旧 JSONL は disk に残るので --resume で復元可能。
+    try {
+      await apiFetch(`/sessions/${encodeURIComponent(sid)}/restart`, { method: 'POST' })
+    } catch { /* 失敗しても次操作で復帰 */ }
+    // UI 上のセッション区切りを messages に挿入 (= MessageItem の system/kind=session_end 経路)
     setMessages(prev => ({
       ...prev,
       [sid]: [
@@ -248,14 +287,13 @@ export function useChatStream({
       ],
     }))
     // 旧 JSONL を読み続けないよう offset をクリア (= 新 claude_sid に切り替わったら新 JSONL の
-    // 末尾近くから tail 開始させる)。 statusline が新 sid を tmux_session_map に書くまで
-    // 1-2 秒かかるので、 少し待ってから EventSource を張り直す。
+    // 末尾近くから tail 開始させる)。 SessionStart hook で binding 更新まで少し待つ。
     delete offsetRef.current[sid]
     persistOffsets(offsetRef.current)
     setTimeout(() => {
       setReconnectKey(k => k + 1)
     }, 2000)
-  }, [sid, sendToPty, setMessages])
+  }, [sid, setMessages])
 
   // 常時 tail + EventSource 自動再接続なので明示 fetch は不要。 scroll だけ最新へ寄せる。
   const fetchLatest = useCallback(() => {

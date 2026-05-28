@@ -94,7 +94,7 @@ export default function App() {
     hasNew,
     scrollToBottom,
     onScroll,
-  } = useAutoScroll({ messages, activeSession })
+  } = useAutoScroll({ messages, activeSession, viewMode: activeViewMode })
   const { loading, setLoading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession, pendingSendUntilRef } = useChatStream({
     activeSession,
     sessions,
@@ -318,7 +318,12 @@ export default function App() {
 
   const displayMessages = useMemo(() => {
     if (!activeSid) return []
-    const msgs = messages[activeSid] || []
+    // 直近 N 件のみ render する。 古い履歴は state / localStorage には残っているが DOM に
+    // 出さない (= 過去が積み上がって scrollHeight が膨らみ、 scroll が途中で止まる /
+    // 「↓ボタン」 で底まで届かない症状の根本対策)。 N は実体感で調整可能。
+    const DISPLAY_LIMIT = 50
+    const allMsgs = messages[activeSid] || []
+    const msgs = allMsgs.length > DISPLAY_LIMIT ? allMsgs.slice(-DISPLAY_LIMIT) : allMsgs
     // AskUserQuestion のライブ表示: backend が PreToolUse hook で立てた pending_question を
     // messages 末尾にバブルとして差し込む (= overlay でなく既存の chat 流れに乗せる)。
     // 回答後は JSONL flush で本物の回答済みバブルが messages に入り、 同時に backend が

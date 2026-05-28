@@ -24,9 +24,12 @@ from fastapi import APIRouter, Body, File, Form, UploadFile, WebSocket, WebSocke
 
 from chat_content import save_to_tmp
 from config import AGENTS, USE_PTY_RUNNER
+import re
+
 from pty_runner import (
     PtySession,
     has_tmux_session,
+    jsonl_path_for_session,
     pty_sessions,
     resize_pty,
     spawn_pty_session,
@@ -34,6 +37,58 @@ from pty_runner import (
     write_pty,
 )
 from state import sessions_meta
+
+
+# 素プロンプト (= ユーザ発言の user 行) 判定用の harness XML プレフィックス。
+# /clear や local-command-* の内部表現は ユーザ発言ではないので除外する。
+_HARNESS_RE = re.compile(
+    r"^\s*<(command-name|command-message|command-args|local-command-[a-z-]+)\b"
+)
+
+
+def _count_user_prompts(path) -> int:
+    """JSONL から素プロンプト (= 実ユーザ発言) の user 行数を数える。
+    tool_result / isMeta / isSidechain / harness XML は除外。 送信確認に使う。"""
+    if not path:
+        return 0
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return 0
+    count = 0
+    for raw in data.split(b"\n"):
+        if not raw:
+            continue
+        try:
+            d = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if d.get("type") != "user" or d.get("isSidechain") or d.get("isMeta"):
+            continue
+        msg = d.get("message") or {}
+        c = msg.get("content")
+        if isinstance(c, str):
+            s = c.strip()
+            if s and not _HARNESS_RE.match(s):
+                count += 1
+        elif isinstance(c, list):
+            texts = [b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"]
+            if any((t or "").strip() for t in texts):
+                count += 1
+    return count
+
+
+async def _wait_user_prompt_added(path, initial_count: int, timeout: float) -> bool:
+    """JSONL の user 行が initial_count から増えるのを timeout 秒まで poll する。"""
+    poll = 0.1
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if _count_user_prompts(path) > initial_count:
+            return True
+        await asyncio.sleep(poll)
+    return _count_user_prompts(path) > initial_count
 
 
 def _resolve_cwd(session_id: str) -> str | None:
@@ -208,6 +263,11 @@ async def _pump_from_client(ws: WebSocket, session: PtySession) -> None:
 async def pty_send(session_id: str, payload: dict = Body(...)) -> dict:
     """chat UI からの入力を tmux session に送る (= send-keys 経路、 PTY attach 不要)。
 
+    送信本文 (= text + enter) の場合は、 JSONL に user 行が +1 されるかを最大 2s
+    監視して機械的に送信成功を確認する。 +1 されなければ 1 回だけ再送して +1.5s 待つ。
+    確認できなければ ok=False で返し、 frontend に「届かなかった」 ことを通知する
+    (= メッセージボックスに text を残して再送できるようにする経路)。
+
     payload:
         text  (str, optional): literal 文字列 (= プロンプト本文)
         key   (str, optional): tmux キー名 (= "Escape" で停止、 "C-c" 等)
@@ -215,13 +275,43 @@ async def pty_send(session_id: str, payload: dict = Body(...)) -> dict:
     """
     if not USE_PTY_RUNNER:
         return {"ok": False, "reason": "USE_PTY_RUNNER is false"}
-    ok = tmux_send_keys(
-        session_id,
-        text=payload.get("text"),
-        key=payload.get("key"),
-        enter=bool(payload.get("enter", False)),
+    text = payload.get("text")
+    key = payload.get("key")
+    enter = bool(payload.get("enter", False))
+    # 確認対象は「ユーザ送信本文」 = text あり + enter ありのケースのみ。
+    # 自由記述以外のキー送信 (Escape 等)、 AskUserQuestion 自由記述の 1 回目 (typeNum、 enter なし)
+    # 等は確認しない (= 送信完了の概念がない、 or 別経路で確認)。
+    confirm = bool(text) and enter
+    initial_count = 0
+    jsonl_path = None
+    if confirm:
+        jsonl_path = jsonl_path_for_session(session_id)
+        if jsonl_path is not None:
+            initial_count = _count_user_prompts(jsonl_path)
+    ok = tmux_send_keys(session_id, text=text, key=key, enter=enter)
+    if not ok or not confirm or jsonl_path is None:
+        return {"ok": ok}
+    # 第 1 回 確認待ち
+    if await _wait_user_prompt_added(jsonl_path, initial_count, timeout=2.0):
+        return {"ok": True, "confirmed": True}
+    # 再送 #1: paste は既に TUI に届いている可能性が高いので Enter だけ追い打ち
+    # (= claude TUI の `paste again to expand` プレースホルダ展開 + 送信 で Enter 1 個が
+    # 吸われたケースを救済する。 paste を再度送ると重複 paste / 状態破壊のリスクがあるため
+    # まず Enter だけで試す)。
+    logger.warning(
+        "pty_send: no user prompt within 2s, retrying with Enter only: sid=%s text_len=%d",
+        session_id, len(text or ""),
     )
-    return {"ok": ok}
+    tmux_send_keys(session_id, enter=True)
+    if await _wait_user_prompt_added(jsonl_path, initial_count, timeout=1.0):
+        return {"ok": True, "confirmed": True, "retried": "enter_only"}
+    # 再送 #2: それでもダメなら paste + Enter フル再送
+    logger.warning("pty_send: enter-only retry failed, full re-paste: sid=%s", session_id)
+    tmux_send_keys(session_id, text=text, enter=True)
+    if await _wait_user_prompt_added(jsonl_path, initial_count, timeout=1.5):
+        return {"ok": True, "confirmed": True, "retried": "full"}
+    logger.warning("pty_send: failed even after both retries: sid=%s", session_id)
+    return {"ok": False, "reason": "no_user_prompt_recorded"}
 
 
 @router.post("/pty/{session_id}/send-with-files")

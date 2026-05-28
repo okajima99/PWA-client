@@ -395,6 +395,13 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
           <MessageRenderer text={msg.text} onOpenFile={onOpenFile} streaming={msg.streaming} />
         </span>
       )}
+      {/* 送信失敗 (= backend で JSONL user 行 +1 を確認できず、 再送 1 回も届かなかった)
+          の表示。 text は input box に復元されているのでユーザは送り直せる。 */}
+      {msg.role === 'user' && msg.sendFailed && (
+        <div className="send-failed-note" style={{ color: '#c0392b', fontSize: '0.85em', marginTop: 4 }}>
+          ⚠ Not delivered to claude — text restored in the input box
+        </div>
+      )}
     </div>
   )
 })

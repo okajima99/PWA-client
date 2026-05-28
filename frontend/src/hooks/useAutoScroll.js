@@ -22,7 +22,7 @@ const PROGRAMMATIC_SCROLL_GUARD_MS = 200
 //   - 新着メッセージ追従は isAtBottom 中のみ JS で再 scroll、 そうでなければ hasNew=true
 //
 // 起動 / タブ切替時は useLayoutEffect で paint 前に底へ flush (= 前 session の scroll 残留防止)。
-export function useAutoScroll({ messages, activeSession }) {
+export function useAutoScroll({ messages, activeSession, viewMode }) {
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [hasNew, setHasNew] = useState(false)
   const isAtBottomRef = useRef(true)
@@ -48,7 +48,12 @@ export function useAutoScroll({ messages, activeSession }) {
     el.scrollTop = el.scrollHeight
   }, [])
 
-  // 公開: 「↓ 最新へ」 ボタン or send 直後に呼ぶ用
+  // 公開: 「↓ 最新へ」 ボタン or send 直後に呼ぶ用。
+  // 1 回 scrollTop = scrollHeight にしただけでは、 Markdown / code highlight / 画像 /
+  // details 展開等の遅延 layout で scrollHeight が paint 後に伸びるケースに追従できず
+  // 「途中までしかスクロールされない」 症状が出る。 sid 切替時 (= useLayoutEffect) と同じく
+  // 複数 timing で再 scroll する。 isAtBottomRef は guard 中 true 維持なので、 ユーザが
+  // 意図的に途中で上スクロールしない限り底辺まで届く。
   const scrollToBottom = useCallback(() => {
     const el = scrollerDomRef.current
     if (!el) return
@@ -60,6 +65,13 @@ export function useAutoScroll({ messages, activeSession }) {
     scrollEndTimerRef.current = setTimeout(() => {
       programmaticScrollRef.current = false
     }, PROGRAMMATIC_SCROLL_GUARD_MS)
+    // 遅延 layout 追従: 1 回目で底に届かなかった場合に複数 timing で再 scroll する
+    for (const ms of [50, 150, 400, 1000, 2500]) {
+      setTimeout(() => {
+        const e = scrollerDomRef.current
+        if (e && isAtBottomRef.current) e.scrollTop = e.scrollHeight
+      }, ms)
+    }
   }, [])
 
   // 起動 / タブ切替: paint 前に底へ flush (= 前 session の scroll 残留防止)。
@@ -70,6 +82,10 @@ export function useAutoScroll({ messages, activeSession }) {
   // ユーザが意図的に上スクロールしたら scrollToBottomIfFollowing 側で no-op になる。
   useLayoutEffect(() => {
     if (!sid) return
+    // ターミナル画面では DOM が xterm 側、 messages container は表示外なので scroll しない。
+    // 同じ effect を chat / terminal 切替ごとに走らせて、 terminal → chat に戻った時にも
+    // 最新位置へ寄せ直す (= 「ターミナルに移って戻ったら最新に行かない」 症状の解消)。
+    if (viewMode && viewMode !== 'chat') return
     isAtBottomRef.current = true
     setShowScrollBtn(false)
     setHasNew(false)
@@ -80,7 +96,7 @@ export function useAutoScroll({ messages, activeSession }) {
     )
     return () => ids.forEach(clearTimeout)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sid])
+  }, [sid, viewMode])
 
   // 新着メッセージ:
   //   isAtBottom 中なら底に追従、 上スクロール中 (= 古いメッセージ閲覧) なら hasNew=true で赤丸表示。
