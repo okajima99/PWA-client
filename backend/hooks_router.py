@@ -38,23 +38,36 @@ _TMUX_MAP = Path(TMUX_SESSION_MAP_DIR).expanduser() if TMUX_SESSION_MAP_DIR else
 
 def _pwa_session_for_claude_sid(claude_sid: str | None) -> str | None:
     """claude が hook payload で渡してくる claude session_id (= JSONL ファイル名と一致)
-    を逆引きして、 PWA のタブ識別子 (= `ses_xxxx`) を返す。 PWA 経由で起動した
-    claude セッションだけが `tmux_session_map_dir` に登録される (= 起動時 statusline が
-    書く)。 デスクトップ公式 / ターミナル直叩きは登録されないので、 ここで弾いて
-    Web Push を抑制する。 マッチしなければ None。
+    を逆引きして、 PWA タブ識別子 (= `ses_xxxx`) を返す。
+
+    逆引き元は `jsonl_watcher` の confirmed bindings。 これは SessionStart hook 経由で
+    X-PWA-SID header 付き curl が来た時のみ書き込まれる確定経路で、 Desktop App /
+    ターミナル直叩きの claude は PWA_SID env を持たず SessionStart で弾かれるため
+    bindings に入らない (= 構造的に紐付け不可)。 旧実装の statusline map 逆引きは
+    map ファイルが古い claude_sid を保持していて誤マッチを起こすケースが実機で確認
+    された (= 2026-05-28 ログで Desktop App resume の claude_sid が PWA タブに誤紐付け)
+    ため廃止する。
+
+    マッチしなければ None (= Web Push 抑制)。
     """
-    if not claude_sid or _TMUX_MAP is None or not _TMUX_MAP.is_dir():
+    if not claude_sid:
         return None
-    for f in _TMUX_MAP.iterdir():
-        if not f.is_file():
+    try:
+        import jsonl_watcher  # noqa: PLC0415
+        bindings = jsonl_watcher.list_bindings()
+    except Exception:
+        logger.exception("_pwa_session_for_claude_sid: list_bindings failed")
+        return None
+    for pwa_sid, info in bindings.items():
+        if not info or not info.get("confirmed"):
             continue
-        try:
-            if f.read_text(encoding="utf-8", errors="replace").strip() == claude_sid:
-                name = f.name
-                # ファイル名は `pwa-<session_id>` 規約 (= pty_runner._tmux_session_name)
-                return name[4:] if name.startswith("pwa-") else name
-        except OSError:
+        jsonl_path = info.get("jsonl_path")
+        if not jsonl_path:
             continue
+        # jsonl_path のファイル名 stem (= 拡張子前) が claude_sid と一致するか。
+        # claude CLI の JSONL ファイル名は `<claude_session_id>.jsonl` 規約。
+        if Path(jsonl_path).stem == claude_sid:
+            return pwa_sid
     return None
 
 
