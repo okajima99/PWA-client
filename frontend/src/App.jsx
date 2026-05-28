@@ -321,7 +321,7 @@ export default function App() {
     // 直近 N 件のみ render する。 古い履歴は state / localStorage には残っているが DOM に
     // 出さない (= 過去が積み上がって scrollHeight が膨らみ、 scroll が途中で止まる /
     // 「↓ボタン」 で底まで届かない症状の根本対策)。 N は実体感で調整可能。
-    const DISPLAY_LIMIT = 50
+    const DISPLAY_LIMIT = 100
     const allMsgs = messages[activeSid] || []
     const msgs = allMsgs.length > DISPLAY_LIMIT ? allMsgs.slice(-DISPLAY_LIMIT) : allMsgs
     // AskUserQuestion のライブ表示: backend が PreToolUse hook で立てた pending_question を
