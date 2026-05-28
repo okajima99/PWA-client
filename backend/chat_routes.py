@@ -73,6 +73,42 @@ def patch_session(session_id: str, payload: dict = Body(...), _: str = Depends(r
     return sessions_meta[session_id].to_dict()
 
 
+@router.post("/sessions/{session_id}/restart")
+async def restart_session(session_id: str, _: str = Depends(require_session)):
+    """claude プロセスを kill + 新規 spawn する (= /clear と違ってプロセスメモリも完全解放)。
+    新 claude_sid に切り替わるが SessionStart hook で bindings 更新されるので、 PWA タブは
+    シームレスに続けて使える。 長期稼働で claude プロセスメモリが累積する問題への対策。"""
+    from pty_runner import kill_tmux_session, pty_sessions  # noqa: PLC0415
+    import jsonl_watcher  # noqa: PLC0415
+    from pty_routes import ensure_pty_session_for  # noqa: PLC0415
+    # kill 経路は delete_session と同じだが、 sessions_meta は維持して即 spawn し直す
+    try:
+        kill_tmux_session(session_id)
+        pty_sessions.pop(session_id, None)
+        jsonl_watcher.unregister(session_id)
+    except Exception:
+        logger.debug("restart kill phase failed for %s", session_id, exc_info=True)
+    # 新規 spawn (= 同 PWA_SID で tmux 再生成 + claude 再起動 + SessionStart hook で
+    # 新 claude_sid を confirm_bind)
+    try:
+        await ensure_pty_session_for(session_id)
+    except Exception:
+        logger.exception("restart spawn phase failed for %s", session_id)
+        return {"ok": False, "reason": "spawn_failed"}
+    # agent_status の進行中フラグをリセット (= 新プロセスなので何も保留してない)
+    a = agent_status.get(session_id)
+    if a is not None:
+        a["current_tool"] = None
+        a["pending_question"] = None
+        a["pending_plan"] = None
+        a["subagent"] = None
+        a["plan_mode"] = False
+    state = stream_states.get(session_id)
+    if state is not None:
+        state.status_event.set()
+    return {"ok": True}
+
+
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str, _: str = Depends(require_session)):
     # PTY + tmux + JSONL binding を一括 cleanup

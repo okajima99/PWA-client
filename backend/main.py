@@ -152,6 +152,16 @@ async def lifespan(app: FastAPI):
     _prune_uploads_tmp()
     uploads_gc_task = _asyncio.create_task(_uploads_tmp_gc_loop())
 
+    # サスティナビリティ整備: stale tmux session kill / 古い JSONL 削除 / statusline map
+    # cleanup を起動時に 1 回 + 24 時間ごとに実行 (= 放置すると無限蓄積する分の自動整理)。
+    import maintenance  # noqa: PLC0415, E402
+    try:
+        startup_summary = maintenance.run_all_maintenance()
+        logger.info("startup maintenance: %s", startup_summary)
+    except Exception:
+        logger.exception("startup maintenance failed")
+    maintenance_task = _asyncio.create_task(maintenance.maintenance_loop())
+
     # backend.error.log / backend.access.log は RotatingFileHandler で自動 rotate。
     # launchd の StandardOutPath (= backend.log) / StandardErrorPath (= backend.boot.log) は
     # launchd 管理で rotate されないので起動時に上限超過を切る (= app の rotate 系とは別ファイル)。
@@ -160,10 +170,11 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # 終了: 常時 tail task + uploads GC task を停止 → PTY セッションを閉じる
+    # 終了: 常時 tail task + uploads GC task + maintenance task を停止 → PTY セッションを閉じる
     blocker_monitor_task.cancel()
     uploads_gc_task.cancel()
-    for _t in (blocker_monitor_task, uploads_gc_task):
+    maintenance_task.cancel()
+    for _t in (blocker_monitor_task, uploads_gc_task, maintenance_task):
         try:
             await _t
         except (asyncio.CancelledError, Exception):
