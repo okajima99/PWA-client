@@ -3,15 +3,18 @@
     "agent_a": {
       "cwd": "/path/to/agent_a",
       "model": "Opus",
+      "display_name": "Agent A",
       "launch_alias": "agent_a"
     },
     "agent_b": {
       "cwd": "/path/to/agent_b",
       "model": "Sonnet",
+      "display_name": "Agent B",
       "launch_alias": "agent_b"
     }
   },
   "claude_path": "/path/to/claude",
+  "uploads_tmp": "/path/to/uploads-tmp",
   "rate_limits_log": "/path/to/rate-limits.jsonl",
   "tmux_session_map_dir": "/path/to/tmux-session-map",
   "vapid_sub": "mailto:you@example.com",

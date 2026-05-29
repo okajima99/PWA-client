@@ -8,6 +8,11 @@ updated: 2026-05-21
 
 # PTY 移行計画
 
+> **完了状況 (= 履歴文書)**: PTY 移行は完了済。 本書は当時の設計記録として残す。
+> 後半の削除計画 (§ frontend / SDK 撤廃) は一部撤回されている — `chat_routes.py` /
+> `chat_content.py` / `hooks/useChatStream.js` / `StatusBar.jsx` は PTY + JSONL 経路の
+> 現役コードとして**維持**している。 現状のアーキは `README.md` を参照。
+
 ## 1. 目的・前提
 
 ### 1.1 背景
