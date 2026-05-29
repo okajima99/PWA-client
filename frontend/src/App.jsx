@@ -97,7 +97,6 @@ export default function App() {
   } = useAutoScroll({ messages, activeSession, viewMode: activeViewMode })
   const { loading, setLoading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession, pendingSendUntilRef } = useChatStream({
     activeSession,
-    sessions,
     setMessages,
     input, setInput,
     attachments, clearAttachments,

@@ -183,6 +183,9 @@ export function useSessionActivity(messages, sessions) {
 // 「turn 完了で未閲覧」 を localStorage に永続化 (= リロード跨ぎで赤を保持)。
 const LS_UNREAD_DONE = 'cpc.unreadDone'
 
+// 旧バッジ仕様 (= `arr.length > lastSeen`) の orphan key を 1 回だけ掃除する。
+try { localStorage.removeItem('cpc.lastSeenLen') } catch { /* storage 無効環境は無視 */ }
+
 function loadUnreadDone() {
   const parsed = lsGet(LS_UNREAD_DONE)
   return parsed && typeof parsed === 'object' ? parsed : {}

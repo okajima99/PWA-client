@@ -23,8 +23,7 @@ function persistOffsets(offsets) {
 //
 // 旧 SDK + proxy 版を置き換えたもの。 App.jsx 側のインターフェース
 // (loading / sendMessage / stopMessage / apiKeySource / sendAnswer / fetchLatest /
-//  endSession / setLoading / pendingSendUntilRef / visibilitySuppressUntilRef) は維持し、
-// App.jsx はほぼ無改修で動く。
+//  endSession / setLoading / pendingSendUntilRef) は維持し、 App.jsx はほぼ無改修で動く。
 //
 // 受信: 常時 /jsonl/stream を EventSource で購読 (= claude が書く JSONL を backend が tail)。
 //       event は processStreamEvent + useStreamBuffer で旧 chat と同じ message state に組む。
@@ -32,7 +31,6 @@ function persistOffsets(offsets) {
 // 表示資産 (MessageItem / scroll / localStorage) は App.jsx 側のものをそのまま使う。
 export function useChatStream({
   activeSession,
-  sessions, // eslint-disable-line no-unused-vars
   setMessages,
   input, setInput,
   attachments, clearAttachments,
