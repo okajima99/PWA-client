@@ -104,3 +104,73 @@ def test_initial_offset_empty_file(tmp_path):
     p = tmp_path / "a.jsonl"
     p.write_bytes(b"")
     assert jr._initial_offset(p) == 0
+
+
+# ---------------------------------------------------------------------------
+# _latest_subagent_tool / _refresh_subagent_status: Task 実行中のサブツール名抽出 (= 0-6)
+# subagent transcript は <jsonl>/<sid>/subagents/agent-*.jsonl に別ファイルで書かれる
+# ---------------------------------------------------------------------------
+import json
+import os
+
+
+def _write_agent_file(subdir, name, tools, mtime=None):
+    """subagents/<name>.jsonl に assistant tool_use 行を時系列で書く helper。"""
+    subdir.mkdir(parents=True, exist_ok=True)
+    p = subdir / name
+    lines = []
+    for t in tools:
+        lines.append(json.dumps({
+            "type": "assistant",
+            "isSidechain": True,
+            "message": {"role": "assistant", "content": [{"type": "tool_use", "name": t}]},
+        }))
+    p.write_text("\n".join(lines) + "\n")
+    if mtime is not None:
+        os.utime(p, (mtime, mtime))
+    return p
+
+
+def test_latest_subagent_tool_returns_last_tool(tmp_path):
+    jsonl = tmp_path / "ses1.jsonl"
+    sub = tmp_path / "ses1" / "subagents"
+    _write_agent_file(sub, "agent-a.jsonl", ["Read", "Write", "Bash"], mtime=1000)
+    assert jr._latest_subagent_tool(jsonl, since=0) == "Bash"
+
+
+def test_latest_subagent_tool_picks_newest_file(tmp_path):
+    jsonl = tmp_path / "ses1.jsonl"
+    sub = tmp_path / "ses1" / "subagents"
+    _write_agent_file(sub, "agent-old.jsonl", ["Read"], mtime=1000)
+    _write_agent_file(sub, "agent-new.jsonl", ["Grep"], mtime=2000)
+    assert jr._latest_subagent_tool(jsonl, since=0) == "Grep"
+
+
+def test_latest_subagent_tool_filters_by_since(tmp_path):
+    # since (= 現 Task の started_at) より前に書かれた古い agent ファイルは無視する
+    jsonl = tmp_path / "ses1.jsonl"
+    sub = tmp_path / "ses1" / "subagents"
+    _write_agent_file(sub, "agent-stale.jsonl", ["Read"], mtime=500)
+    assert jr._latest_subagent_tool(jsonl, since=1000) is None
+
+
+def test_latest_subagent_tool_no_dir(tmp_path):
+    assert jr._latest_subagent_tool(tmp_path / "nope.jsonl", since=0) is None
+
+
+def test_refresh_subagent_sets_and_clears(tmp_path, isolated_state):
+    state = isolated_state
+    sid = "ses_test"
+    state.agent_status[sid] = {"current_tool": {"name": "Task", "started_at": 0}, "subagent": None}
+    jsonl = tmp_path / "ses_test.jsonl"
+    sub = tmp_path / "ses_test" / "subagents"
+    _write_agent_file(sub, "agent-a.jsonl", ["Read"], mtime=1000)
+    # Task 実行中 → last_tool が立つ
+    assert jr._refresh_subagent_status(sid, jsonl) is True
+    assert state.agent_status[sid]["subagent"] == {"last_tool": "Read"}
+    # 変化なし → False
+    assert jr._refresh_subagent_status(sid, jsonl) is False
+    # Task 終了 (current_tool が落ちる) → subagent も落ちる
+    state.agent_status[sid]["current_tool"] = None
+    assert jr._refresh_subagent_status(sid, jsonl) is True
+    assert state.agent_status[sid]["subagent"] is None

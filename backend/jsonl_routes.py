@@ -312,6 +312,83 @@ def _maybe_push_blockers(session_id: str, line: dict) -> None:
         asyncio.create_task(broadcast_push(label, title, session_id))
 
 
+# --- subagent 進行中の表示 (= 0-6) ---
+# Task tool 実行中、 claude は各サブエージェントの transcript をメイン JSONL ではなく
+# <jsonl>/<session-id>/subagents/agent-<id>.jsonl に別ファイルで書く (= v2.1.x 形式、
+# メイン JSONL に sidechain 行は来ない)。 その最新ファイルの最後の tool_use 名を拾って
+# 「↳ Read」 等と Task 行に inline 表示する。 並列サブエージェント時は mtime 最新の 1 つ
+# だけを単一値で出す (= 割り切り、 frontend は status.subagent.last_tool を単一読み)。
+_SUBAGENT_TAIL_BYTES = 65536
+
+
+def _latest_subagent_tool(jsonl_path: Path, since: float) -> str | None:
+    """jsonl_path 対応の subagents/ で mtime 最新かつ since 以降に更新された
+    agent-*.jsonl を読み、 最後の assistant tool_use 名を返す。 無ければ None。
+
+    since で絞るのは、 同一 session の subagents/ に過去 Task の古い agent ファイルが
+    残るため (= 現 Task の started_at 以降に書かれたものだけを対象にして stale 表示を防ぐ)。
+    """
+    subdir = jsonl_path.parent / jsonl_path.stem / "subagents"
+    try:
+        candidates = [
+            p for p in subdir.glob("agent-*.jsonl") if p.stat().st_mtime >= since
+        ]
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    try:
+        newest = max(candidates, key=lambda p: p.stat().st_mtime)
+        size = newest.stat().st_size
+        with open(newest, "rb") as f:
+            # 毎 tick 全読みを避け、 末尾チャンクだけ読む (= 最後の tool_use が末尾近くに居る)。
+            if size > _SUBAGENT_TAIL_BYTES:
+                f.seek(size - _SUBAGENT_TAIL_BYTES)
+                f.readline()  # seek 直後の途中行を捨てる
+            data = f.read()
+    except OSError:
+        return None
+    last_tool: str | None = None
+    for raw in data.decode("utf-8", errors="replace").split("\n"):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("type") != "assistant":
+            continue
+        for block in (obj.get("message") or {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                name = block.get("name")
+                if name:
+                    last_tool = name
+    return last_tool
+
+
+def _refresh_subagent_status(session_id: str, jsonl_path: Path) -> bool:
+    """current_tool が Task の間だけ subagent.last_tool を最新化する。 変化があれば True。
+
+    Task 非実行中に subagent が残っていれば落とす (= tool_result / Stop hook clear の保険)。
+    """
+    a = agent_status.get(session_id)
+    if a is None:
+        return False
+    cur = a.get("current_tool")
+    if not (cur and cur.get("name") == "Task"):
+        if a.get("subagent") is not None:
+            a["subagent"] = None
+            return True
+        return False
+    name = _latest_subagent_tool(jsonl_path, cur.get("started_at") or 0)
+    new_val = {"last_tool": name} if name else None
+    if a.get("subagent") != new_val:
+        a["subagent"] = new_val
+        return True
+    return False
+
+
 def _mutate_agent_status(session_id: str, line: dict) -> bool:
     """JSONL 1 行から agent_status を更新する。 変化があれば True を返す
     (= caller が status_event.set() するための合図)。
@@ -535,13 +612,19 @@ async def _jsonl_sse(session_id: str, start_pos: int | None = None):
         if status == "truncated":
             # truncate / rotate → 先頭から読み直す
             lines, pos, status = _read_tail(path, 0)
+        emitted = False
         if status == "ok":
-            frames = _lines_to_sse(lines, pos, session_id)
-            if frames:
-                for frame in frames:
-                    yield frame
-                continue
-        yield ": keep-alive\n\n"
+            for frame in _lines_to_sse(lines, pos, session_id):
+                yield frame
+                emitted = True
+        # Task 実行中は main JSONL が静かでも subagent は別ファイルで動くので毎 tick 追う。
+        # 変化があれば status_event を叩いて /status SSE 経由で last_tool を push する。
+        if _refresh_subagent_status(session_id, path):
+            st = stream_states.get(session_id)
+            if st is not None:
+                st.status_event.set()
+        if not emitted:
+            yield ": keep-alive\n\n"
 
 
 @router.get("/jsonl/_debug/bindings")
