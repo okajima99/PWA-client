@@ -23,7 +23,7 @@ import logging
 from fastapi import APIRouter, Body, File, Form, UploadFile, WebSocket, WebSocketDisconnect
 
 from chat_content import save_to_tmp
-from config import AGENTS, USE_PTY_RUNNER
+from config import AGENTS
 import re
 
 from pty_runner import (
@@ -122,8 +122,6 @@ async def ensure_pty_session_for(session_id: str) -> None:
     (= チャット画面) からも呼ぶことで、 ターミナル画面を一度も開いていないタブでも
     claude が立ち上がって JSONL が作られるようにする。
     """
-    if not USE_PTY_RUNNER:
-        return
     existing = pty_sessions.get(session_id)
     if existing is not None and not existing.exit_event.is_set():
         return
@@ -151,10 +149,6 @@ router = APIRouter()
 
 @router.websocket("/ws/pty/{session_id}")
 async def pty_socket(ws: WebSocket, session_id: str) -> None:
-    if not USE_PTY_RUNNER:
-        # 接続前に閉じる (= accept しない、 4xx 系の close code で意図を伝える)
-        await ws.close(code=4001, reason="USE_PTY_RUNNER is false")
-        return
     await ws.accept()
 
     # scrollback の自動復元は無効化 (= 2026-05-21 再試行で描画破綻、 旧症状再発)。
@@ -273,8 +267,6 @@ async def pty_send(session_id: str, payload: dict = Body(...)) -> dict:
         key   (str, optional): tmux キー名 (= "Escape" で停止、 "C-c" 等)
         enter (bool, optional): 末尾に Enter (= 確定)
     """
-    if not USE_PTY_RUNNER:
-        return {"ok": False, "reason": "USE_PTY_RUNNER is false"}
     text = payload.get("text")
     key = payload.get("key")
     enter = bool(payload.get("enter", False))
@@ -328,8 +320,6 @@ async def pty_send_with_files(
         text  (str):              本文
         files (list[UploadFile]): 添付ファイル群 (画像 / テキスト / その他何でも)
     """
-    if not USE_PTY_RUNNER:
-        return {"ok": False, "reason": "USE_PTY_RUNNER is false"}
     saved = await save_to_tmp(files, session_id)
     parts: list[str] = []
     if text.strip():
@@ -350,22 +340,3 @@ async def pty_send_with_files(
     }
 
 
-@router.get("/api/agents")
-def list_agents() -> dict:
-    """session picker 用に AGENTS のサマリを返す。
-
-    cwd 等の path を露出するのは tailnet 内に限定された運用前提なので OK、 でも
-    必要最小限に絞る (= display_name と id だけ + plain shell 用の擬似 entry)。
-    """
-    agents = [
-        {
-            "id": agent_id,
-            "display_name": cfg.get("display_name") or agent_id,
-        }
-        for agent_id, cfg in AGENTS.items()
-    ]
-    # AGENTS に紐付かない素の terminal session 用エントリも明示的に出す。
-    # session_id="shell" は backend 側で AGENTS lookup を miss して default cwd で
-    # zsh を起動する経路 (= 既存の spawn 経路の素直な動作)。
-    agents.append({"id": "shell", "display_name": "Plain shell"})
-    return {"agents": agents}
