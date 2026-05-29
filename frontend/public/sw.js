@@ -41,15 +41,19 @@ self.addEventListener('push', (event) => {
     try { self.navigator.setAppBadge(data.unread_count) } catch { /* ignore */ }
   }
   event.waitUntil((async () => {
-    // PWA が開いてる時は postMessage で「proactive turn 来た、 fetchLatest しろ」 を通知。
-    // status polling (idle 30 秒間隔) の隙間で起きた proactive turn を即時 SSE 接続で取りに行く。
-    // PWA が完全終了してる時は client 無しで no-op、 OS 通知だけ残る。
+    // PWA が foreground (= visible) で 1 つでも開いてる時は OS 通知を抑制する。
+    // サイドバーの赤丸 / アプリバッジで気づけるので、 見てる最中に通知が被るのが邪魔
+    // (= 2026-05-29 要望対応)。 hidden / 完全終了時のみ showNotification を撃つ。
+    // postMessage は visible / hidden 問わず投げる (= 状態同期と未読 fetch 用)。
+    let hasVisibleClient = false
     try {
       const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
       for (const c of all) {
+        if (c.visibilityState === 'visible') hasVisibleClient = true
         try { c.postMessage({ type: 'push-received', sid: data.sid || null }) } catch { /* ignore */ }
       }
     } catch { /* ignore */ }
+    if (hasVisibleClient) return
     return self.registration.showNotification(data.title || 'Notification', options)
   })())
 })

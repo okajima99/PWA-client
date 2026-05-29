@@ -174,88 +174,99 @@ export function useSessionActivity(messages, sessions) {
 
 
 // --- session ごとの新着 / 処理中 / 質問待ちバッジ計算 ---
-// active session は常に lastSeen を最新化、 非 active で arr.length > lastSeen なら新着。
-// 「最後に見た時の messages.length」 を localStorage に永続化することで、 リロード越しでも
-// 既読状態が消えない + state 更新の race condition で「タップしたのに赤丸残る」 を防ぐ。
-// 明示的な markAsSeen(sid) も expose し、 session click handler から二重に確実化する。
-const LS_LAST_SEEN_LEN = 'cpc.lastSeenLen'
+// バッジは停止/送信ボタンの状態と 1:1 同期する (= 2026-05-29 改定):
+//   - loading[sid] === true (= 停止ボタン中) → 青丸 (processing)
+//   - loading[sid] が true→false に遷移 (= 送信解禁、 turn 完了) → 赤丸 (new)
+//   - active タブで赤丸を見たら解除
+// 旧仕様の `arr.length > lastSeen` は使わない: streaming 中の length 変動や JSONL flush の
+// 順序揺らぎを噛むより、 loading 解除の 1 イベントで「返信きた」 を確定する方が体感に合う。
+// 「turn 完了で未閲覧」 を localStorage に永続化 (= リロード跨ぎで赤を保持)。
+const LS_UNREAD_DONE = 'cpc.unreadDone'
 
-function loadLastSeen() {
-  const parsed = lsGet(LS_LAST_SEEN_LEN)
+function loadUnreadDone() {
+  const parsed = lsGet(LS_UNREAD_DONE)
   return parsed && typeof parsed === 'object' ? parsed : {}
 }
 
 export function useSessionBadges({ sids, activeSid, messages, loading }) {
-  const [lastSeenLen, setLastSeenLen] = useState(loadLastSeen)
-  // messages の最新 ref (= markAsSeen で render 中にも参照する用)
+  // sid → true なら「turn 完了して未閲覧」
+  const [unreadDone, setUnreadDone] = useState(loadUnreadDone)
+  // 前回 render 時の loading[sid]。 true→false 遷移検出用。
+  const prevLoadingRef = useRef({})
+
+  // messages の最新 ref (= pending question 判定用)
   const messagesRef = useRef(messages)
   useEffect(() => { messagesRef.current = messages }, [messages])
 
   // localStorage 永続化
   useEffect(() => {
-    lsSet(LS_LAST_SEEN_LEN, lastSeenLen)
-  }, [lastSeenLen])
+    lsSet(LS_UNREAD_DONE, unreadDone)
+  }, [unreadDone])
 
-  // 明示的既読化: session click 時に呼ばれる。 activeSid の useEffect が走る前に
-  // sync で lastSeen を確定するので、 タップ → 別タブ切替の高速操作でも漏れない。
+  // 明示的既読化: session click 時に呼ばれる。 activeSid useEffect の前に
+  // sync で赤丸を落とせる経路。
   const markAsSeen = useCallback((sid) => {
     if (!sid) return
-    const len = (messagesRef.current[sid] || []).length
-    setLastSeenLen(prev => (prev[sid] === len ? prev : { ...prev, [sid]: len }))
+    setUnreadDone(prev => (prev[sid] ? { ...prev, [sid]: false } : prev))
   }, [])
 
-  // length signature: messages reference 変化ではなく、 実際に length が変わった時だけ
-  // 下の useEffect を発火させる。 streaming flush で rAF 毎に messages reference が変わる
-  // のを吸収するためのキー。
-  const activeMsgLen = activeSid ? (messages[activeSid] || []).length : 0
-  const messagesLenSig = useMemo(
-    () => sids.map(sid => `${sid}:${(messages[sid] || []).length}`).join('|'),
-    [sids, messages]
-  )
+  // loading[sid] が true→false に変化した sid を unreadDone=true でマーク。
+  // 同時に active タブの sid は積み立てずスキップ (= 見ている最中の完了は赤化不要)。
+  useEffect(() => {
+    const prev = prevLoadingRef.current
+    const next = {}
+    let mutated = false
+    const flips = []
+    for (const sid of sids) {
+      const wasLoading = !!prev[sid]
+      const isLoading = !!loading[sid]
+      next[sid] = isLoading
+      if (wasLoading && !isLoading && sid !== activeSid) {
+        flips.push(sid)
+      }
+    }
+    prevLoadingRef.current = next
+    if (flips.length === 0) return
+    setUnreadDone(p => {
+      const out = { ...p }
+      for (const sid of flips) {
+        if (!out[sid]) { out[sid] = true; mutated = true }
+      }
+      return mutated ? out : p
+    })
+  }, [sids, loading, activeSid])
 
-  // active 会話: 表示中セッションの length が変わった時だけ lastSeen を最新化
+  // active タブに切替 / active タブの状態が動いた時に赤丸を落とす。
   useEffect(() => {
     if (!activeSid) return
-    setLastSeenLen(prev => (prev[activeSid] === activeMsgLen ? prev : { ...prev, [activeSid]: activeMsgLen }))
-  }, [activeSid, activeMsgLen])
+    setUnreadDone(prev => (prev[activeSid] ? { ...prev, [activeSid]: false } : prev))
+  }, [activeSid])
 
-  // 削除された session の lastSeen 掃除 + 新規 / 未初期化 sid は現在 length で seed。
-  // messagesRef 経由で最新値を読み取り (= dep に messages 直接置かない)。
+  // 削除された session のエントリ掃除。
   useEffect(() => {
-    const cur = messagesRef.current
-    setLastSeenLen(prev => {
+    setUnreadDone(prev => {
       const sidSet = new Set(sids)
       const next = { ...prev }
       let changed = false
       for (const k of Object.keys(next)) {
         if (!sidSet.has(k)) { delete next[k]; changed = true }
       }
-      for (const sid of sids) {
-        if (next[sid] == null) {
-          next[sid] = (cur[sid] || []).length
-          changed = true
-        }
-      }
       return changed ? next : prev
     })
-  }, [sids, messagesLenSig])
+  }, [sids])
 
-  // 各 session の表示状態 signature: length + pending question 有無 + loading 状態を
-  // 1 つの string に圧縮。 messages dict reference が rAF 毎に変わっても、 実効状態が
-  // 変わらない限り signature は同値 → 下の useMemo は dep 不変判定で同じ object を返し、
-  // SessionDrawer 等下流の不要な re-render を抑える。
+  // 表示状態 signature: pending question 有無 + loading 状態 + unreadDone。
   const sessionStateSig = useMemo(
     () => sids.map(sid => {
       const arr = messages[sid] || []
       const pending = arr.some(m => m.askUserQuestion && !m.askUserQuestion.answered)
-      return `${sid}:${arr.length}:${pending ? 'p' : ''}:${loading[sid] ? 'l' : ''}`
+      return `${sid}:${pending ? 'p' : ''}:${loading[sid] ? 'l' : ''}:${unreadDone[sid] ? 'n' : ''}`
     }).join('|'),
-    [sids, messages, loading]
+    [sids, messages, loading, unreadDone]
   )
 
   // sessionBadges / unreadCount: signature が同じ間は同じ object を返す。
-  // unreadCount はアプリバッジ用 = 「新着 (= 赤丸)」 のみカウント。 処理中 (= 青丸) や
-  // 質問待ち (= ?) はバッジに含めない仕様。
+  // unreadCount はアプリバッジ数字 = 赤丸が立った session 数。
   const { sessionBadges, unreadCount } = useMemo(() => {
     const cur = messagesRef.current
     const badges = {}
@@ -266,13 +277,12 @@ export function useSessionBadges({ sids, activeSid, messages, loading }) {
       const pending = arr.some(m => m.askUserQuestion && !m.askUserQuestion.answered)
       if (pending) { badges[sid] = { kind: 'pending', label: '?' }; continue }
       if (loading[sid]) { badges[sid] = { kind: 'processing', label: '●' }; continue }
-      const lastSeen = lastSeenLen[sid] ?? arr.length
-      if (arr.length > lastSeen) { badges[sid] = { kind: 'new', label: '●' }; count++; continue }
+      if (unreadDone[sid]) { badges[sid] = { kind: 'new', label: '●' }; count++; continue }
       badges[sid] = null
     }
     return { sessionBadges: badges, unreadCount: count }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSid, sessionStateSig, lastSeenLen])
+  }, [activeSid, sessionStateSig])
   return { sessionBadges, unreadCount, markAsSeen }
 }
 
