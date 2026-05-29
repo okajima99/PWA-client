@@ -208,7 +208,10 @@ def list_agents():
 
 
 # --- session 別 model / effort 切替 ---
-ALLOWED_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+# 4.8 で追加された値: "auto" (= 内容に応じて effort 自動調整) / "ultracode" (= xhigh +
+# auto workflow セット)。 実機で `/effort <値>` が通るかは別途確認 (= 通らなければ claude が
+# 未知コマンドとして無視するだけ)。
+ALLOWED_EFFORTS = {"low", "medium", "high", "xhigh", "max", "auto", "ultracode"}
 
 
 @router.get("/sessions/{session_id}/config")
@@ -220,6 +223,7 @@ def get_session_config(session_id: str, _: str = Depends(require_session)):
     return {
         "model": state.model_override,
         "effort": state.effort_override,
+        "fast": state.fast_mode,
         "default_model": cfg.get("model"),
         "default_effort": "medium",
     }
@@ -237,6 +241,7 @@ async def patch_session_config(session_id: str, payload: dict = Body(...), _: st
     # だけ (= UI 上は変えたつもりで実切替されない)、 ユーザが完了後に再試行する想定。
     changed_model = False
     changed_effort = False
+    changed_fast = False
     if "model" in payload:
         m = payload["model"]
         if m is not None and not isinstance(m, str):
@@ -252,6 +257,13 @@ async def patch_session_config(session_id: str, payload: dict = Body(...), _: st
         if state.effort_override != e:
             state.effort_override = e or None
             changed_effort = True
+    if "fast" in payload:
+        # `/fast` はトグル (= 引数なしで ON⇄OFF 反転)。 PWA が持つ希望状態と現状が食い違う
+        # 時だけ 1 回打って同期する。 2 連打すると ON→OFF に戻ってしまうので差分判定必須。
+        f = bool(payload["fast"])
+        if state.fast_mode != f:
+            state.fast_mode = f
+            changed_fast = True
     # PTY 経路: claude TUI に slash command を tmux send-keys で投入する (= 実切替)。
     # 失敗 (= tmux session が無い、 claude TUI が引数取らない、 等) でも 200 で返す:
     # state の override 値は更新されてるので UI 表示は新値、 ユーザが必要なら再試行する。
@@ -263,8 +275,12 @@ async def patch_session_config(session_id: str, payload: dict = Body(...), _: st
         # 明示記載なし)。 存在しない場合は claude が「未知コマンド」 として無視する、
         # その時は実装側で対応案を再検討する。
         tmux_send_keys(session_id, text=f"/effort {state.effort_override}", enter=True)
+    if changed_fast:
+        # `/fast` は引数なしのトグル。 差分時のみ 1 回打鍵 (= 上の差分判定で担保)。
+        tmux_send_keys(session_id, text="/fast", enter=True)
     return {
         "ok": True,
         "model": state.model_override,
         "effort": state.effort_override,
+        "fast": state.fast_mode,
     }

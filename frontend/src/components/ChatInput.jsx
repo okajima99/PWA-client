@@ -17,6 +17,7 @@ export default function ChatInput({
   activeViewMode,
   onToggleView,
   onOpenPicker,
+  onDeepResearch,
   onEndSession,
   showStopButton,
   onStop,
@@ -62,6 +63,16 @@ export default function ChatInput({
                 onClick={() => { onOpenPicker(); setMenuOpen(false) }}
               >
                 Model & Effort
+              </button>
+            )}
+            {activeSession && (
+              <button
+                className="menu-item"
+                onClick={() => { onDeepResearch(); setMenuOpen(false) }}
+                disabled={!(input[activeSid] || '').trim()}
+                title="入力中のテキストを query に /deep-research を起動"
+              >
+                🔎 Deep Research
               </button>
             )}
             <button

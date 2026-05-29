@@ -285,12 +285,12 @@ export default function App() {
   // backend が返す default_model / default_effort は override 未設定時の表示用。
   // 推論中 (= loading[activeSid]) は backend が 409 で弾く + UI 側でも disable。
   const [sessionConfig, setSessionConfig] = useState({
-    model: null, effort: null, defaultModel: null, defaultEffort: null,
+    model: null, effort: null, fast: false, defaultModel: null, defaultEffort: null,
   })
   const [pickerOpen, setPickerOpen] = useState(null) // null | 'config'
   useEffect(() => {
     if (!activeSid) {
-      setSessionConfig({ model: null, effort: null, defaultModel: null, defaultEffort: null })
+      setSessionConfig({ model: null, effort: null, fast: false, defaultModel: null, defaultEffort: null })
       return
     }
     let cancelled = false
@@ -299,7 +299,7 @@ export default function App() {
       .then(d => {
         if (!d || cancelled) return
         setSessionConfig({
-          model: d.model, effort: d.effort,
+          model: d.model, effort: d.effort, fast: !!d.fast,
           defaultModel: d.default_model, defaultEffort: d.default_effort,
         })
       })
@@ -316,7 +316,7 @@ export default function App() {
       })
       if (res.ok) {
         const d = await res.json()
-        setSessionConfig(prev => ({ ...prev, model: d.model, effort: d.effort }))
+        setSessionConfig(prev => ({ ...prev, model: d.model, effort: d.effort, fast: !!d.fast }))
       }
     } catch { /* ignore */ }
   }, [activeSid])
@@ -324,6 +324,7 @@ export default function App() {
   // override 値が無ければ backend が返した default を ✓ 位置に使う。
   const activeModel = sessionConfig.model ?? sessionConfig.defaultModel
   const activeEffort = sessionConfig.effort ?? sessionConfig.defaultEffort
+  const activeFast = !!sessionConfig.fast
   const configDisabled = !!(activeSid && loading[activeSid])
 
   const displayMessages = useMemo(() => {
@@ -425,7 +426,13 @@ export default function App() {
 
   return (
     <div className="app">
-      <StatusBar status={status} nowSec={nowSec} />
+      <StatusBar
+        status={status}
+        nowSec={nowSec}
+        effort={activeSid ? activeEffort : null}
+        fast={activeSid ? activeFast : false}
+        onOpenConfig={activeSid ? () => setPickerOpen('config') : null}
+      />
       <StorageWarning
         info={storageInfo}
         dismissed={storageWarnDismissed}
@@ -558,6 +565,17 @@ export default function App() {
           activeViewMode={activeViewMode}
           onToggleView={() => { if (activeSid) setViewModes(prev => ({ ...prev, [activeSid]: flippedViewMode })) }}
           onOpenPicker={() => setPickerOpen('config')}
+          onDeepResearch={async () => {
+            if (!activeSid) return
+            const q = (input[activeSid] || '').trim()
+            if (!q) return
+            await apiFetch(`/pty/${encodeURIComponent(activeSid)}/send`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: `/deep-research ${q}`, enter: true }),
+            }).catch(() => {})
+            setInput(prev => ({ ...prev, [activeSid]: '' }))
+          }}
           onEndSession={() => setConfirmEnd(true)}
           showStopButton={showStopButton}
           onStop={() => setConfirmStop(true)}
@@ -570,6 +588,7 @@ export default function App() {
         open={pickerOpen === 'config' && !!activeSid}
         model={activeModel}
         effort={activeEffort}
+        fast={activeFast}
         disabled={configDisabled}
         onPick={patchSessionConfig}
         onClose={() => setPickerOpen(null)}

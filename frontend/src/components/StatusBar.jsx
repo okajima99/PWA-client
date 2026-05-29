@@ -6,9 +6,13 @@ import './StatusBar.css'
 // 18:00 JST 固定」 は誤りだったので撤回 (2026-05-09)。 動的値 (= header から取った
 // resets_at) が取れない時は label を出さない (= 嘘表示しない方針)。
 
-// 上部のステータス行: モデル名 / 5h / 7d / ctx 使用率
+// 上部のステータス行: モデル名 / 5h / 7d / ctx 使用率 + effort / fast pill
 // resets_at が 0 (未知) の間は生の pct を信用、既知かつ過去なら「窓切れ = 0%」扱い。
-export default function StatusBar({ status, nowSec }) {
+// effort / fast / onOpenConfig が揃う時だけ右端に pill を出す (= タップで Model & Effort
+// ダイアログを開く)。 active session が無い時は null で渡され pill は出ない。
+const EFFORT_PILL = { low: 'L', medium: 'M', high: 'H', xhigh: 'XH', max: 'MAX', auto: 'A', ultracode: 'UC' }
+
+export default function StatusBar({ status, nowSec, effort, fast, onOpenConfig }) {
   if (!status) {
     return (
       <div className="statusbar">
@@ -34,6 +38,16 @@ export default function StatusBar({ status, nowSec }) {
         <span className="dim">{sevenDayResetLabel}</span>
       </span>
       <span className={pctClass(status.ctx_pct)}>ctx {Math.round(status.ctx_pct || 0)}%</span>
+      {effort && onOpenConfig && (
+        <button className="statusbar-pill" onClick={onOpenConfig} title="Model & Effort">
+          E:{EFFORT_PILL[effort] || effort}
+        </button>
+      )}
+      {fast && onOpenConfig && (
+        <button className="statusbar-pill fast" onClick={onOpenConfig} title="Fast mode ON">
+          F:⚡
+        </button>
+      )}
     </div>
   )
 }

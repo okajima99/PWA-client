@@ -152,7 +152,10 @@ class StreamState:
     # session 別 model / effort 上書き。 None なら AGENTS 設定 + env デフォルトを使う。
     # PATCH /sessions/{id}/config で更新 → claude TUI に /model /effort を send-keys。
     model_override: str | None = None
-    effort_override: str | None = None  # "low" | "medium" | "high"
+    effort_override: str | None = None  # low | medium | high | xhigh | max | auto | ultracode
+    # `/fast` トグルの希望状態 (= 2.5x 速 / 1/3 価格)。 PATCH /config で差分時のみ `/fast` 打鍵。
+    # claude プロセス側の真の状態は backend からは観測できないので PWA 起動時は OFF 基準に揃える。
+    fast_mode: bool = False
     # 状態変化シグナル (= /status/{sid}/stream SSE が wait する event)。
     # current_tool 変化 / todos 更新等 (= hooks / jsonl 経路) で set、 SSE 受信側は
     # 現状 status JSON を yield して event.clear() する。 backend→frontend を即時 push。

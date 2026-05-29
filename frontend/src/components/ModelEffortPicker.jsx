@@ -12,11 +12,14 @@ const EFFORT_OPTIONS = [
   { value: 'high', label: 'High' },
   { value: 'xhigh', label: 'Extra High' },
   { value: 'max', label: 'Max' },
+  { value: 'auto', label: 'Auto' },
+  { value: 'ultracode', label: 'Ultracode ⚠ (heavy)' },
 ]
 
 // open=false なら描画しない。 model / effort は現在の選択 (= override ?? default)、
-// disabled は推論中フラグ、 onPick({model}|{effort}) で patch、 onClose で閉じる。
-export default function ModelEffortPicker({ open, model, effort, disabled, onPick, onClose }) {
+// fast は /fast トグルの現在状態、 disabled は推論中フラグ、
+// onPick({model}|{effort}|{fast}) で patch、 onClose で閉じる。
+export default function ModelEffortPicker({ open, model, effort, fast, disabled, onPick, onClose }) {
   if (!open) return null
   return (
     <div className="picker-overlay" onClick={onClose}>
@@ -52,6 +55,25 @@ export default function ModelEffortPicker({ open, model, effort, disabled, onPic
               {effort === opt.value && <span className="picker-check">✓</span>}
             </button>
           ))}
+        </div>
+        <div className="picker-section">
+          <div className="picker-section-label">Speed</div>
+          <button
+            className={`picker-option ${!fast ? 'active' : ''}`}
+            onClick={() => onPick({ fast: false })}
+            disabled={disabled}
+          >
+            <span>Normal</span>
+            {!fast && <span className="picker-check">✓</span>}
+          </button>
+          <button
+            className={`picker-option ${fast ? 'active' : ''}`}
+            onClick={() => onPick({ fast: true })}
+            disabled={disabled}
+          >
+            <span>Fast (2.5×, 1/3 price)</span>
+            {fast && <span className="picker-check">✓</span>}
+          </button>
         </div>
         <button className="picker-close" onClick={onClose}>Close</button>
       </div>

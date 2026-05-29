@@ -21,3 +21,18 @@
 .pct.yellow { color: var(--yellow); }
 .pct.red { color: var(--red); }
 .dim { color: var(--text-dim); }
+
+/* effort / fast の pill (= タップで Model & Effort ダイアログを開く) */
+.statusbar-pill {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.statusbar-pill + .statusbar-pill { margin-left: 6px; }
+.statusbar-pill.fast { color: var(--accent); border-color: var(--accent); }
