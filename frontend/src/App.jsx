@@ -95,12 +95,17 @@ export default function App() {
     scrollToBottom,
     onScroll,
   } = useAutoScroll({ messages, activeSession, viewMode: activeViewMode })
+  // Deep Research の武装状態 (= session 別)。 ⋯ メニューで ON にすると、 次に送る
+  // メッセージが `/deep-research <本文>` に包まれて送られる (= 即送信はしない)。
+  const [deepResearch, setDeepResearch] = useState({})
+
   const { loading, setLoading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession, pendingSendUntilRef } = useChatStream({
     activeSession,
     setMessages,
     input, setInput,
     attachments, clearAttachments,
     scrollToBottom, isAtBottomRef,
+    deepResearch, setDeepResearch,
   })
 
   const storageInfo = useStorageQuota()
@@ -582,16 +587,15 @@ export default function App() {
           activeViewMode={activeViewMode}
           onToggleView={() => { if (activeSid) setViewModes(prev => ({ ...prev, [activeSid]: flippedViewMode })) }}
           onOpenPicker={() => setPickerOpen('config')}
-          onDeepResearch={async () => {
+          deepResearchArmed={!!(activeSid && deepResearch[activeSid])}
+          onDeepResearch={() => {
             if (!activeSid) return
-            const q = (input[activeSid] || '').trim()
-            if (!q) return
-            await apiFetch(`/pty/${encodeURIComponent(activeSid)}/send`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ text: `/deep-research ${q}`, enter: true }),
-            }).catch(() => {})
-            setInput(prev => ({ ...prev, [activeSid]: '' }))
+            // 即送信せず武装トグルのみ。 次の送信 (sendMessage) で本文に乗る。
+            setDeepResearch(prev => ({ ...prev, [activeSid]: !prev[activeSid] }))
+          }}
+          onDisarmDeepResearch={() => {
+            if (!activeSid) return
+            setDeepResearch(prev => ({ ...prev, [activeSid]: false }))
           }}
           onEndSession={() => setConfirmEnd(true)}
           showStopButton={showStopButton}

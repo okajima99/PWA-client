@@ -18,6 +18,8 @@ export default function ChatInput({
   onToggleView,
   onOpenPicker,
   onDeepResearch,
+  onDisarmDeepResearch,
+  deepResearchArmed,
   onEndSession,
   showStopButton,
   onStop,
@@ -26,6 +28,16 @@ export default function ChatInput({
 }) {
   return (
     <div className="inputarea">
+      {deepResearchArmed && (
+        <button
+          className="deep-research-armed"
+          onClick={onDisarmDeepResearch}
+          title="Deep Research ON（次の送信に乗る）— タップで解除"
+          aria-label="Deep Research を解除"
+        >
+          🔎
+        </button>
+      )}
       <input
         ref={fileInputRef}
         type="file"
@@ -67,12 +79,11 @@ export default function ChatInput({
             )}
             {activeSession && (
               <button
-                className="menu-item"
+                className={`menu-item ${deepResearchArmed ? 'active' : ''}`}
                 onClick={() => { onDeepResearch(); setMenuOpen(false) }}
-                disabled={!(input[activeSid] || '').trim()}
-                title="入力中のテキストを query に /deep-research を起動"
+                title="ON にすると次に送るメッセージが /deep-research で送られる"
               >
-                🔎 Deep Research
+                🔎 Deep Research {deepResearchArmed ? '✓ ON' : ''}
               </button>
             )}
             <button

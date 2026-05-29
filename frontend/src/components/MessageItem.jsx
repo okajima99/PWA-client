@@ -295,6 +295,9 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
   }
   return (
     <div className={`message ${msg.role}`}>
+      {msg.role === 'user' && msg.deepResearch && (
+        <span className="dr-mark" title="Deep Research で送信したメッセージ">🔎 Deep Research</span>
+      )}
       {msg.role === 'user' && (msg.imageRefs?.length > 0 || msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
         <div className="user-block">
           <AttachedImages imageRefs={msg.imageRefs} imageUrls={msg.imageUrls} />

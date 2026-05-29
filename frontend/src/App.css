@@ -250,6 +250,31 @@ button:disabled {
   color: #ff5f57;
 }
 
+.menu-item.active {
+  color: var(--accent, #4da3ff);
+  font-weight: 700;
+}
+
+/* Deep Research 武装中インジケータ (= 入力欄の直上に出して、 メニューを開かなくても
+   「次の送信に乗る」 状態が見える)。 ✕ で解除。 */
+/* Deep Research 武装中インジケータ = 🔎 アイコン 1 個だけ (= メッセージボックスが
+   小さいので最小フットプリント、 タップで解除)。 ON/OFF は枠 + 背景で示す。 */
+.deep-research-armed {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: 0 8px 4px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--bg3);
+  border: 1px solid var(--accent, #4da3ff);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
 /* model / effort 切替行 (= action-menu 内に並べる小さな pill 群)。 */
 .menu-row {
   display: flex;
