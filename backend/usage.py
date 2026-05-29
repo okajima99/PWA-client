@@ -30,13 +30,31 @@ def read_latest_rate_limits() -> dict:
     lines = [ln for ln in tail.splitlines() if ln.strip()]
     if not lines:
         return {}
-    try:
-        last = json.loads(lines[-1])
-    except (json.JSONDecodeError, ValueError):
+    parsed: list[dict] = []
+    for ln in lines[-8:]:
+        try:
+            parsed.append(json.loads(ln))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    if not parsed:
         return {}
+    last = parsed[-1]
+    # 7d% flap 吸収: Anthropic 側集計が 85%↔1% で一時的に揺らぐ (= 2026-05-29 早朝に観測)。
+    # 同じ seven_day_resets_at を共有する直近行の中で max を採り、 単調側に寄せて瞬間的な
+    # 下振れを潰す。 resets_at が変わった行 (= 正常な window リセット) は別 window なので
+    # 対象外にして、 リセット直後の正当な下振れまで max で隠さない。
+    cur_reset = last.get("seven_day_resets_at")
+    seven_day_pct = last.get("seven_day_pct")
+    same_window = [
+        p.get("seven_day_pct") for p in parsed
+        if p.get("seven_day_resets_at") == cur_reset
+        and isinstance(p.get("seven_day_pct"), (int, float))
+    ]
+    if same_window:
+        seven_day_pct = max(same_window)
     return {
         "five_hour_pct": last.get("five_hour_pct"),
-        "seven_day_pct": last.get("seven_day_pct"),
+        "seven_day_pct": seven_day_pct,
         "five_hour_resets_at": last.get("five_hour_resets_at"),
         "seven_day_resets_at": last.get("seven_day_resets_at"),
         "context_pct": last.get("context_pct"),

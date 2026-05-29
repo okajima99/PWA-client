@@ -21,6 +21,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Body, File, Form, UploadFile, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 from chat_content import save_to_tmp
 from config import AGENTS
@@ -197,6 +198,9 @@ async def _pump_to_client(ws: WebSocket, session: PtySession) -> None:
     """PTY 出力 queue → client へバイナリで流す。"""
     try:
         while True:
+            # client が既に切断済なら静かに終わる (= 閉じた WS への send を試みない)。
+            if ws.client_state != WebSocketState.CONNECTED:
+                return
             if session.exit_event.is_set() and session.output_queue.empty():
                 # 子終了通知を 1 度だけ送って終わる
                 try:
@@ -204,7 +208,7 @@ async def _pump_to_client(ws: WebSocket, session: PtySession) -> None:
                         "type": "exit",
                         "returncode": session.process.returncode,
                     }))
-                except Exception:
+                except (WebSocketDisconnect, RuntimeError):
                     pass
                 return
             try:
@@ -213,6 +217,12 @@ async def _pump_to_client(ws: WebSocket, session: PtySession) -> None:
                 continue
             await ws.send_bytes(data)
     except WebSocketDisconnect:
+        return
+    except RuntimeError as e:
+        # WS が閉じた後の send は starlette が "Unexpected ASGI message 'websocket.send'"
+        # の RuntimeError を投げる。 異常ではなく client 切断の一種なので、 exception ログ
+        # ではなく debug で静かに終える (= 2026-05-28 に 8 回以上ログを噴いた汚染源)。
+        logger.debug("_pump_to_client: ws closed mid-send session=%s: %s", session.session_id, e)
         return
     except Exception:
         logger.exception("_pump_to_client error session=%s", session.session_id)
@@ -283,8 +293,9 @@ async def pty_send(session_id: str, payload: dict = Body(...)) -> dict:
     ok = tmux_send_keys(session_id, text=text, key=key, enter=enter)
     if not ok or not confirm or jsonl_path is None:
         return {"ok": ok}
-    # 第 1 回 確認待ち
-    if await _wait_user_prompt_added(jsonl_path, initial_count, timeout=2.0):
+    # 第 1 回 確認待ち (= 監視窓 4s。 launch_alias 起動直後や重い paste 展開で JSONL flush が
+    # 遅れるケースを取りこぼさないよう 2s から延長、 2 段リトライ前の取り逃しを減らす)。
+    if await _wait_user_prompt_added(jsonl_path, initial_count, timeout=4.0):
         return {"ok": True, "confirmed": True}
     # 再送 #1: paste は既に TUI に届いている可能性が高いので Enter だけ追い打ち
     # (= claude TUI の `paste again to expand` プレースホルダ展開 + 送信 で Enter 1 個が

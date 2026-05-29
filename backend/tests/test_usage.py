@@ -1,7 +1,10 @@
 """usage.py の pure 関数 (= compute_ctx_pct / format_model_name) の
 unit test。 すべて side-effect なしで、 fixture も不要。
 """
-from usage import compute_ctx_pct, format_model_name
+import json
+
+import usage
+from usage import compute_ctx_pct, format_model_name, read_latest_rate_limits
 
 
 # ============================================================================
@@ -55,3 +58,36 @@ def test_format_model_name_short_fallback():
 def test_format_model_name_no_claude_prefix():
     # 意図: prefix 無しでも壊れない (= 入力 sanitize していない側のフォルト保険)
     assert format_model_name("opus-4-5-x") == "Opus 4.5.x"
+
+
+# ============================================================================
+# read_latest_rate_limits (7d% flap 吸収)
+# ============================================================================
+
+def _write_rate_limits(tmp_path, rows):
+    p = tmp_path / "rate-limits.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return str(p)
+
+
+def test_seven_day_pct_takes_max_within_same_window(tmp_path, monkeypatch):
+    # 同じ reset window 内の 85%↔1% flap は max(=85) に寄せる。
+    path = _write_rate_limits(tmp_path, [
+        {"seven_day_pct": 85, "seven_day_resets_at": 1000, "five_hour_pct": 30},
+        {"seven_day_pct": 1, "seven_day_resets_at": 1000, "five_hour_pct": 31},
+    ])
+    monkeypatch.setattr(usage, "RATE_LIMITS_LOG_PATH", path)
+    out = read_latest_rate_limits()
+    assert out["seven_day_pct"] == 85
+    assert out["five_hour_pct"] == 31  # 5h は最終行の生値
+
+
+def test_seven_day_pct_not_masked_across_reset(tmp_path, monkeypatch):
+    # window リセット (resets_at が変化) を跨いだら、 リセット直後の低い値を max で隠さない。
+    path = _write_rate_limits(tmp_path, [
+        {"seven_day_pct": 85, "seven_day_resets_at": 1000},
+        {"seven_day_pct": 2, "seven_day_resets_at": 2000},
+    ])
+    monkeypatch.setattr(usage, "RATE_LIMITS_LOG_PATH", path)
+    out = read_latest_rate_limits()
+    assert out["seven_day_pct"] == 2
