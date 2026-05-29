@@ -262,6 +262,7 @@ def list_bindings() -> dict[str, dict]:
             "claude_cwd": b.claude_cwd,
             "start_time": b.start_time,
             "jsonl_path": str(b.jsonl_path) if b.jsonl_path else None,
+            "confirmed": b.confirmed,
         }
         for sid, b in _bindings.items()
     }

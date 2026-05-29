@@ -60,6 +60,22 @@ def test_no_heal_when_confirmed_file_missing(tmp_path):
     assert jw.get_jsonl_for("ses_3") is None
 
 
+def test_list_bindings_exposes_confirmed_flag(tmp_path):
+    # hooks_router._pwa_session_for_claude_sid が confirmed の serialize を見て
+    # 通知の宛先を絞っているので、 list_bindings は confirmed を必ず露出する。
+    # 露出が落ちると全 hook が non_pwa_session 扱いになり通知が止まる (= 2026-05-28 実機回帰)。
+    f = tmp_path / "ok.jsonl"
+    f.write_text("{}\n")
+    jw.confirm_bind("ses_c", "claude_c", str(f))
+    jw._bindings["ses_u"] = jw._ClaudeBinding(
+        tmux_sid="ses_u", claude_pid=0, claude_cwd=str(tmp_path), start_time=0.0,
+        jsonl_path=f, confirmed=False,
+    )
+    listed = jw.list_bindings()
+    assert listed["ses_c"]["confirmed"] is True
+    assert listed["ses_u"]["confirmed"] is False
+
+
 def test_confirm_bind_detaches_stale_and_blocks_reheal(tmp_path):
     # 同 path を持つ別 binding を confirm_bind が剥がし、 self-heal で復帰させないこと
     # (= 1 JSONL が 2 タブに流れる cross-contamination 防止)。

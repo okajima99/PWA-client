@@ -4,9 +4,12 @@ POST /hooks/event の payload 種別ごとの分岐 (= Stop / Notification / 未
 session_id 逆引き (= cwd → PWA session) の挙動を確認する。 実際の push 配信は
 broadcast_push をモックして引数だけ検証する。
 """
+from pathlib import Path
+
 import pytest
 
 import hooks_router
+import jsonl_watcher
 
 
 @pytest.fixture
@@ -32,15 +35,25 @@ def fake_agents(monkeypatch, tmp_path):
 
 
 @pytest.fixture
-def fake_tmux_map(monkeypatch, tmp_path):
-    """tmux session map を tmp に作って、 PWA セッション扱いの claude_sid を登録する。
-    PWA 経由判定 (= `_pwa_session_for_claude_sid`) を test 内で再現するため。"""
-    map_dir = tmp_path / "tmux-session-map"
-    map_dir.mkdir()
-    monkeypatch.setattr(hooks_router, "_TMUX_MAP", map_dir)
+def fake_bindings(monkeypatch, tmp_path):
+    """jsonl_watcher._bindings に confirmed binding を直接張る fixture。
+    f5d0ca6 以降の `_pwa_session_for_claude_sid` は statusline map ではなく
+    `jsonl_watcher.list_bindings()` の confirmed entry を逆引き元にする。"""
+    monkeypatch.setattr(jsonl_watcher, "_bindings", {})
+    monkeypatch.setattr(jsonl_watcher, "_confirmed_paths", {})
 
-    def register(pwa_sid: str, claude_sid: str) -> None:
-        (map_dir / f"pwa-{pwa_sid}").write_text(claude_sid, encoding="utf-8")
+    def register(pwa_sid: str, claude_sid: str, *, confirmed: bool = True) -> Path:
+        jsonl_path = tmp_path / f"{claude_sid}.jsonl"
+        jsonl_path.write_text("", encoding="utf-8")
+        jsonl_watcher._bindings[pwa_sid] = jsonl_watcher._ClaudeBinding(
+            tmux_sid=pwa_sid,
+            claude_pid=0,
+            claude_cwd=str(tmp_path),
+            start_time=0.0,
+            jsonl_path=jsonl_path,
+            confirmed=confirmed,
+        )
+        return jsonl_path
 
     return register
 
@@ -78,12 +91,12 @@ def test_truncate_long_appends_ellipsis():
     assert result == "xxxxxxxxxx…"
 
 
-def test_endpoint_stop_event_pushes_output(fake_agents, fake_tmux_map, captured_pushes):
+def test_endpoint_stop_event_pushes_output(fake_agents, fake_bindings, captured_pushes):
     """Stop イベントは last_assistant_message を本文に push する。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    fake_tmux_map("primary", "claude-internal-uuid")
+    fake_bindings("primary", "claude-internal-uuid")
     monkeypatch_app = FastAPI()
     monkeypatch_app.include_router(hooks_router.router)
     client = TestClient(monkeypatch_app)
@@ -103,11 +116,11 @@ def test_endpoint_stop_event_pushes_output(fake_agents, fake_tmux_map, captured_
     assert sid == "primary"
 
 
-def test_endpoint_notification_event_pushes_message(fake_agents, fake_tmux_map, captured_pushes):
+def test_endpoint_notification_event_pushes_message(fake_agents, fake_bindings, captured_pushes):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    fake_tmux_map("primary", "claude-internal-uuid")
+    fake_bindings("primary", "claude-internal-uuid")
     app = FastAPI()
     app.include_router(hooks_router.router)
     client = TestClient(app)
@@ -125,12 +138,12 @@ def test_endpoint_notification_event_pushes_message(fake_agents, fake_tmux_map, 
     assert captured_pushes[0][0] == "permission needed"
 
 
-def test_endpoint_unknown_event_acks_without_push(fake_agents, fake_tmux_map, captured_pushes):
+def test_endpoint_unknown_event_acks_without_push(fake_agents, fake_bindings, captured_pushes):
     """未対応イベントは受信 ack のみ、 push しない。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    fake_tmux_map("primary", "claude-internal-uuid")
+    fake_bindings("primary", "claude-internal-uuid")
     app = FastAPI()
     app.include_router(hooks_router.router)
     client = TestClient(app)
@@ -147,13 +160,13 @@ def test_endpoint_unknown_event_acks_without_push(fake_agents, fake_tmux_map, ca
     assert captured_pushes == []
 
 
-def test_endpoint_non_pwa_session_is_ignored(fake_agents, fake_tmux_map, captured_pushes):
-    """tmux_session_map に登録されてない claude_sid (= デスクトップ公式 / ターミナル直叩き)
+def test_endpoint_non_pwa_session_is_ignored(fake_agents, fake_bindings, captured_pushes):
+    """confirmed binding に存在しない claude_sid (= デスクトップ公式 / ターミナル直叩き)
     は ignored で push されないこと。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    # fake_tmux_map で primary を登録しないので claude_sid は孤立
+    # fake_bindings で primary を登録しないので claude_sid は孤立
     app = FastAPI()
     app.include_router(hooks_router.router)
     client = TestClient(app)
@@ -185,4 +198,28 @@ def test_endpoint_invalid_json_returns_400_payload(captured_pushes):
     )
     assert response.status_code == 200
     assert response.json() == {"ok": False, "reason": "invalid_json"}
+    assert captured_pushes == []
+
+
+def test_endpoint_unconfirmed_binding_is_ignored(fake_agents, fake_bindings, captured_pushes):
+    """confirmed=False の binding (= 確率窓マッチ由来) は逆引き対象に含めず push しない。
+    regression: f5d0ca6 で list_bindings() に切替えた時、 list_bindings の serialize が
+    confirmed を露出しておらず、 hooks_router の `info.get("confirmed")` が常に falsy で
+    全 hook が non_pwa_session 扱いになる回帰を実機で起こした。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    fake_bindings("primary", "claude-internal-uuid", confirmed=False)
+    app = FastAPI()
+    app.include_router(hooks_router.router)
+    client = TestClient(app)
+
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "claude-internal-uuid",
+        "cwd": fake_agents["cwd"],
+        "last_assistant_message": "should not push",
+    }
+    response = client.post("/hooks/event", json=payload)
+    assert response.json() == {"ok": True, "ignored": "non_pwa_session"}
     assert captured_pushes == []
