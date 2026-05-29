@@ -124,6 +124,9 @@ def _assistant_events(line: dict) -> list[dict]:
             "modelUsage": {model: {}} if model else None,
             # refusal は MessageItem 側で danger chip を出させる。
             "is_error": stop_reason == "refusal",
+            # 4.8 で公開化された refusal の理由詳細 (= stop_details)。 refusal 時のみ載せ、
+            # MessageItem が danger chip に理由を inline 表示する。
+            "stop_details": msg.get("stop_details") if stop_reason == "refusal" else None,
         })
 
     return events

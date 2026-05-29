@@ -76,6 +76,7 @@ export function processStreamEvent(deps, sid, event) {
       usage: event.usage || null,
       stop_reason: typeof event.stop_reason === 'string' ? event.stop_reason : null,
       is_error: !!event.is_error,
+      stop_details: event.stop_details || null,
     }
     cancelAndFlush(sid)
     setMessages(prev => {

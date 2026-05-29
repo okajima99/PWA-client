@@ -175,10 +175,27 @@ const STOP_REASON_LABELS = {
   model_context_window_exceeded: { label: '⚠ コンテキスト窓超過', cls: 'warn' },
 }
 
+// 4.8 の refusal は stop_details に理由を持つ。 shape は string / {reason|message|type} の
+// いずれもあり得るので防御的に読めるものを拾う。
+function stopDetailText(details) {
+  if (!details) return ''
+  if (typeof details === 'string') return details
+  if (typeof details === 'object') {
+    return details.reason || details.message || details.description || details.type || ''
+  }
+  return ''
+}
+
 function StopReasonChip({ meta, streaming }) {
   if (!meta || streaming) return null
   if (meta.is_error) {
-    return <div className="stop-chip danger">⚠ エラーで停止{meta.stop_reason ? ` (${meta.stop_reason})` : ''}</div>
+    const detail = stopDetailText(meta.stop_details)
+    const label = meta.stop_reason ? ` (${meta.stop_reason})` : ''
+    return (
+      <div className="stop-chip danger">
+        ⚠ エラーで停止{label}{detail ? `: ${detail}` : ''}
+      </div>
+    )
   }
   if (!meta.stop_reason || meta.stop_reason === 'end_turn' || meta.stop_reason === 'tool_use') return null
   const def = STOP_REASON_LABELS[meta.stop_reason]
