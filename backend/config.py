@@ -18,8 +18,7 @@ UPLOADS_TMP = Path(config.get("uploads_tmp", str(HOME / ".claude-pwa-client" / "
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 FILE_SIZE_LIMIT = 1 * 1024 * 1024  # 1MB
 
-# --- Anthropic 直結 ---
-ANTHROPIC_API_BASE = "https://api.anthropic.com"
+# --- claude CLI ---
 CLAUDE_PATH = config.get("claude_path")
 
 # --- CORS ---

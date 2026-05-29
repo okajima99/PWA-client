@@ -3,7 +3,7 @@
 - VAPID 鍵 / サブスクリプションの永続化
 - ターン完了時に呼ばれる broadcast_push()
 - /push/state, /push/vapid-public-key, /push/subscribe, /push/unsubscribe
-- 未読数 (= app badge 用) の保持 + /notifications/unread-count + /notifications/read-all
+- 未読数 (= app badge 用) の保持 + /notifications/read-all + /notifications/sync
   (= 通知履歴は持たない、 未読カウンタだけ。 PWA を開いた / 該当 session を見た時に 0 リセット)
 """
 import asyncio
@@ -23,7 +23,7 @@ except ImportError:
     _HAS_WEBPUSH = False
 
 from config import AGENTS, NOTIFICATION_TITLE_DEFAULT, VAPID_SUB
-from state import atomic_write_text, flags, sessions_meta
+from state import atomic_write_text, sessions_meta
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -34,7 +34,7 @@ SUBSCRIPTIONS_PATH = Path(__file__).parent / "subscriptions.json"
 # 未読カウンタ: broadcast_push のたびに +1、 PWA を開いた時 (= /push/state visible) や
 # /notifications/read-all で 0 リセット。 通知履歴本体は保持しない (= 2026-05-16 改修で
 # 通知センター UI を撤去したため、 アプリバッジ同期に必要な int 1 個だけ残す)。
-# broadcast_push は async、 mark_all_read / sync_unread_count / get_unread_count は sync handler
+# broadcast_push は async、 mark_all_read / sync_unread_count は sync handler
 # (= FastAPI thread pool 上で並行実行) なので、 +1 と read-write を atomic にするための lock。
 _unread_count_lock = threading.Lock()
 unread_count: int = 0
@@ -268,19 +268,10 @@ def push_state(payload: dict = Body(...)):
         "session_id": session_id if visible else None,
         "ts": time.time(),
     }
-    # legacy 互換: いずれかの client が visible なら user_visible=True
-    flags["user_visible"] = any(s.get("visible") for s in client_states.values())
     return {"ok": True}
 
 
 # --- 未読カウンタ API (= 通知履歴は持たない、 badge 同期用の数値だけ) ---
-@router.get("/notifications/unread-count")
-def get_unread_count():
-    """未読数を返す。 app badge 同期 / 起動時 fetch 用。"""
-    with _unread_count_lock:
-        return {"unread_count": unread_count}
-
-
 @router.post("/notifications/read-all")
 def mark_all_read(payload: dict = Body(default={})):
     """未読カウンタを 0 にリセット。 PWA を開いた時 / session を開いた時に呼ばれる。

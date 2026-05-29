@@ -9,8 +9,6 @@
 - ストリームごとの状態 (`stream_states`)
 - ステータスキャッシュ (`agent_status`, `shared_status`)
 - claude セッション ID の永続化 (`sessions` + `save_sessions`): session_id → claude session_id
-- ターン中の assistant text (`last_assistant_text`)
-- 通知抑止用フラグ (`flags["user_visible"]`)
 
 異なるモジュールから書き換えたい値は dict や dataclass にラップして
 import 越しに mutate できる形にしている。
@@ -252,12 +250,6 @@ agent_status: dict[str, dict] = {
     sid: _make_agent_status(meta.agent_id) for sid, meta in sessions_meta.items()
 }
 
-# --- ターン中 assistant text 蓄積 (通知 body 用) ---
-last_assistant_text: dict[str, str] = {sid: "" for sid in sessions_meta}
-
-# --- グローバルフラグ (mutate 越し import 用に dict ラップ) ---
-flags: dict = {"user_visible": False}
-
 # backend プロセスの起動時刻 (= /status payload に含めて frontend が再起動を検知)。
 # LaunchAgent KeepAlive で自動再起動した場合に、 frontend 側で stale な streaming bubble を
 # 停止扱いに固定するためのシグナル。
@@ -279,7 +271,6 @@ def register_session(agent_id: str, title: str | None = None) -> SessionDef:
     sessions_meta[sid] = meta
     stream_states[sid] = StreamState(agent_id=agent_id)
     agent_status[sid] = _make_agent_status(agent_id)
-    last_assistant_text[sid] = ""
     sessions[sid] = None
     save_sessions_meta()
     save_sessions()
@@ -293,7 +284,6 @@ def unregister_session(session_id: str) -> bool:
     sessions_meta.pop(session_id, None)
     stream_states.pop(session_id, None)
     agent_status.pop(session_id, None)
-    last_assistant_text.pop(session_id, None)
     sessions.pop(session_id, None)
     session_tmp_files.pop(session_id, None)
     save_sessions_meta()

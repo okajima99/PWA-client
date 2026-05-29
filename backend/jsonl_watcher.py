@@ -234,26 +234,6 @@ def confirm_bind(pwa_sid: str, claude_sid: str, transcript_path: str) -> Optiona
     return path
 
 
-def force_bind(tmux_sid: str, jsonl_filename: str, cwd: str) -> Optional[Path]:
-    """応急処置用: 指定 PWA session に JSONL を強制紐付けする。
-    確率窓マッチ (= startup scan の ±_BIRTH_WINDOW 失敗) で誤割当 / 未割当が起きた時に、
-    debug endpoint から手動で binding を矯正するための逃げ道。
-    """
-    path = _cwd_to_project_dir(cwd) / jsonl_filename
-    if not path.is_file():
-        logger.warning("force_bind: file not found %s", path)
-        return None
-    binding = _bindings.get(tmux_sid)
-    if binding is None:
-        binding = _ClaudeBinding(
-            tmux_sid=tmux_sid, claude_pid=0, claude_cwd=cwd, start_time=time.time(),
-        )
-        _bindings[tmux_sid] = binding
-    binding.jsonl_path = path
-    logger.info("jsonl_watcher force_bound sid=%s -> %s", tmux_sid, path.name)
-    return path
-
-
 def list_bindings() -> dict[str, dict]:
     """debug 用: 現在の全 binding を JSON-serializable な dict で返す。"""
     return {

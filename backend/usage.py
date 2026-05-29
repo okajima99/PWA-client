@@ -1,13 +1,13 @@
 """使用率系の状態 (= 5h/7d/ctx/model) を組み立てる層。
 
-rate-limits.jsonl (= statusline 記録) の読み取りと、 ResultMessage.usage からの
-context 使用率計算を担当し、 agent_status を更新する。 state.py は純粋な state 定義・
-lifecycle に専念し、 「使用率の計算」 はここに集約する (= 2026-05-17 責務分離)。
+rate-limits.jsonl (= statusline 記録) の読み取りと、 usage からの context 使用率計算を
+担当する。 state.py は純粋な state 定義・lifecycle に専念し、 「使用率の計算」 はここに
+集約する (= 2026-05-17 責務分離)。
 """
 import json
 
 from config import RATE_LIMITS_LOG_PATH
-from state import DEFAULT_CTX_WINDOW, agent_status
+from state import DEFAULT_CTX_WINDOW
 
 
 def read_latest_rate_limits() -> dict:
@@ -67,21 +67,3 @@ def format_model_name(key: str) -> str:
     return key.capitalize()
 
 
-def update_agent_from_result(session_id: str, model_usage: dict | None, last_assistant_usage: dict | None) -> None:
-    """ResultMessage.model_usage と直近 AssistantMessage.usage から model / ctx_window /
-    ctx_pct を更新する。 SDK 経由でしか取れない正確な ctx_window をここで持ち越す。"""
-    if not model_usage or session_id not in agent_status:
-        return
-    model_key = next(iter(model_usage), None)
-    if not model_key:
-        return
-    agent_status[session_id]["model"] = format_model_name(model_key)
-    # ctx_window 解決優先順: ResultMessage の正確値 → agent_status 前回値 → default。
-    ctx_window = (
-        model_usage[model_key].get("contextWindow")
-        or agent_status[session_id].get("ctx_window")
-        or DEFAULT_CTX_WINDOW
-    )
-    agent_status[session_id]["ctx_window"] = ctx_window
-    if last_assistant_usage:
-        agent_status[session_id]["ctx_pct"] = compute_ctx_pct(last_assistant_usage, ctx_window)

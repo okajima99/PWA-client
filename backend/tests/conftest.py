@@ -4,8 +4,7 @@
   `from usage import _parse_reset` のように直 import できるようにする。
 - `isolated_state` fixture: state.py の module-level dict を test 内で安全に
   mutate するための snapshot / restore 仕組み。 第一弾の pure 関数 test では
-  実質出番ないが、 第二弾 (= register_session / update_agent_from_result 等
-  global state を触る test 群) で必須になるため先に置いておく。
+  実質出番ないが、 register_session 等 global state を触る test 群で必須になる。
 """
 import copy
 import pathlib
@@ -24,8 +23,6 @@ _STATE_GLOBALS = (
     "shared_status",
     "sessions_meta",
     "stream_states",
-    "last_assistant_text",
-    "flags",
 )
 
 
