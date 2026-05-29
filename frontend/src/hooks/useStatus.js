@@ -5,7 +5,7 @@ import { apiFetch, apiUrl } from '../utils/api.js'
 //
 // 仕様 (2026-05-17 改修):
 //   - polling 撤廃、 backend が `/status/{sid}/stream` で SSE push する形に統一
-//   - backend 側で state.complete / current_tool / todos 等が変化するたびに
+//   - backend 側で current_tool / todos / pending_question 等が変化するたびに
 //     `status_event.set()` が呼ばれて即時 push される (= ms 単位)
 //   - frontend は EventSource で subscribe するだけ、 fetch interval は無し
 //   - 電池消費: 持続 SSE 接続 1 本 (= 接続維持コスト、 idle 時 fetch ゼロ)

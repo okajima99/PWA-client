@@ -152,9 +152,9 @@ def _build_status(session_id: str) -> dict:
         "seven_day_pct": rl["seven_day_pct"] if rl.get("seven_day_pct") is not None else shared_status["seven_day_pct"],
         "five_hour_resets_at": rl.get("five_hour_resets_at") or shared_status["five_hour_resets_at"],
         "seven_day_resets_at": rl.get("seven_day_resets_at") or shared_status["seven_day_resets_at"],
-        "streaming": not state.complete,
-        "buffer_length": len(state.buffer),
-        "buffer_id": state.buffer_id,
+        # streaming / buffer_* は撤去 (= PTY 経路では state.complete が常に True 固定の
+        # ゴーストフィールドだった)。 frontend の停止/送信ボタン判定は loading (= JSONL
+        # SSE の assistant/result で駆動) + pendingSend + pending_question に一本化した。
         "pending_question_tool_id": state.pending_question_tool_id,
         # backend プロセスの起動時刻 (= frontend がこの値の変化で「再起動された」 と検知し、
         # 古い streaming bubble を強制的に停止扱いに固定する)。
@@ -235,10 +235,9 @@ async def patch_session_config(session_id: str, payload: dict = Body(...), _: st
     PTY 経路では state 値だけでなく claude TUI に slash command を流して
     実切替まで完遂する (= `/model <name>` / `/effort <level>`)。"""
     state = stream_states[session_id]
-    # 旧 SDK 経路は推論中切替で client が壊れる事故あり → 409 で弾いてた。 PTY 経路では
-    # state.complete を更新してないので常に True 扱いになり、 ここのガードは効かない。
-    # claude TUI 側で「推論中の /model」 が動かなければ tmux send-keys が黙って吸われる
-    # だけ (= UI 上は変えたつもりで実切替されない)、 ユーザが完了後に再試行する想定。
+    # 推論中の切替ガードは設けない。 claude TUI 側で「推論中の /model」 が効かなければ
+    # tmux send-keys が黙って吸われるだけ (= UI 上は変えたつもりで実切替されない)、
+    # ユーザが完了後に再試行する想定。
     changed_model = False
     changed_effort = False
     changed_fast = False

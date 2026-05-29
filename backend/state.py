@@ -141,12 +141,6 @@ sessions_meta = _load_sessions_meta()
 @dataclass
 class StreamState:
     agent_id: str = ""  # どの AGENTS 設定 (cwd / notification_title) を参照するか
-    # buffer / buffer_id / complete は /status payload (_build_status) が読む。
-    # PTY + JSONL 経路では buffer に積まれないが、 status の streaming フラグ /
-    # buffer_id 整合のためフィールドだけ維持する。
-    buffer: list[str] = field(default_factory=list)
-    buffer_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    complete: bool = True
     # AskUserQuestion の回答待ち tool_use id (= /status payload に載せる)。
     pending_question_tool_id: str | None = None
     # session 別 model / effort 上書き。 None なら AGENTS 設定 + env デフォルトを使う。

@@ -191,14 +191,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.backend_start_time, setLoading, setMessages])
 
-  // ボタン UI 用の合成 loading 判定。 3 source の OR:
-  //   - loading[sid]         : sendMessage / reconnectStream が触る local 状態
-  //   - status.streaming     : backend の state.complete の反転 (= 正規の真値、 SSE 経由)
-  //   - pendingSendUntilRef  : 送信直後の楽観的 deadline (= status SSE 到達まで救済)
+  // ボタン UI 用の合成 loading 判定。 2 source の OR:
+  //   - loading[sid]         : JSONL SSE の assistant/result イベントで駆動 (= user 送信も
+  //                            proactive turn も拾う、 turn 中 true / 完了 false)
+  //   - pendingSendUntilRef  : 送信直後の楽観的 deadline (= 最初の SSE event 到達まで救済)
   //
-  // race の経路が複数あっても、 いずれか 1 つでも true なら停止ボタンを保つ。 sendMessage
-  // 開始 → backend が state.complete=False に倒すまでの数百 ms 間、 pendingSendUntilRef が
-  // 停止ボタン表示を担保する。 backend からの真値が届いたら status.streaming に切り替わる。
+  // 旧 status.streaming (= backend state.complete の反転) は PTY 経路で常に true 固定の
+  // ゴーストだったので撤去。 loading が真値、 pendingSend が送信直後の数百 ms を橋渡しする。
   const [now, setNow] = useState(Date.now())
   // pendingSend の deadline 切れを「停止ボタン表示」 に反映するための one-shot timer。
   // 常時 interval を回すと前景中ずっと App を 2Hz 再描画して iPhone の電力を食うので、
@@ -210,14 +209,13 @@ export default function App() {
     if (remain <= 0) return
     const id = setTimeout(() => setNow(Date.now()), remain + 50)
     return () => clearTimeout(id)
-    // loading / streaming の変化が deadline 設定の契機なので deps に入れる
+    // loading の変化が deadline 設定の契機なので deps に入れる
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSid, loading, status?.streaming])
-  const isStreamingNow = !!(activeSid && status?.streaming)
+  }, [activeSid, loading])
   const isPendingSend = !!(activeSid && (pendingSendUntilRef.current[activeSid] || 0) > now)
   // AskUserQuestion 回答待ち (= pending_question) 中も停止ボタンにする。 質問が出てる間に
   // メッセージボックスから通常メッセージを誤送信させない (= 送信は質問バブルの UI 経由のみ)。
-  const showStopButton = !!(activeSid && (loading[activeSid] || isStreamingNow || isPendingSend || status?.pending_question))
+  const showStopButton = !!(activeSid && (loading[activeSid] || isPendingSend || status?.pending_question))
 
   // SW からの「push-received」 メッセージで即座に fetchLatest を発火させる。
   // status polling (idle 30 秒) の隙間で proactive turn が完了/進行してても、
