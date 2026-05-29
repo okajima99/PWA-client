@@ -138,6 +138,17 @@ export default function App() {
     document.addEventListener('visibilitychange', onVis)
     return () => { stop(); document.removeEventListener('visibilitychange', onVis) }
   }, [])
+
+  // 画面共有 (= Sunshine ストリーム) は見てる間だけ生かす。 PWA がバックグラウンド /
+  // 画面ロックに入ったら iframe を unmount して WebRTC を切る (= moonlight streamer が
+  // 終了し Sunshine のエンコードが止まる)。 これをしないと閉じ忘れたまま放置で
+  // Sunshine が延々エンコードし続け CPU + メモリを食い潰す (= ゾンビストリーム観測実績
+  // あり)。 復帰時は自動再開せず、 ユーザが 🖥 を再タップして開き直す。
+  useEffect(() => {
+    const onHidden = () => { if (document.hidden) setDesktopOpen(false) }
+    document.addEventListener('visibilitychange', onHidden)
+    return () => document.removeEventListener('visibilitychange', onHidden)
+  }, [])
   const menuRef = useRef(null)
 
   // backend / 通知 / deep link 系の effect を hook に集約 (= useAppEffects.js)
