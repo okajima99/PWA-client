@@ -237,6 +237,8 @@ def test_any_event_with_pwa_sid_header_confirms_binding(
 
     # confirm_bind は _save_bindings で persist する副作用があるため tmp に逃がす。
     monkeypatch.setattr(jsonl_watcher, "_PERSIST_PATH", tmp_path / "bindings.json")
+    # 二重ロック: 実在する PWA セッション id のみ bind されるので、 ses_tab を登録する。
+    monkeypatch.setattr(hooks_router, "sessions_meta", {"ses_tab": object()})
     transcript = tmp_path / "claude-xyz.jsonl"
     transcript.write_text("{}\n")
 
@@ -254,3 +256,29 @@ def test_any_event_with_pwa_sid_header_confirms_binding(
     assert response.status_code == 200
     # SessionStart でなく Stop でも、 header 経由で確定 binding が張られている。
     assert jsonl_watcher.get_jsonl_for("ses_tab") == transcript
+
+
+def test_unknown_pwa_sid_header_does_not_bind(fake_bindings, captured_pushes, monkeypatch, tmp_path):
+    """二重ロックの回帰: X-PWA-SID が来ても、 実在しない session id なら bind しない
+    (= Desktop App 公式が万一 header を送っても PWA セッションと取り違えない)。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(jsonl_watcher, "_PERSIST_PATH", tmp_path / "bindings.json")
+    monkeypatch.setattr(hooks_router, "sessions_meta", {"ses_real": object()})
+    transcript = tmp_path / "desktop.jsonl"
+    transcript.write_text("{}\n")
+
+    app = FastAPI()
+    app.include_router(hooks_router.router)
+    client = TestClient(app)
+
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "claude-desktop",
+        "transcript_path": str(transcript),
+        "last_assistant_message": "done",
+    }
+    # 登録外の id を送る
+    client.post("/hooks/event", json=payload, headers={"X-PWA-SID": "ses_intruder"})
+    assert jsonl_watcher.get_jsonl_for("ses_intruder") is None

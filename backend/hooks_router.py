@@ -26,7 +26,7 @@ from fastapi import APIRouter, Request
 
 from config import AGENTS, TMUX_SESSION_MAP_DIR
 from push import broadcast_push, notification_title_for
-from state import agent_status, stream_states
+from state import agent_status, sessions_meta, stream_states
 
 logger = logging.getLogger(__name__)
 
@@ -135,9 +135,15 @@ async def hooks_event(request: Request) -> dict:
     # hook 1 発で正しい jsonl に自己修復するので、 birthtime / cwd による確率紐付けは不要。
     pwa_sid_hdr = request.headers.get("x-pwa-sid", "").strip()
     transcript = payload.get("transcript_path")
-    if pwa_sid_hdr and transcript:
+    # 二重ロック: (1) X-PWA-SID header は PWA spawn が注入した PWA_SID env からのみ非空に
+    # なる (= Desktop App / ターミナル直叩きは `${PWA_SID:-}` が空 or header 自体無し)。
+    # (2) さらに header 値が **実在する PWA セッション id** の時だけ bind する。 これで
+    # 万一 PWA 由来でない claude が値を送っても、 登録済セッションでなければ弾く
+    # (= Desktop App 公式と PWA の取り違えを構造的に不可能にする)。
+    bound_path = None
+    if pwa_sid_hdr and transcript and pwa_sid_hdr in sessions_meta:
         import jsonl_watcher  # noqa: PLC0415
-        jsonl_watcher.confirm_bind(pwa_sid_hdr, claude_sid or "", transcript)
+        bound_path = jsonl_watcher.confirm_bind(pwa_sid_hdr, claude_sid or "", transcript)
 
     # SessionStart: PWA タブ起動時に発火する確定 binding 経路。 PWA spawn 時に tmux
     # session env に `PWA_SID=ses_xxx` を注入してるので、 PWA タブで起動した claude が
@@ -169,8 +175,6 @@ async def hooks_event(request: Request) -> dict:
         return {"ok": True, "observed": tool_name}
 
     if event == "SessionStart":
-        pwa_sid_hdr = request.headers.get("x-pwa-sid", "").strip()
-        transcript = payload.get("transcript_path")
         source = payload.get("source")
         if not pwa_sid_hdr:
             logger.info(
@@ -184,14 +188,13 @@ async def hooks_event(request: Request) -> dict:
                 pwa_sid_hdr, claude_sid,
             )
             return {"ok": False, "reason": "no_transcript_path"}
-        import jsonl_watcher  # noqa: PLC0415
-        path = jsonl_watcher.confirm_bind(pwa_sid_hdr, claude_sid or "", transcript)
+        # 確定 binding は上の共通ブロックで実施済 (= header + transcript + 実在 session の時)。
         logger.info(
             "SessionStart bound: pwa_sid=%s source=%s claude_sid=%s -> %s",
-            pwa_sid_hdr, source, claude_sid, path.name if path else None,
+            pwa_sid_hdr, source, claude_sid, bound_path.name if bound_path else None,
         )
-        return {"ok": path is not None, "pwa_sid": pwa_sid_hdr,
-                "bound": str(path) if path else None}
+        return {"ok": bound_path is not None, "pwa_sid": pwa_sid_hdr,
+                "bound": str(bound_path) if bound_path else None}
 
     # PWA 経由で起動した claude セッションだけ通知する。 claude CLI の hook 設定は
     # `~/.claude/settings.json` 経由でグローバルなので、 デスクトップ公式 / ターミナル
