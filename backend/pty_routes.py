@@ -46,6 +46,11 @@ _HARNESS_RE = re.compile(
     r"^\s*<(command-name|command-message|command-args|local-command-[a-z-]+)\b"
 )
 
+# slash command (= /deep-research, /clear 等) 専用の送信確認マーカー。 claude は slash
+# command を `<command-name>/xxx</command-name>` の user 行として JSONL に書くので、 素
+# プロンプト (= _count_user_prompts) では弾かれるこの行の出現を別途数えて確認に使う。
+_COMMAND_NAME_RE = re.compile(r"^\s*<command-name\b")
+
 
 def _count_user_prompts(path) -> int:
     """JSONL から素プロンプト (= 実ユーザ発言) の user 行数を数える。
@@ -80,16 +85,47 @@ def _count_user_prompts(path) -> int:
     return count
 
 
-async def _wait_user_prompt_added(path, initial_count: int, timeout: float) -> bool:
-    """JSONL の user 行が initial_count から増えるのを timeout 秒まで poll する。"""
+def _count_command_lines(path) -> int:
+    """slash command の送信確認用に `<command-name>` user 行の数を数える。
+    _count_user_prompts が harness XML として除外する行を、 逆にこちらが対象にする。"""
+    if not path:
+        return 0
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return 0
+    count = 0
+    for raw in data.split(b"\n"):
+        if not raw:
+            continue
+        try:
+            d = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if d.get("type") != "user" or d.get("isSidechain") or d.get("isMeta"):
+            continue
+        c = (d.get("message") or {}).get("content")
+        if isinstance(c, str) and _COMMAND_NAME_RE.match(c.strip()):
+            count += 1
+    return count
+
+
+async def _wait_count_added(counter, path, initial_count: int, timeout: float) -> bool:
+    """counter(path) が initial_count から増えるのを timeout 秒まで poll する汎用 wait。"""
     poll = 0.1
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout
     while loop.time() < deadline:
-        if _count_user_prompts(path) > initial_count:
+        if counter(path) > initial_count:
             return True
         await asyncio.sleep(poll)
-    return _count_user_prompts(path) > initial_count
+    return counter(path) > initial_count
+
+
+async def _wait_user_prompt_added(path, initial_count: int, timeout: float) -> bool:
+    """JSONL の user 行が initial_count から増えるのを timeout 秒まで poll する。"""
+    return await _wait_count_added(_count_user_prompts, path, initial_count, timeout)
 
 
 def _resolve_cwd(session_id: str) -> str | None:
@@ -284,37 +320,46 @@ async def pty_send(session_id: str, payload: dict = Body(...)) -> dict:
     # 自由記述以外のキー送信 (Escape 等)、 AskUserQuestion 自由記述の 1 回目 (typeNum、 enter なし)
     # 等は確認しない (= 送信完了の概念がない、 or 別経路で確認)。
     confirm = bool(text) and enter
+    # slash command (= /deep-research 等) は素プロンプト行を作らず `<command-name>` の
+    # harness XML 行を作る。 確認カウンタを切り替え、 リトライ方針も変える (= フル再ペースト
+    # するとコマンドが二重発火しうるので slash では再ペーストしない)。
+    is_slash = bool(text) and text.lstrip().startswith("/")
+    counter = _count_command_lines if is_slash else _count_user_prompts
     initial_count = 0
     jsonl_path = None
     if confirm:
         jsonl_path = jsonl_path_for_session(session_id)
         if jsonl_path is not None:
-            initial_count = _count_user_prompts(jsonl_path)
+            initial_count = counter(jsonl_path)
     ok = tmux_send_keys(session_id, text=text, key=key, enter=enter)
     if not ok or not confirm or jsonl_path is None:
         return {"ok": ok}
     # 第 1 回 確認待ち (= 監視窓 4s。 launch_alias 起動直後や重い paste 展開で JSONL flush が
     # 遅れるケースを取りこぼさないよう 2s から延長、 2 段リトライ前の取り逃しを減らす)。
-    if await _wait_user_prompt_added(jsonl_path, initial_count, timeout=4.0):
+    if await _wait_count_added(counter, jsonl_path, initial_count, timeout=4.0):
         return {"ok": True, "confirmed": True}
     # 再送 #1: paste は既に TUI に届いている可能性が高いので Enter だけ追い打ち
     # (= claude TUI の `paste again to expand` プレースホルダ展開 + 送信 で Enter 1 個が
     # 吸われたケースを救済する。 paste を再度送ると重複 paste / 状態破壊のリスクがあるため
     # まず Enter だけで試す)。
     logger.warning(
-        "pty_send: no user prompt within 2s, retrying with Enter only: sid=%s text_len=%d",
-        session_id, len(text or ""),
+        "pty_send: no prompt within 4s, retrying with Enter only: sid=%s text_len=%d slash=%s",
+        session_id, len(text or ""), is_slash,
     )
     tmux_send_keys(session_id, enter=True)
-    if await _wait_user_prompt_added(jsonl_path, initial_count, timeout=1.0):
+    if await _wait_count_added(counter, jsonl_path, initial_count, timeout=1.0):
         return {"ok": True, "confirmed": True, "retried": "enter_only"}
-    # 再送 #2: それでもダメなら paste + Enter フル再送
-    logger.warning("pty_send: enter-only retry failed, full re-paste: sid=%s", session_id)
-    tmux_send_keys(session_id, text=text, enter=True)
-    if await _wait_user_prompt_added(jsonl_path, initial_count, timeout=1.5):
-        return {"ok": True, "confirmed": True, "retried": "full"}
-    logger.warning("pty_send: failed even after both retries: sid=%s", session_id)
-    return {"ok": False, "reason": "no_user_prompt_recorded"}
+    # ここで打ち切る (= フル再ペースト廃止)。 再ペーストは (a) slash の二重発火、 (b) claude が
+    # busy で user 行の JSONL flush が現 turn 完了後にずれるケースでの「届いてるのに未確認 →
+    # 再送 → 重複」 を起こす。 確認窓 (4s+1s) で取れなくても tmux への送信自体は実行済なので
+    # メッセージは失われていない (busy なら flush が遅れるだけ)。 ok:True で返し、 frontend が
+    # 「Not delivered」 表示 + 入力欄への本文復元 (= 誤再送/重複の元) をしないようにする。
+    # Enter が吸われた真の取りこぼしは Enter 追い打ち (上) で救済済。
+    logger.warning(
+        "pty_send: not confirmed within window, assume delivered (no re-paste): sid=%s slash=%s",
+        session_id, is_slash,
+    )
+    return {"ok": True, "confirmed": False}
 
 
 @router.post("/pty/{session_id}/send-with-files")
