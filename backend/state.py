@@ -8,7 +8,6 @@
 - セッション定義 (`sessions_meta`): 永続化、 session_meta.json
 - ストリームごとの状態 (`stream_states`)
 - ステータスキャッシュ (`agent_status`, `shared_status`)
-- claude セッション ID の永続化 (`sessions` + `save_sessions`): session_id → claude session_id
 
 異なるモジュールから書き換えたい値は dict や dataclass にラップして
 import 越しに mutate できる形にしている。
@@ -35,7 +34,6 @@ def atomic_write_text(path: Path, content: str) -> None:
     os.replace(tmp, path)
 
 # --- 永続化パス ---
-SESSIONS_PATH = Path(__file__).parent / "sessions.json"
 SESSION_META_PATH = Path(__file__).parent / "session_meta.json"
 
 # SDK が ResultMessage.model_usage で contextWindow を返してくれない / agent_status にもまだ
@@ -72,26 +70,18 @@ def _new_session_id() -> str:
     return f"ses_{uuid.uuid4().hex[:12]}"
 
 
-def _load_sessions_meta_and_claude_sessions() -> tuple[dict[str, SessionDef], dict[str, str | None]]:
-    """session_meta.json + sessions.json をロード。 旧 sessions.json (agent_id キー) を
-    検出した場合は agent ごと 1 セッションをマイグレーションして両ファイルを書き換える。
+def _load_sessions_meta() -> dict[str, SessionDef]:
+    """session_meta.json をロード。 ファイルが無い (= 初回起動) 場合は agent ごとに
+    1 セッションを生成して永続化する。
     """
     meta_raw: list[dict] | None = None
-    sessions_raw: dict | None = None
-
     if SESSION_META_PATH.exists():
         try:
             meta_raw = json.loads(SESSION_META_PATH.read_text())
         except Exception:
             meta_raw = None
-    if SESSIONS_PATH.exists():
-        try:
-            sessions_raw = json.loads(SESSIONS_PATH.read_text())
-        except Exception:
-            sessions_raw = None
 
     sessions_meta: dict[str, SessionDef] = {}
-    claude_sessions: dict[str, str | None] = {}
 
     if isinstance(meta_raw, list):
         # 通常パス: session_meta.json に従う (空配列でもこちらに通す = 0 セッション起動 OK)
@@ -111,34 +101,8 @@ def _load_sessions_meta_and_claude_sessions() -> tuple[dict[str, SessionDef], di
             sessions_meta[sid] = SessionDef(
                 id=sid, agent_id=aid, title=title, created_at=int(created)
             )
-        if isinstance(sessions_raw, dict):
-            # 後方互換マップ: sessions.json が旧形式 (agent_id キー) のままだった場合、
-            # session_meta の各 entry の agent_id をキーに引いて claude session_id を救出する。
-            # 同 agent_id を持つ session_meta entry が 2 つ以上ある場合は最初の 1 つだけ拾う
-            # (重複は事実上発生しない、 マイグレーション直後のみ意味を持つ)。
-            legacy_consumed: set[str] = set()
-            for sid, meta in sessions_meta.items():
-                v = sessions_raw.get(sid)
-                if isinstance(v, str):
-                    claude_sessions[sid] = v
-                    continue
-                aid = meta.agent_id
-                if aid in sessions_raw and aid not in legacy_consumed:
-                    legacy_v = sessions_raw.get(aid)
-                    if isinstance(legacy_v, str):
-                        claude_sessions[sid] = legacy_v
-                        legacy_consumed.add(aid)
-                        continue
-                claude_sessions[sid] = None
-            # 救出が走ったら新形式で書き戻す (次回以降の loader は通常パスで済む)
-            if legacy_consumed:
-                _persist_sessions(claude_sessions)
-        else:
-            for sid in sessions_meta:
-                claude_sessions[sid] = None
     else:
-        # マイグレーション or 初期化: agent ごと 1 セッションを生成する
-        legacy = sessions_raw if isinstance(sessions_raw, dict) else {}
+        # 初期化: agent ごと 1 セッションを生成する
         per_agent_idx: dict[str, int] = {}
         now = int(time.time())
         for agent_id in AGENTS:
@@ -150,13 +114,9 @@ def _load_sessions_meta_and_claude_sessions() -> tuple[dict[str, SessionDef], di
                 title=_default_title(agent_id, per_agent_idx[agent_id]),
                 created_at=now,
             )
-            v = legacy.get(agent_id)
-            claude_sessions[sid] = v if isinstance(v, str) else None
-        # 永続化 (起動時 1 回のみ)
-        _persist_meta(sessions_meta)
-        _persist_sessions(claude_sessions)
+        _persist_meta(sessions_meta)  # 永続化 (起動時 1 回のみ)
 
-    return sessions_meta, claude_sessions
+    return sessions_meta
 
 
 def _persist_meta(meta: dict[str, SessionDef]) -> None:
@@ -170,19 +130,11 @@ def _persist_meta(meta: dict[str, SessionDef]) -> None:
     )
 
 
-def _persist_sessions(claude_sessions: dict[str, str | None]) -> None:
-    atomic_write_text(SESSIONS_PATH, json.dumps(claude_sessions, ensure_ascii=False))
-
-
 def save_sessions_meta() -> None:
     _persist_meta(sessions_meta)
 
 
-def save_sessions() -> None:
-    _persist_sessions(sessions)
-
-
-sessions_meta, sessions = _load_sessions_meta_and_claude_sessions()
+sessions_meta = _load_sessions_meta()
 
 
 # --- ストリーム状態 ---
@@ -271,9 +223,7 @@ def register_session(agent_id: str, title: str | None = None) -> SessionDef:
     sessions_meta[sid] = meta
     stream_states[sid] = StreamState(agent_id=agent_id)
     agent_status[sid] = _make_agent_status(agent_id)
-    sessions[sid] = None
     save_sessions_meta()
-    save_sessions()
     return meta
 
 
@@ -284,10 +234,8 @@ def unregister_session(session_id: str) -> bool:
     sessions_meta.pop(session_id, None)
     stream_states.pop(session_id, None)
     agent_status.pop(session_id, None)
-    sessions.pop(session_id, None)
     session_tmp_files.pop(session_id, None)
     save_sessions_meta()
-    save_sessions()
     return True
 
 
