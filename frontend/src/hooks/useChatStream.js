@@ -229,7 +229,7 @@ export function useChatStream({
         pendingSendUntilRef.current[sid] = 0
       }
     }
-  }, [sid, input, attachments, loading, setInput, setMessages, clearAttachments, scrollToBottom, sendToPty, isAtBottomRef, setLoading])
+  }, [sid, input, attachments, loading, setInput, setMessages, clearAttachments, scrollToBottom, isAtBottomRef, setLoading])
 
   const stopMessage = useCallback(async () => {
     if (!sid) return

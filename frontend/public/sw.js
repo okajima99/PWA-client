@@ -12,6 +12,17 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim())
 })
 
+// 各 client (= タブ) が今どの session を visible で見ているか。 client.id をキーに保持し、
+// push の session-aware 抑制に使う。 App から active-session メッセージで更新される。
+const clientActive = {}
+
+self.addEventListener('message', (event) => {
+  const d = event.data
+  if (d && d.type === 'active-session' && event.source && event.source.id) {
+    clientActive[event.source.id] = { sid: d.sid || null, visible: !!d.visible }
+  }
+})
+
 self.addEventListener('push', (event) => {
   let data = { title: 'Notification', body: '' }
   try {
@@ -41,19 +52,29 @@ self.addEventListener('push', (event) => {
     try { self.navigator.setAppBadge(data.unread_count) } catch { /* ignore */ }
   }
   event.waitUntil((async () => {
-    // PWA が foreground (= visible) で 1 つでも開いてる時は OS 通知を抑制する。
-    // サイドバーの赤丸 / アプリバッジで気づけるので、 見てる最中に通知が被るのが邪魔
-    // (= 2026-05-29 要望対応)。 hidden / 完全終了時のみ showNotification を撃つ。
+    // session-aware 抑制: 「対象 session (data.sid) を今 visible で見てる」 client が居る時
+    // だけ OS 通知を抑制する。 別 session を見てる / バックグラウンドの時は撃つ (= 旧実装の
+    // 「1 つでも visible なら全抑制」 だと別 session の通知まで巻き添えで消えていた)。
+    // data.sid が無い proactive 通知は抑制対象にしない (= 常に表示)。
     // postMessage は visible / hidden 問わず投げる (= 状態同期と未読 fetch 用)。
-    let hasVisibleClient = false
+    let suppress = false
     try {
       const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      const liveIds = new Set()
       for (const c of all) {
-        if (c.visibilityState === 'visible') hasVisibleClient = true
+        liveIds.add(c.id)
+        const st = clientActive[c.id]
+        const viewingThis = c.visibilityState === 'visible'
+          && st && st.sid && data.sid && st.sid === data.sid
+        if (viewingThis) suppress = true
         try { c.postMessage({ type: 'push-received', sid: data.sid || null }) } catch { /* ignore */ }
       }
+      // 閉じた client の残骸を掃除。
+      for (const id of Object.keys(clientActive)) {
+        if (!liveIds.has(id)) delete clientActive[id]
+      }
     } catch { /* ignore */ }
-    if (hasVisibleClient) return
+    if (suppress) return
     return self.registration.showNotification(data.title || 'Notification', options)
   })())
 })

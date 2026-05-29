@@ -196,6 +196,10 @@ export function useSessionBadges({ sids, activeSid, messages, loading }) {
   const [unreadDone, setUnreadDone] = useState(loadUnreadDone)
   // 前回 render 時の loading[sid]。 true→false 遷移検出用。
   const prevLoadingRef = useRef({})
+  // 起動直後の settle window。 初回 status fetch 確定で loading が一斉に true→false へ
+  // 動く瞬間に、 active でない全 sid が誤って赤点灯するのを防ぐ (= この間は遷移を記録
+  // するだけで赤化しない)。 状態を時間で推測する用途ではなく boot 揺らぎの吸収。
+  const bootSettleUntilRef = useRef(Date.now() + 1500)
 
   // messages の最新 ref (= pending question 判定用)
   const messagesRef = useRef(messages)
@@ -229,6 +233,8 @@ export function useSessionBadges({ sids, activeSid, messages, loading }) {
       }
     }
     prevLoadingRef.current = next
+    // boot settle 中は遷移を記録するだけ (= 赤化しない)。
+    if (Date.now() < bootSettleUntilRef.current) return
     if (flips.length === 0) return
     setUnreadDone(p => {
       const out = { ...p }

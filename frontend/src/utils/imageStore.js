@@ -17,6 +17,14 @@ const DB_NAME = 'cpc_images'
 const DB_VERSION = 1
 const STORE = 'images'
 
+// 自動 bounded: 放置で IndexedDB が無限に膨らまないよう putImage 時に上限を強制する。
+// 古い順 (createdAt) に退役させる (= 古い履歴の画像は表示外なので degrade で許容)。
+const MAX_IMAGES = 100
+const MAX_TOTAL_BYTES = 100 * 1024 * 1024 // 100MB
+// この閾値を超える画像は保存前に canvas で縮小する (= 端末カメラの数 MB 画像対策)。
+const DOWNSCALE_THRESHOLD = 2 * 1024 * 1024 // 2MB
+const MAX_DIM = 2048 // 長辺の上限 px
+
 function openDB() {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
@@ -45,12 +53,72 @@ function genImageId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36)
 }
 
+// 大きい画像 (= DOWNSCALE_THRESHOLD 超) を長辺 MAX_DIM に収まるよう canvas で縮小する。
+// 画像でない / 縮小不要 / 縮小に失敗した場合は元 File をそのまま返す (= 安全側に倒す)。
+async function _downscaleIfLarge(file) {
+  if (!file || !file.type || !file.type.startsWith('image/')) return file
+  if (file.size <= DOWNSCALE_THRESHOLD) return file
+  if (typeof createImageBitmap === 'undefined' || typeof document === 'undefined') return file
+  let bmp
+  try {
+    bmp = await createImageBitmap(file)
+  } catch {
+    return file
+  }
+  try {
+    const scale = Math.min(1, MAX_DIM / Math.max(bmp.width, bmp.height))
+    if (scale >= 1) return file // 既に十分小さい
+    const w = Math.round(bmp.width * scale)
+    const h = Math.round(bmp.height * scale)
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    canvas.getContext('2d').drawImage(bmp, 0, 0, w, h)
+    const outType = file.type === 'image/png' ? 'image/png' : 'image/jpeg'
+    const blob = await new Promise((res) => canvas.toBlob(res, outType, 0.85))
+    // 縮小したのに元より大きければ元を採用 (= まれだが理論上あり得る)
+    if (blob && blob.size < file.size) return blob
+    return file
+  } catch {
+    return file
+  } finally {
+    if (bmp.close) bmp.close()
+  }
+}
+
+// 上限超過分を古い順に退役させる。 putImage の直後に呼ぶ。
+async function _enforceCaps(db) {
+  const recs = await new Promise((resolve, reject) => {
+    const out = []
+    const req = txStore(db, 'readonly').openCursor()
+    req.onsuccess = (e) => {
+      const cur = e.target.result
+      if (!cur) { resolve(out); return }
+      const v = cur.value || {}
+      out.push({ id: cur.key, createdAt: v.createdAt || 0, size: v.size || (v.blob ? v.blob.size : 0) })
+      cur.continue()
+    }
+    req.onerror = () => reject(req.error)
+  })
+  recs.sort((a, b) => a.createdAt - b.createdAt) // 古い順
+  let count = recs.length
+  let total = recs.reduce((s, r) => s + r.size, 0)
+  for (const r of recs) {
+    if (count <= MAX_IMAGES && total <= MAX_TOTAL_BYTES) break
+    try { await deleteImage(r.id) } catch { /* ignore */ }
+    count -= 1
+    total -= r.size
+  }
+}
+
 export async function putImage(file) {
   const db = await openDB()
   const id = genImageId()
+  const blob = await _downscaleIfLarge(file)
   const record = {
-    blob: file,
-    mime: file.type || 'application/octet-stream',
+    blob,
+    mime: blob.type || file.type || 'application/octet-stream',
+    size: blob.size,
     createdAt: Date.now(),
   }
   await new Promise((resolve, reject) => {
@@ -58,6 +126,7 @@ export async function putImage(file) {
     req.onsuccess = () => resolve()
     req.onerror = () => reject(req.error)
   })
+  await _enforceCaps(db).catch(() => {})
   return id
 }
 
