@@ -85,3 +85,14 @@ def test_confirm_bind_detaches_stale_and_blocks_reheal(tmp_path):
     jw.confirm_bind("ses_new", "c_new", str(f))
     assert jw.get_jsonl_for("ses_new") == f
     assert jw.get_jsonl_for("ses_old") is None
+
+
+def test_register_pending_does_not_probabilistically_bind(tmp_path):
+    # 確率窓マッチ廃止の回帰 (= 2026-05-29 cross-contamination 真因)。 spawn 直後に同 cwd へ
+    # 起動時刻が近い jsonl が在っても、 register_pending は birthtime 推測で紐付けない。
+    # 紐付けは hook の confirm_bind が来るまで起きず、 get_jsonl_for は None を返す。
+    (tmp_path / "tempting.jsonl").write_text("{}\n")
+    jw.register_pending("ses_a", 1, str(tmp_path), 1000.0)
+    jw.register_pending("ses_b", 2, str(tmp_path), 1000.0)  # 同 cwd 2 セッション
+    assert jw.get_jsonl_for("ses_a") is None
+    assert jw.get_jsonl_for("ses_b") is None

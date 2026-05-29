@@ -223,3 +223,34 @@ def test_endpoint_unconfirmed_binding_is_ignored(fake_agents, fake_bindings, cap
     response = client.post("/hooks/event", json=payload)
     assert response.json() == {"ok": True, "ignored": "non_pwa_session"}
     assert captured_pushes == []
+
+
+def test_any_event_with_pwa_sid_header_confirms_binding(
+    fake_bindings, captured_pushes, monkeypatch, tmp_path
+):
+    """確定経路の回帰: SessionStart に限らず、 X-PWA-SID header + transcript_path を持つ
+    任意イベント (= Stop 等) で binding が確定する。 これにより backend 再起動後も最初の
+    hook 1 発で正しい jsonl に self-heal し、 確率窓マッチに頼らない (= 2026-05-29
+    cross-contamination 対策の核)。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    # confirm_bind は _save_bindings で persist する副作用があるため tmp に逃がす。
+    monkeypatch.setattr(jsonl_watcher, "_PERSIST_PATH", tmp_path / "bindings.json")
+    transcript = tmp_path / "claude-xyz.jsonl"
+    transcript.write_text("{}\n")
+
+    app = FastAPI()
+    app.include_router(hooks_router.router)
+    client = TestClient(app)
+
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "claude-xyz",
+        "transcript_path": str(transcript),
+        "last_assistant_message": "done",
+    }
+    response = client.post("/hooks/event", json=payload, headers={"X-PWA-SID": "ses_tab"})
+    assert response.status_code == 200
+    # SessionStart でなく Stop でも、 header 経由で確定 binding が張られている。
+    assert jsonl_watcher.get_jsonl_for("ses_tab") == transcript

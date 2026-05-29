@@ -127,6 +127,18 @@ async def hooks_event(request: Request) -> dict:
     claude_sid = payload.get("session_id")
     cwd = payload.get("cwd")
 
+    # 確定 binding (= 全イベント共通)。 claude の hook は **どのイベントでも** payload に
+    # transcript_path を載せ、 PWA spawn が tmux env に注入した PWA_SID から X-PWA-SID
+    # header が全イベントに付く (= PWA タブの claude だけがここを通る、 Desktop / ターミナル
+    # 直叩きは header 無し)。 よって「そのタブの claude 自身が報告した transcript」 という
+    # 100% 確定の事実だけで pwa_sid → jsonl を毎回確定できる。 backend 再起動後も最初の
+    # hook 1 発で正しい jsonl に自己修復するので、 birthtime / cwd による確率紐付けは不要。
+    pwa_sid_hdr = request.headers.get("x-pwa-sid", "").strip()
+    transcript = payload.get("transcript_path")
+    if pwa_sid_hdr and transcript:
+        import jsonl_watcher  # noqa: PLC0415
+        jsonl_watcher.confirm_bind(pwa_sid_hdr, claude_sid or "", transcript)
+
     # SessionStart: PWA タブ起動時に発火する確定 binding 経路。 PWA spawn 時に tmux
     # session env に `PWA_SID=ses_xxx` を注入してるので、 PWA タブで起動した claude が
     # 呼ぶ hook だけ X-PWA-SID header を持つ (= Desktop App / ターミナル直叩きの claude は
