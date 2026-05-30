@@ -15,6 +15,7 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useTerminal } from '../hooks/useTerminal.js'
+import IOSKeyboard from './IOSKeyboard.jsx'
 
 const DEFAULT_WS_BASE =
   (typeof window !== 'undefined' && window.location.protocol === 'https:'
@@ -29,6 +30,9 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
   const wsRef = useRef(null)
   const inputRef = useRef(null)
   const [inputValue, setInputValue] = useState('')
+  // フルオンスクリーンキーボード (= 矢印 / Ctrl / Tab / 記号等、 物理キーボードの無い
+  // モバイルで TUI を直操作するため) の表示トグル。 縦を食うので既定 OFF。
+  const [showKbd, setShowKbd] = useState(false)
 
   // Common byte/string sink to the live WS — used by control-key buttons and
   // the input bar. No-ops while the socket is not open.
@@ -201,8 +205,16 @@ export default function Terminal({ sessionId, wsBase = DEFAULT_WS_BASE, onExit }
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <button type="button" onClick={() => sendRaw('\x1b')} style={keyBtnStyle}>Esc</button>
           <button type="button" onClick={() => sendRaw('\r')} style={keyBtnStyle}>Enter</button>
+          <button type="button" onClick={() => sendRaw('\x03')} style={keyBtnStyle}>Ctrl-C</button>
+          <button type="button" onClick={() => sendRaw('\t')} style={keyBtnStyle}>Tab</button>
+          <button
+            type="button"
+            onClick={() => setShowKbd((v) => !v)}
+            style={{ ...keyBtnStyle, marginLeft: 'auto', background: showKbd ? '#3a5a8c' : '#2a2d35', color: '#fff' }}
+          >⌨ {showKbd ? '隠す' : 'キーボード'}</button>
         </div>
       </div>
+      {showKbd && <IOSKeyboard onKey={sendRaw} />}
     </div>
   )
 }
