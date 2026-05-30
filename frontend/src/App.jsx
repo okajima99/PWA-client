@@ -215,7 +215,14 @@ export default function App() {
   const isPendingSend = !!(activeSid && (pendingSendUntilRef.current[activeSid] || 0) > now)
   // AskUserQuestion 回答待ち (= pending_question) 中も停止ボタンにする。 質問が出てる間に
   // メッセージボックスから通常メッセージを誤送信させない (= 送信は質問バブルの UI 経由のみ)。
-  const showStopButton = !!(activeSid && (loading[activeSid] || isPendingSend || status?.pending_question))
+  // ただし pending_prompt (= 番号待ち TUI プロンプト) 中は逆に「送信ボタン」 を出す: claude は
+  // 待ち状態で、 ユーザは入力欄に番号を打って答える必要があるため (loading が stale で true の
+  // まま残ってても、 プロンプトが出てる = 待ち確定なので停止表示を上書きして送信を出す)。
+  const showStopButton = !!(
+    activeSid
+    && (loading[activeSid] || isPendingSend || status?.pending_question)
+    && !status?.pending_prompt
+  )
 
   // SW からの「push-received」 メッセージで即座に fetchLatest を発火させる。
   // status polling (idle 30 秒) の隙間で proactive turn が完了/進行してても、
