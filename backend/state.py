@@ -177,6 +177,11 @@ def _make_agent_status(agent_id: str) -> dict:
         # 無いので None で立て、 JSONL の AskUserQuestion tool_use 行で補完する。
         # {tool_use_id: str|None, questions: [...]} または None
         "pending_question": None,
+        # 番号待ち TUI プロンプト (= モデル切替確認 / survey / 許可 等、 Stop でも
+        # AskUserQuestion でもないやつ)。 prompt_watch が capture-pane で検出して立て、
+        # プロンプトが消えたら落とす。 ターミナルに切り替えなくても「何を聞かれてるか」 を
+        # チャットに出すため。 {question: str, options: [{key,label}], text: str} または None
+        "pending_prompt": None,
     }
 
 

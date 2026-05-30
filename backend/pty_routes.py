@@ -128,6 +128,36 @@ async def _wait_user_prompt_added(path, initial_count: int, timeout: float) -> b
     return await _wait_count_added(_count_user_prompts, path, initial_count, timeout)
 
 
+def _delivery_counter(text: str):
+    """送信本文に応じた確認カウンタを返す。 slash command は `<command-name>` 行、
+    素プロンプトは素の user 行で確認する。 返り値 (counter, is_slash)。"""
+    is_slash = bool(text) and text.lstrip().startswith("/")
+    return (_count_command_lines if is_slash else _count_user_prompts), is_slash
+
+
+async def _confirm_after_send(session_id, text, jsonl_path, counter, initial_count, is_slash) -> dict:
+    """送信直後の確認 + 取りこぼし救済 (= text 経路 / 添付経路 共通)。
+
+    JSONL に該当 user 行が +1 されるかを 4s 監視 → 出なければ Enter だけ追い打ち (= TUI の
+    `paste again to expand` 等で Enter 1 個が吸われたケースを救済) して 1s 再監視。 それでも
+    確認できなくても再ペーストはせず ok:True を返す (= 再ペーストは slash 二重発火 / busy 中の
+    flush 遅れでの重複を招くため。 送信自体は tmux に届いている)。"""
+    if await _wait_count_added(counter, jsonl_path, initial_count, timeout=4.0):
+        return {"ok": True, "confirmed": True}
+    logger.warning(
+        "pty_send: no prompt within 4s, retrying with Enter only: sid=%s text_len=%d slash=%s",
+        session_id, len(text or ""), is_slash,
+    )
+    tmux_send_keys(session_id, enter=True)
+    if await _wait_count_added(counter, jsonl_path, initial_count, timeout=1.0):
+        return {"ok": True, "confirmed": True, "retried": "enter_only"}
+    logger.warning(
+        "pty_send: not confirmed within window, assume delivered (no re-paste): sid=%s slash=%s",
+        session_id, is_slash,
+    )
+    return {"ok": True, "confirmed": False}
+
+
 def _resolve_cwd(session_id: str) -> str | None:
     """session_id から起動 cwd を解決する。
 
@@ -321,10 +351,8 @@ async def pty_send(session_id: str, payload: dict = Body(...)) -> dict:
     # 等は確認しない (= 送信完了の概念がない、 or 別経路で確認)。
     confirm = bool(text) and enter
     # slash command (= /deep-research 等) は素プロンプト行を作らず `<command-name>` の
-    # harness XML 行を作る。 確認カウンタを切り替え、 リトライ方針も変える (= フル再ペースト
-    # するとコマンドが二重発火しうるので slash では再ペーストしない)。
-    is_slash = bool(text) and text.lstrip().startswith("/")
-    counter = _count_command_lines if is_slash else _count_user_prompts
+    # harness XML 行を作るので確認カウンタを切り替える。
+    counter, is_slash = _delivery_counter(text or "")
     initial_count = 0
     jsonl_path = None
     if confirm:
@@ -334,32 +362,7 @@ async def pty_send(session_id: str, payload: dict = Body(...)) -> dict:
     ok = tmux_send_keys(session_id, text=text, key=key, enter=enter)
     if not ok or not confirm or jsonl_path is None:
         return {"ok": ok}
-    # 第 1 回 確認待ち (= 監視窓 4s。 launch_alias 起動直後や重い paste 展開で JSONL flush が
-    # 遅れるケースを取りこぼさないよう 2s から延長、 2 段リトライ前の取り逃しを減らす)。
-    if await _wait_count_added(counter, jsonl_path, initial_count, timeout=4.0):
-        return {"ok": True, "confirmed": True}
-    # 再送 #1: paste は既に TUI に届いている可能性が高いので Enter だけ追い打ち
-    # (= claude TUI の `paste again to expand` プレースホルダ展開 + 送信 で Enter 1 個が
-    # 吸われたケースを救済する。 paste を再度送ると重複 paste / 状態破壊のリスクがあるため
-    # まず Enter だけで試す)。
-    logger.warning(
-        "pty_send: no prompt within 4s, retrying with Enter only: sid=%s text_len=%d slash=%s",
-        session_id, len(text or ""), is_slash,
-    )
-    tmux_send_keys(session_id, enter=True)
-    if await _wait_count_added(counter, jsonl_path, initial_count, timeout=1.0):
-        return {"ok": True, "confirmed": True, "retried": "enter_only"}
-    # ここで打ち切る (= フル再ペースト廃止)。 再ペーストは (a) slash の二重発火、 (b) claude が
-    # busy で user 行の JSONL flush が現 turn 完了後にずれるケースでの「届いてるのに未確認 →
-    # 再送 → 重複」 を起こす。 確認窓 (4s+1s) で取れなくても tmux への送信自体は実行済なので
-    # メッセージは失われていない (busy なら flush が遅れるだけ)。 ok:True で返し、 frontend が
-    # 「Not delivered」 表示 + 入力欄への本文復元 (= 誤再送/重複の元) をしないようにする。
-    # Enter が吸われた真の取りこぼしは Enter 追い打ち (上) で救済済。
-    logger.warning(
-        "pty_send: not confirmed within window, assume delivered (no re-paste): sid=%s slash=%s",
-        session_id, is_slash,
-    )
-    return {"ok": True, "confirmed": False}
+    return await _confirm_after_send(session_id, text, jsonl_path, counter, initial_count, is_slash)
 
 
 @router.post("/pty/{session_id}/send-with-files")
@@ -389,10 +392,20 @@ async def pty_send_with_files(
     full_text = " ".join(parts)
     if not full_text:
         return {"ok": False, "reason": "empty"}
+    saved_files = [{"name": s["name"], "path": s["path"]} for s in saved]
+    # text 経路と同じ確認 + Enter 追い打ち救済を効かせる。 添付経路は本文が長く (= path 付き)
+    # `paste again to expand` で Enter が吸われやすく、 旧実装は単発送信で確認も救済も無かった
+    # ため「ターミナルに移動して手で Enter」 が必要だった。
+    counter, is_slash = _delivery_counter(full_text)
+    jsonl_path = jsonl_path_for_session(session_id)
+    initial_count = counter(jsonl_path) if jsonl_path is not None else 0
     ok = tmux_send_keys(session_id, text=full_text, enter=True)
-    return {
-        "ok": ok,
-        "saved_files": [{"name": s["name"], "path": s["path"]} for s in saved],
-    }
+    if not ok or jsonl_path is None:
+        return {"ok": ok, "saved_files": saved_files}
+    result = await _confirm_after_send(
+        session_id, full_text, jsonl_path, counter, initial_count, is_slash
+    )
+    result["saved_files"] = saved_files
+    return result
 
 

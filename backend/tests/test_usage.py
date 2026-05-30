@@ -91,3 +91,29 @@ def test_seven_day_pct_not_masked_across_reset(tmp_path, monkeypatch):
     monkeypatch.setattr(usage, "RATE_LIMITS_LOG_PATH", path)
     out = read_latest_rate_limits()
     assert out["seven_day_pct"] == 2
+
+
+def test_model_ctx_filtered_by_session(tmp_path, monkeypatch):
+    # model / ctx は指定 session の最新行から取る (= タブごとの statusline)。
+    # 5h/7d は最新行 (= アカウント全体) のまま。
+    path = _write_rate_limits(tmp_path, [
+        {"session_id": "sidA", "model": "Opus 4.8", "context_pct": 40, "five_hour_pct": 10},
+        {"session_id": "sidB", "model": "Haiku 4.5", "context_pct": 5, "five_hour_pct": 11},
+    ])
+    monkeypatch.setattr(usage, "RATE_LIMITS_LOG_PATH", path)
+    out_a = read_latest_rate_limits("sidA")
+    assert out_a["model"] == "Opus 4.8" and out_a["context_pct"] == 40
+    assert out_a["five_hour_pct"] == 11  # 5h はアカウント全体 = 最新行
+    out_b = read_latest_rate_limits("sidB")
+    assert out_b["model"] == "Haiku 4.5" and out_b["context_pct"] == 5
+
+
+def test_model_ctx_none_when_session_absent(tmp_path, monkeypatch):
+    # 指定 session の行が tail に無ければ model/ctx は None (= 呼び出し側が agent_status に fallback)。
+    path = _write_rate_limits(tmp_path, [
+        {"session_id": "sidA", "model": "Opus 4.8", "context_pct": 40, "five_hour_pct": 10},
+    ])
+    monkeypatch.setattr(usage, "RATE_LIMITS_LOG_PATH", path)
+    out = read_latest_rate_limits("sidX")
+    assert out["model"] is None and out["context_pct"] is None
+    assert out["five_hour_pct"] == 10  # 5h は取れる

@@ -135,10 +135,17 @@ def _build_status(session_id: str) -> dict:
 
     使用率系 (5h/7d/ctx/model) は proxy を使わず rate-limits.jsonl (= statusline 記録)
     から取る。 取れない項目は従来の shared_status / agent_status に fallback。
+
+    model / ctx は session ごとに違うので、 この pwa session に紐づく claude_sid
+    (= 確定 binding の jsonl ファイル名) で rate-limits を絞る。 これでタブ切替時に
+    そのタブの最新ステータスラインが出る (= 別タブの値に引っ張られない)。
     """
     a = agent_status[session_id]
     state = stream_states[session_id]
-    rl = read_latest_rate_limits()
+    import jsonl_watcher  # noqa: PLC0415
+    jp = jsonl_watcher.get_jsonl_for(session_id)
+    claude_sid = jp.stem if jp else None
+    rl = read_latest_rate_limits(claude_sid)
     return {
         "model": rl.get("model") or a["model"],
         "ctx_pct": rl["context_pct"] if rl.get("context_pct") is not None else a["ctx_pct"],
@@ -148,6 +155,7 @@ def _build_status(session_id: str) -> dict:
         "subagent": a["subagent"],
         "pending_plan": a.get("pending_plan"),
         "pending_question": a.get("pending_question"),
+        "pending_prompt": a.get("pending_prompt"),
         "five_hour_pct": rl["five_hour_pct"] if rl.get("five_hour_pct") is not None else shared_status["five_hour_pct"],
         "seven_day_pct": rl["seven_day_pct"] if rl.get("seven_day_pct") is not None else shared_status["seven_day_pct"],
         "five_hour_resets_at": rl.get("five_hour_resets_at") or shared_status["five_hour_resets_at"],

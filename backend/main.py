@@ -140,6 +140,12 @@ async def lifespan(app: FastAPI):
     # stop_reason 異常を Web Push に流す (= jsonl_routes SSE 経路と独立)。
     blocker_monitor_task = _asyncio.create_task(jsonl_routes.monitor_all_sessions_loop())
 
+    # 番号待ち TUI プロンプト (= モデル切替確認 / survey / 許可 等、 Stop でも
+    # AskUserQuestion でもないやつ) を capture-pane で検出して pending_prompt に載せ、
+    # status SSE + Web Push でチャットに出す (= ターミナルに切り替えなくても気づける)。
+    import prompt_watch  # noqa: PLC0415, E402
+    prompt_watch_task = _asyncio.create_task(prompt_watch.prompt_watch_loop())
+
     # JSONL watcher: ~/.claude/projects/ を fsevents で監視して、 各 PWA session の
     # claude プロセスが書く JSONL を backend mem に確定保持する。
     import jsonl_watcher  # noqa: PLC0415, E402
@@ -172,9 +178,10 @@ async def lifespan(app: FastAPI):
 
     # 終了: 常時 tail task + uploads GC task + maintenance task を停止 → PTY セッションを閉じる
     blocker_monitor_task.cancel()
+    prompt_watch_task.cancel()
     uploads_gc_task.cancel()
     maintenance_task.cancel()
-    for _t in (blocker_monitor_task, uploads_gc_task, maintenance_task):
+    for _t in (blocker_monitor_task, prompt_watch_task, uploads_gc_task, maintenance_task):
         try:
             await _t
         except (asyncio.CancelledError, Exception):
