@@ -97,6 +97,52 @@ def test_tmux_session_name_sanitizes_special_chars():
     assert pty_runner._tmux_session_name("alpha-1_2") == "pwa-alpha-1_2"
 
 
+def test_write_pty_control_mode_emits_send_keys():
+    """control mode の write_pty は master fd に send-keys -H コマンドを書く。"""
+    import types
+
+    r, w = os.pipe()
+    try:
+        session = pty_runner.PtySession(
+            session_id="cm-write",
+            process=types.SimpleNamespace(returncode=None),  # type: ignore[arg-type]
+            master_fd=w,
+            output_queue=asyncio.Queue(),
+            exit_event=asyncio.Event(),
+            control_mode=True,
+        )
+        pty_runner.write_pty(session, b"hi")
+        written = os.read(r, 4096).decode("latin-1")
+        # tmux_name は pwa-<sanitized>、 入力 "hi" = 68 69 の hex
+        assert written == "send-keys -t pwa-cm-write -H 68 69\n"
+    finally:
+        os.close(r)
+        os.close(w)
+
+
+def test_resize_pty_control_mode_emits_refresh_client():
+    """control mode の resize_pty は master fd に refresh-client -C を書く。"""
+    import types
+
+    r, w = os.pipe()
+    try:
+        session = pty_runner.PtySession(
+            session_id="cm-resize",
+            process=types.SimpleNamespace(returncode=None),  # type: ignore[arg-type]
+            master_fd=w,
+            output_queue=asyncio.Queue(),
+            exit_event=asyncio.Event(),
+            control_mode=True,
+        )
+        pty_runner.resize_pty(session, rows=30, cols=100)
+        written = os.read(r, 4096).decode("latin-1")
+        # cols,rows の順 (= refresh-client -C は <cols>,<rows>)
+        assert written == "refresh-client -C 100,30\n"
+    finally:
+        os.close(r)
+        os.close(w)
+
+
 def test_spawn_cat_roundtrip(restore_env, restore_pty_sessions, monkeypatch):
     """`/bin/cat` を代用 spawn して PTY ポンプ全体を検証。
 

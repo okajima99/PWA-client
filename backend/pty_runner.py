@@ -17,13 +17,19 @@
     - WebSocket route 側が Queue を await して client に流し、 client 入力は write_pty で master に書く
     - resize は TIOCSWINSZ ioctl で master fd に通知
 
-tmux 永続化 (= phase 3):
-    USE_TMUX_WRAP=True (= 既定) のとき、 `claude` を直接でなく
-    `tmux new-session -A -s <session_id> claude` 経由で起動する。
-    - 1 度目の attach: tmux セッション + claude を新規作成して attach
-    - 2 度目以降の attach: 既存セッションに attach (= claude は生きたまま)
-    - WebSocket が切れたら attach (= PTY child) を terminate、 ただし tmux サーバ内の
+tmux 永続化 + control mode:
+    USE_TMUX_WRAP=True (= 既定) のとき、 zsh を直接でなく
+    `tmux -CC new-session -A -s <session_id> zsh` 経由で起動する。
+    - 1 度目の attach: tmux セッション + zsh を新規作成して control mode で attach
+    - 2 度目以降の attach: 既存セッションに control mode で attach (= 中の claude は生きたまま)
+    - WebSocket が切れたら attach (= control client) を terminate、 ただし tmux サーバ内の
       セッション + claude は生存し続けるので backend 再起動でも保たれる
+
+    `-CC` = control mode。 tmux は生画面でなく構造化通知 (%output %<pane> <octal> 等) を
+    送る。 出力は ControlModeLineBuffer で行に組み立てて %output の生データだけを queue に
+    積み、 入力は send-keys -H、 resize は refresh-client -C で control client に書く。
+    これでクライアント (= xterm) が自分の桁数を tmux に伝えてその幅で描画させられるため、
+    生 passthrough で起きていた桁数不一致による折り返し崩壊が原理的に解消する。
 """
 from __future__ import annotations
 
@@ -38,10 +44,15 @@ import struct
 import subprocess
 import termios
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from config import CLAUDE_PATH
+from control_mode import (
+    ControlModeLineBuffer,
+    build_refresh_client_line,
+    build_send_keys_lines,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,13 +96,21 @@ def _run_tmux(*args: str, timeout: float = 2.0, text: bool = False):
 
 @dataclass
 class PtySession:
-    """1 セッション = 1 claude プロセス + master fd + 出力 queue。"""
+    """1 セッション = 1 claude プロセス + master fd + 出力 queue。
+
+    `control_mode` が True のとき、 master fd は tmux -CC (= control mode) client に
+    繋がっており、 生バイトでなく構造化通知が流れる。 出力は `_cmbuf` で行に組み立てて
+    %output の生データだけを output_queue に積み、 入力/resize は send-keys -H /
+    refresh-client -C コマンドとして master fd に書く。
+    """
     session_id: str
     process: asyncio.subprocess.Process
     master_fd: int
     output_queue: asyncio.Queue[bytes]
     exit_event: asyncio.Event
+    control_mode: bool = False
     _reader_attached: bool = False
+    _cmbuf: ControlModeLineBuffer = field(default_factory=ControlModeLineBuffer)
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
@@ -143,9 +162,14 @@ async def spawn_pty_session(
     # TTY 想定の TERM を確保 (= 親 server が daemon 起動だと TERM 無いことがある)
     child_env.setdefault("TERM", "xterm-256color")
 
-    # 実行コマンド組み立て: tmux wrap 時は `tmux new-session -A -s <name> claude`、
-    # 直接時は `claude` 単独。 tmux の -A は「既存なら attach、 無ければ作って attach」。
+    # 実行コマンド組み立て: tmux wrap 時は `tmux -CC new-session -A -s <name> zsh`、
+    # 直接時は `zsh` 単独。 tmux の -A は「既存なら attach、 無ければ作って attach」。
     # 新規作成判定は spawn 前にやらないと「-A」 が走ったあとは区別不能。
+    #
+    # `-CC` = control mode。 tmux が生画面 (= ANSI redraw passthrough) でなく構造化通知
+    # (%output %<pane> <octal> 等) を送る。 これにより client (= xterm) が自分の桁数を
+    # refresh-client -C で tmux に伝え、 tmux がそのサイズで描画するため、 生 passthrough で
+    # 起きていた「桁数不一致による折り返し崩壊」 が原理的に起きない (= 移植の主目的)。
     is_new_tmux_session = False
     if USE_TMUX_WRAP:
         tmux_name = _tmux_session_name(session_id)
@@ -155,9 +179,12 @@ async def spawn_pty_session(
         # 環境変数として伝わる。 backend の hooks_router が X-PWA-SID header としてこれを
         # 受けて、 claude_sid / transcript_path を確定 bind するための tag になる。
         # `-e` は tmux 3.2+ で対応、 reattach 時は無視される (= 既存 env を優先)。
+        # `-x/-y` は新規 session の初期サイズ (= 既存 attach 時は無視され、 接続後に
+        # frontend の resize → refresh-client -C で client サイズに補正される)。
         argv = [
-            TMUX_BIN, "new-session", "-A", "-s", tmux_name,
+            TMUX_BIN, "-CC", "new-session", "-A", "-s", tmux_name,
             "-e", f"PWA_SID={session_id}",
+            "-x", str(initial_cols), "-y", str(initial_rows),
             *PTY_INITIAL_ARGV,
         ]
     else:
@@ -186,6 +213,7 @@ async def spawn_pty_session(
         master_fd=master_fd,
         output_queue=asyncio.Queue(maxsize=1024),
         exit_event=asyncio.Event(),
+        control_mode=USE_TMUX_WRAP,
     )
     _attach_reader(session)
     asyncio.create_task(_wait_for_exit(session))
@@ -258,21 +286,33 @@ def _attach_reader(session: PtySession) -> None:
             return
         if not data:
             return
-        try:
-            session.output_queue.put_nowait(data)
-        except asyncio.QueueFull:
-            # client が読み遅れてる、 古いものを 1 個捨てて新規を入れる
-            try:
-                _ = session.output_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            try:
-                session.output_queue.put_nowait(data)
-            except asyncio.QueueFull:
-                logger.warning("PTY queue overflow session=%s, dropping chunk", session.session_id)
+        if session.control_mode:
+            # control mode: 生バイトを行に組み立て、 %output の生データだけを queue へ。
+            # %begin/%end/%layout-change 等の制御通知や起動時 DCS は捨てる。
+            for ev in session._cmbuf.feed(data):
+                if ev["type"] == "output":
+                    _enqueue_output(session, ev["data"])
+                # %exit は process 終了 (= _wait_for_exit) が拾うのでここでは無視
+        else:
+            _enqueue_output(session, data)
 
     loop.add_reader(fd, reader)
     session._reader_attached = True
+
+
+def _enqueue_output(session: PtySession, data: bytes) -> None:
+    """client 向け出力 queue に積む。 満杯なら最古を 1 個捨てて入れる (= 読み遅れ吸収)。"""
+    try:
+        session.output_queue.put_nowait(data)
+    except asyncio.QueueFull:
+        try:
+            _ = session.output_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            session.output_queue.put_nowait(data)
+        except asyncio.QueueFull:
+            logger.warning("PTY queue overflow session=%s, dropping chunk", session.session_id)
 
 
 async def _wait_for_exit(session: PtySession) -> None:
@@ -296,9 +336,32 @@ async def _wait_for_exit(session: PtySession) -> None:
         )
 
 
+def _write_control_command(session: PtySession, line: str) -> None:
+    """control client (= master fd) に tmux コマンド 1 行を書く (= 末尾 \\n で確定)。
+
+    control mode の client は stdin の各行を tmux コマンドとして解釈する。 send-keys -H /
+    refresh-client -C はこの経路で送る。 コマンドは ASCII なので latin-1 で十分。
+    """
+    try:
+        os.write(session.master_fd, (line + "\n").encode("latin-1"))
+    except OSError as e:
+        if e.errno not in (errno.EBADF, errno.EIO):
+            logger.exception("control command write error session=%s", session.session_id)
+
+
 def write_pty(session: PtySession, data: bytes) -> None:
-    """user 入力を子 claude の stdin (= PTY master) に書く。"""
+    """user 入力を子 claude の stdin に届ける。
+
+    control mode では master fd に生バイトを書いても tmux はコマンドとして誤解釈するので、
+    `send-keys -H <hex>` コマンドに変換して control client 経由で pane に注入する。
+    生 PTY (= USE_TMUX_WRAP=False) では従来どおり master fd に直書きする。
+    """
     if session.exit_event.is_set():
+        return
+    if session.control_mode:
+        tmux_name = _tmux_session_name(session.session_id)
+        for line in build_send_keys_lines(tmux_name, data):
+            _write_control_command(session, line)
         return
     try:
         os.write(session.master_fd, data)
@@ -308,7 +371,16 @@ def write_pty(session: PtySession, data: bytes) -> None:
 
 
 def resize_pty(session: PtySession, rows: int, cols: int) -> None:
+    """client の桁数変化を子 TTY に反映する。
+
+    control mode では `refresh-client -C <cols>,<rows>` で control client 自身のサイズを
+    tmux に通知する (= クライアント権威サイズ。 これが折り返し崩壊を防ぐ本体)。 生 PTY では
+    master fd の winsize を直接設定する (= TIOCSWINSZ)。
+    """
     if session.exit_event.is_set():
+        return
+    if session.control_mode:
+        _write_control_command(session, build_refresh_client_line(max(1, cols), max(1, rows)))
         return
     try:
         _set_winsize(session.master_fd, max(1, rows), max(1, cols))
