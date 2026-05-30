@@ -95,17 +95,12 @@ export default function App() {
     scrollToBottom,
     onScroll,
   } = useAutoScroll({ messages, activeSession, viewMode: activeViewMode })
-  // Deep Research の武装状態 (= session 別)。 ⋯ メニューで ON にすると、 次に送る
-  // メッセージが `/deep-research <本文>` に包まれて送られる (= 即送信はしない)。
-  const [deepResearch, setDeepResearch] = useState({})
-
   const { loading, setLoading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession, pendingSendUntilRef } = useChatStream({
     activeSession,
     setMessages,
     input, setInput,
     attachments, clearAttachments,
     scrollToBottom, isAtBottomRef,
-    deepResearch, setDeepResearch,
   })
 
   const storageInfo = useStorageQuota()
@@ -362,7 +357,11 @@ export default function App() {
     // 回答後は JSONL flush で本物の回答済みバブルが messages に入り、 同時に backend が
     // pending_question を clear するので、 このライブバブルは自然に消える。
     const pq = status?.pending_question
-    const base = (loading[activeSid] && !msgs.some(m => m.streaming) && !pq)
+    // 番号待ち TUI プロンプト (= モデル切替確認 / survey / 許可 等)。 ターミナルに切り替え
+    // なくても「何を聞かれてるか」 が分かるよう、 chat 末尾にバブルとして差し込む。 番号は
+    // ユーザが普通に入力欄から送って回答する (= タップ式バブルは作らない方針)。
+    const pp = status?.pending_prompt
+    const base = (loading[activeSid] && !msgs.some(m => m.streaming) && !pq && !pp)
       ? [...msgs, { id: '__loading__', role: '__loading__' }]
       : msgs
     if (pq) {
@@ -380,8 +379,18 @@ export default function App() {
         },
       }]
     }
+    if (pp) {
+      return [...base, {
+        id: '__pending_prompt__',
+        role: 'agent',
+        text: '',
+        tools: [],
+        streaming: false,
+        pendingPrompt: pp,
+      }]
+    }
     return base
-  }, [messages, loading, activeSid, status?.pending_question])
+  }, [messages, loading, activeSid, status?.pending_question, status?.pending_prompt])
 
   const handleEndSession = () => {
     setMenuOpen(false)
@@ -451,9 +460,6 @@ export default function App() {
       <StatusBar
         status={status}
         nowSec={nowSec}
-        effort={activeSid ? activeEffort : null}
-        fast={activeSid ? activeFast : false}
-        onOpenConfig={activeSid ? () => setPickerOpen('config') : null}
       />
       <StorageWarning
         info={storageInfo}
@@ -587,20 +593,26 @@ export default function App() {
           activeViewMode={activeViewMode}
           onToggleView={() => { if (activeSid) setViewModes(prev => ({ ...prev, [activeSid]: flippedViewMode })) }}
           onOpenPicker={() => setPickerOpen('config')}
-          deepResearchArmed={!!(activeSid && deepResearch[activeSid])}
-          onDeepResearch={() => {
-            if (!activeSid) return
-            // 即送信せず武装トグルのみ。 次の送信 (sendMessage) で本文に乗る。
-            setDeepResearch(prev => ({ ...prev, [activeSid]: !prev[activeSid] }))
-          }}
-          onDisarmDeepResearch={() => {
-            if (!activeSid) return
-            setDeepResearch(prev => ({ ...prev, [activeSid]: false }))
-          }}
           onEndSession={() => setConfirmEnd(true)}
           showStopButton={showStopButton}
           onStop={() => setConfirmStop(true)}
-          onSend={sendMessage}
+          onSend={() => {
+            // 番号待ち TUI プロンプト表示中に、 その選択肢番号を送ったら、 メッセージでなく
+            // 生キー (= Enter 無し) で TUI に流す (= survey/モデル切替確認 等は数字キー押下で
+            // 答えるもので、 text+Enter だとメッセージとして貫通してしまうため)。
+            const pp = status?.pending_prompt
+            const txt = (input[activeSid] || '').trim()
+            if (pp && activeSid && /^\d+$/.test(txt) && (pp.options || []).some(o => o.key === txt)) {
+              apiFetch(`/pty/${encodeURIComponent(activeSid)}/send`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: txt, enter: false }),
+              }).catch(() => {})
+              setInput(prev => ({ ...prev, [activeSid]: '' }))
+              return
+            }
+            sendMessage()
+          }}
           currentAttachments={currentAttachments}
         />
       )}

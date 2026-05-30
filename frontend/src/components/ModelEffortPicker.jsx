@@ -1,10 +1,16 @@
 // ⋯ メニュー → Model & Effort の切替ダイアログ。 App.jsx から純粋プレゼンテーショナルに
 // 切り出したもの。 選択肢は公式 CLI が受け入れる短縮形 + effort 階層。
 
+// バージョン固定で選ばせる (= エイリアスでなくプレーンなフル ID = 標準モデル ID なので
+// 認識ミスがない最も堅牢な指定)。 ctx は各モデルの context window (= 公式の値)。
+// `[1m]` は付けない: Opus は Max で自動 1M なので不要、 Sonnet の 1M は credits 課金なので
+// 勝手に有効化しない (= 金銭ルール)、 さらに `[1m]` 付きフル ID は statusline で生表示され
+// `/model` がデフォルトにも `[1m]` を書き戻して汚すため。
 const MODEL_OPTIONS = [
-  { value: 'opus', label: 'Opus' },
-  { value: 'sonnet', label: 'Sonnet' },
-  { value: 'haiku', label: 'Haiku' },
+  { value: 'claude-opus-4-8', label: 'Opus 4.8', ctx: '1M' },
+  { value: 'claude-opus-4-7', label: 'Opus 4.7', ctx: '1M' },
+  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', ctx: '1M' },
+  { value: 'claude-haiku-4-5', label: 'Haiku 4.5', ctx: '200k' },
 ]
 const EFFORT_OPTIONS = [
   { value: 'low', label: 'Low' },
@@ -38,7 +44,10 @@ export default function ModelEffortPicker({ open, model, effort, fast, disabled,
               disabled={disabled}
             >
               <span>{opt.label}</span>
-              {model === opt.value && <span className="picker-check">✓</span>}
+              <span className="picker-meta">
+                <span className="picker-ctx">{opt.ctx}</span>
+                {model === opt.value && <span className="picker-check">✓</span>}
+              </span>
             </button>
           ))}
         </div>

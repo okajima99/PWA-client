@@ -52,10 +52,9 @@ self.addEventListener('push', (event) => {
     try { self.navigator.setAppBadge(data.unread_count) } catch { /* ignore */ }
   }
   event.waitUntil((async () => {
-    // session-aware 抑制: 「対象 session (data.sid) を今 visible で見てる」 client が居る時
-    // だけ OS 通知を抑制する。 別 session を見てる / バックグラウンドの時は撃つ (= 旧実装の
-    // 「1 つでも visible なら全抑制」 だと別 session の通知まで巻き添えで消えていた)。
-    // data.sid が無い proactive 通知は抑制対象にしない (= 常に表示)。
+    // 抑制方針: 「アプリのタブが 1 つでも可視 (= 前面) なら、 どのタブ宛でも OS 通知は出さない」
+    // (= 2026-05-30 方針。 アプリを見てる間は他タブのも含め通知を撃たず、 サイドバーの
+    // 赤/青丸で気づく)。 バックグラウンド / 完全終了の時だけ OS 通知を撃つ。
     // postMessage は visible / hidden 問わず投げる (= 状態同期と未読 fetch 用)。
     let suppress = false
     try {
@@ -63,10 +62,7 @@ self.addEventListener('push', (event) => {
       const liveIds = new Set()
       for (const c of all) {
         liveIds.add(c.id)
-        const st = clientActive[c.id]
-        const viewingThis = c.visibilityState === 'visible'
-          && st && st.sid && data.sid && st.sid === data.sid
-        if (viewingThis) suppress = true
+        if (c.visibilityState === 'visible') suppress = true
         try { c.postMessage({ type: 'push-received', sid: data.sid || null }) } catch { /* ignore */ }
       }
       // 閉じた client の残骸を掃除。

@@ -293,11 +293,27 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
       </div>
     )
   }
+  // 番号待ち TUI プロンプト (= モデル切替確認 / survey / 許可 等)。 ターミナルに切り替え
+  // なくても何を聞かれてるか分かるよう notice として出す。 回答は入力欄から番号を送る。
+  if (msg.pendingPrompt) {
+    const pp = msg.pendingPrompt
+    return (
+      <div className="message agent">
+        <div className="pending-prompt">
+          <div className="pending-prompt-head">⌨ ターミナルで確認待ち</div>
+          {pp.question && <div className="pending-prompt-q">{pp.question}</div>}
+          <div className="pending-prompt-opts">
+            {(pp.options || []).map(o => (
+              <span key={o.key} className="pp-opt"><b>{o.key}</b> {o.label}</span>
+            ))}
+          </div>
+          <div className="pending-prompt-hint">番号を入力して送信すると回答できます</div>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className={`message ${msg.role}`}>
-      {msg.role === 'user' && msg.deepResearch && (
-        <span className="dr-mark" title="Deep Research で送信したメッセージ">🔎 Deep Research</span>
-      )}
       {msg.role === 'user' && (msg.imageRefs?.length > 0 || msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
         <div className="user-block">
           <AttachedImages imageRefs={msg.imageRefs} imageUrls={msg.imageUrls} />

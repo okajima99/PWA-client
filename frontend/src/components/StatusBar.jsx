@@ -6,13 +6,28 @@ import './StatusBar.css'
 // 18:00 JST 固定」 は誤りだったので撤回 (2026-05-09)。 動的値 (= header から取った
 // resets_at) が取れない時は label を出さない (= 嘘表示しない方針)。
 
-// 上部のステータス行: モデル名 / 5h / 7d / ctx 使用率 + effort / fast pill
+// 上部のステータス行: モデル名 / 5h / 7d / ctx 使用率 (= 表示専用)。
+// モデル名は長い (= 1M 等の context 表記が付く) と折り返すので CSS で省略する。
 // resets_at が 0 (未知) の間は生の pct を信用、既知かつ過去なら「窓切れ = 0%」扱い。
-// effort / fast / onOpenConfig が揃う時だけ右端に pill を出す (= タップで Model & Effort
-// ダイアログを開く)。 active session が無い時は null で渡され pill は出ない。
-const EFFORT_PILL = { low: 'L', medium: 'M', high: 'H', xhigh: 'XH', max: 'MAX', auto: 'A', ultracode: 'UC' }
+// Model & Effort の変更入口は ⋯ メニューに一本化したので、 ここには pill を出さない
+// (= 旧 effort / fast pill は撤去、 2026-05-29)。
 
-export default function StatusBar({ status, nowSec, effort, fast, onOpenConfig }) {
+// モデル表示名を「Tier Version [1M]」 の最小形に正規化する。 statusline は (a) 生 API id
+// (= `claude-opus-4-8[1m]`、 [1m] 付きフル ID 指定時にフレンドリー名へ解決されない) や
+// (b) `Opus 4.7 (1M context)` のような冗長名を返すので、 どちらも「Opus 4.8 1M」 /
+// 「Haiku 4.5」 のように揃える (= モデル名 + バージョン + コンテキスト数字だけ)。
+function cleanModel(m) {
+  if (!m) return m
+  const s = String(m).trim()
+  const id = s.match(/claude-(opus|sonnet|haiku)-(\d+)-(\d+)(\[1m\])?/i)
+  if (id) {
+    const tier = id[1].charAt(0).toUpperCase() + id[1].slice(1).toLowerCase()
+    return `${tier} ${id[2]}.${id[3]}${id[4] ? ' 1M' : ''}`
+  }
+  return s.replace(/\s*\(1M context\)/i, ' 1M').replace(/\s*\([^)]*\)/g, '').trim()
+}
+
+export default function StatusBar({ status, nowSec }) {
   if (!status) {
     return (
       <div className="statusbar">
@@ -28,7 +43,7 @@ export default function StatusBar({ status, nowSec, effort, fast, onOpenConfig }
     : ''
   return (
     <div className="statusbar">
-      <span className="model">{status.model}</span>
+      <span className="model">{cleanModel(status.model)}</span>
       <span className={pctClass(fivePct)}>
         5h {Math.round(fivePct)}%{' '}
         <span className="dim">{timeUntil(status.five_hour_resets_at, nowSec)}</span>
@@ -38,16 +53,6 @@ export default function StatusBar({ status, nowSec, effort, fast, onOpenConfig }
         <span className="dim">{sevenDayResetLabel}</span>
       </span>
       <span className={pctClass(status.ctx_pct)}>ctx {Math.round(status.ctx_pct || 0)}%</span>
-      {effort && onOpenConfig && (
-        <button className="statusbar-pill" onClick={onOpenConfig} title="Model & Effort">
-          E:{EFFORT_PILL[effort] || effort}
-        </button>
-      )}
-      {fast && onOpenConfig && (
-        <button className="statusbar-pill fast" onClick={onOpenConfig} title="Fast mode ON">
-          F:⚡
-        </button>
-      )}
     </div>
   )
 }

@@ -35,7 +35,6 @@ export function useChatStream({
   input, setInput,
   attachments, clearAttachments,
   scrollToBottom, isAtBottomRef,
-  deepResearch, setDeepResearch,
 }) {
   const sid = activeSession?.id || null
   const [loading, setLoading] = useState({})
@@ -143,15 +142,7 @@ export function useChatStream({
     const text = (input[sid] || '').trim()
     const files = attachments[sid] || []
     if ((!text && files.length === 0) || loading[sid]) return
-    // Deep Research が武装されてる session では本文を `/deep-research <query>` に包んで送る
-    // (= ボタンは「次の送信に乗せる」 トグル、 即送信はしない)。 query が無いと無意味なので
-    // text がある時だけ包む。 二重 prefix は防ぐ。 包んだら武装解除 (= 1 回限り)。
-    const armed = !!(deepResearch && deepResearch[sid])
-    const sendText =
-      armed && text && !text.startsWith('/deep-research')
-        ? `/deep-research ${text}`
-        : text
-    if (armed && setDeepResearch) setDeepResearch(prev => ({ ...prev, [sid]: false }))
+    const sendText = text
     setInput(prev => ({ ...prev, [sid]: '' }))
     setLoading(prev => ({ ...prev, [sid]: true }))
     pendingSendUntilRef.current[sid] = Date.now() + 1500
@@ -172,10 +163,6 @@ export function useChatStream({
             role: 'user',
             text,
             optimistic: true,
-            // Deep Research 武装中に送った発言は chat 上でも 🔎 マークで識別できるようにする。
-            // slash command は JSONL 上 harness XML として skip されるので user_message event で
-            // 上書きされず、 この楽観バブル (= flag 付き) がそのまま残る。
-            deepResearch: armed && !!text,
             // imageUrls = ObjectURL (= 一時表示用、 リロードで失効)、
             // imageRefs = IndexedDB key (= 永続、 リロード後 AttachedImages が復元)
             imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
@@ -243,7 +230,7 @@ export function useChatStream({
         pendingSendUntilRef.current[sid] = 0
       }
     }
-  }, [sid, input, attachments, loading, setInput, setMessages, clearAttachments, scrollToBottom, isAtBottomRef, setLoading, deepResearch, setDeepResearch])
+  }, [sid, input, attachments, loading, setInput, setMessages, clearAttachments, scrollToBottom, isAtBottomRef, setLoading])
 
   const stopMessage = useCallback(async () => {
     if (!sid) return

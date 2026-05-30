@@ -3,6 +3,7 @@
   display: flex;
   gap: 12px;
   align-items: center;
+  flex-wrap: nowrap;
   /* iPhone Safari の PWA standalone で notch / Dynamic Island ぶん上にずらす。 通常 web は 0。 */
   padding: calc(6px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 6px calc(12px + env(safe-area-inset-left));
   background: var(--bg2);
@@ -11,28 +12,24 @@
   flex-shrink: 0;
 }
 
+/* モデル名は長い (= "Opus 4.8 1M" 等の context 表記付き) と折り返すので、 1 行省略 (…) に
+   する。 min-width:0 で flex の縮小を許可し、 余白が足りない時だけ ellipsis が出る。 */
 .model {
   color: var(--accent);
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
-.pct { font-weight: 500; }
+/* 使用率はモデル名より優先で表示しきる (= 縮まない・折り返さない)。 */
+.pct {
+  font-weight: 500;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
 .pct.green { color: var(--green); }
 .pct.yellow { color: var(--yellow); }
 .pct.red { color: var(--red); }
 .dim { color: var(--text-dim); }
-
-/* effort / fast の pill (= タップで Model & Effort ダイアログを開く) */
-.statusbar-pill {
-  margin-left: auto;
-  padding: 2px 8px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg);
-  color: var(--text-dim);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.statusbar-pill + .statusbar-pill { margin-left: 6px; }
-.statusbar-pill.fast { color: var(--accent); border-color: var(--accent); }
