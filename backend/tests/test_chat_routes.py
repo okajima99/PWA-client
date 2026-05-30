@@ -16,6 +16,27 @@ def _setup_session(state, sid="ses_cfg"):
     return sid
 
 
+def test_build_sessions_overview_reflects_busy(isolated_state):
+    """全session overview payload が各 session の busy / pending_question を反映する (= 案B)。"""
+    import chat_routes
+    from state import StreamState
+    state = isolated_state
+    state.sessions_meta.clear()
+    state.stream_states.clear()
+    state.agent_status.clear()
+    # busy=True の session と busy=False の session
+    state.sessions_meta["ses_a"] = object()
+    state.sessions_meta["ses_b"] = object()
+    state.stream_states["ses_a"] = StreamState(busy=True)
+    state.stream_states["ses_b"] = StreamState(busy=False)
+    state.agent_status["ses_a"] = {"pending_question": None}
+    state.agent_status["ses_b"] = {"pending_question": {"questions": []}}
+
+    ov = chat_routes._build_sessions_overview()
+    assert ov["ses_a"] == {"busy": True, "pending_question": False}
+    assert ov["ses_b"] == {"busy": False, "pending_question": True}
+
+
 def test_patch_config_fast_toggle_sends_once_on_change(isolated_state, monkeypatch):
     """`/fast` はトグルなので、 希望状態が現状と変わった時だけ 1 回打鍵する。
     同値 PATCH では打鍵しない (= 2 連打で ON→OFF に戻る事故を防ぐ)。"""

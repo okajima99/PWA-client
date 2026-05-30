@@ -15,6 +15,7 @@ import { useAttachments } from './hooks/useAttachments.js'
 import { useChatStorage } from './hooks/useChatStorage.js'
 import { useAutoScroll } from './hooks/useAutoScroll.js'
 import { useChatStream } from './hooks/useChatStream.js'
+import { useSessionsOverview } from './hooks/useSessionsOverview.js'
 import { useSessions } from './hooks/useSessions.js'
 import { useStorageQuota } from './hooks/useStorageQuota.js'
 import {
@@ -102,6 +103,9 @@ export default function App() {
     attachments, clearAttachments,
     scrollToBottom, isAtBottomRef,
   })
+  // 全 session の busy を 1 本の SSE で購読し loading を backend 権威で上書き (= 非アクティブ
+  // タブの青丸/赤丸を live 追従 + active の result 取りこぼし補正)。
+  useSessionsOverview({ setLoading, pendingSendUntilRef })
 
   const storageInfo = useStorageQuota()
 

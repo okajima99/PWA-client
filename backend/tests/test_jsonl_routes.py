@@ -131,6 +131,85 @@ def _write_agent_file(subdir, name, tools, mtime=None):
     return p
 
 
+# --- busy 判定 (案B: 全session 状態の backend 権威ソース) ---
+
+def _asst(stop_reason):
+    return {"type": "assistant", "message": {"role": "assistant", "stop_reason": stop_reason,
+                                             "content": [{"type": "text", "text": "x"}]}}
+
+def _user(text):
+    return {"type": "user", "message": {"role": "user", "content": text}}
+
+
+def test_is_user_prompt_true_for_real_text():
+    assert jr._is_user_prompt(_user("hello")) is True
+    assert jr._is_user_prompt({"type": "user", "message": {"content": [{"type": "text", "text": "hi"}]}}) is True
+
+
+def test_is_user_prompt_false_for_tool_result_and_meta():
+    # tool_result の user 行 (content が list で text 無し) は除外
+    assert jr._is_user_prompt({"type": "user", "message": {"content": [{"type": "tool_result", "content": "r"}]}}) is False
+    assert jr._is_user_prompt({"type": "user", "isMeta": True, "message": {"content": "x"}}) is False
+    assert jr._is_user_prompt({"type": "user", "isSidechain": True, "message": {"content": "x"}}) is False
+    assert jr._is_user_prompt(_asst("end_turn")) is False
+
+
+def test_update_busy_transitions(isolated_state):
+    state = isolated_state
+    import state as state_mod
+    sid = "ses_busy"
+    state.stream_states[sid] = state_mod.StreamState(agent_id="a")
+    ev = state_mod.sessions_overview_event
+    ev.clear()
+
+    # 素ユーザ発話 → busy=True + event set
+    jr._update_busy(sid, _user("go"))
+    assert state.stream_states[sid].busy is True
+    assert ev.is_set() is True
+    ev.clear()
+
+    # tool_use 継続 → busy=True 維持 (変化なし → event は set されない)
+    jr._update_busy(sid, _asst("tool_use"))
+    assert state.stream_states[sid].busy is True
+    assert ev.is_set() is False
+
+    # end_turn → busy=False + event set
+    jr._update_busy(sid, _asst("end_turn"))
+    assert state.stream_states[sid].busy is False
+    assert ev.is_set() is True
+
+
+def test_update_busy_refusal_completes(isolated_state):
+    state = isolated_state
+    import state as state_mod
+    sid = "ses_ref"
+    state.stream_states[sid] = state_mod.StreamState(agent_id="a", busy=True)
+    jr._update_busy(sid, _asst("refusal"))
+    assert state.stream_states[sid].busy is False
+
+
+def test_update_busy_unknown_session_noop():
+    # 登録されてない sid は黙って無視 (例外を投げない)
+    jr._update_busy("__no_such_sid__", _user("x"))
+
+
+def test_compute_busy_from_tail(tmp_path):
+    p = tmp_path / "s.jsonl"
+    # 末尾が tool_use → busy=True
+    p.write_text("\n".join(json.dumps(x) for x in [_user("go"), _asst("tool_use")]) + "\n")
+    assert jr._compute_busy_from_tail(p) is True
+    # 末尾が end_turn → busy=False
+    p.write_text("\n".join(json.dumps(x) for x in [_user("go"), _asst("tool_use"), _asst("end_turn")]) + "\n")
+    assert jr._compute_busy_from_tail(p) is False
+    # 素ユーザ発話だけ (assistant 未着) → busy=True
+    p.write_text(json.dumps(_user("go")) + "\n")
+    assert jr._compute_busy_from_tail(p) is True
+
+
+def test_compute_busy_from_tail_missing_file(tmp_path):
+    assert jr._compute_busy_from_tail(tmp_path / "nope.jsonl") is False
+
+
 def test_latest_subagent_tool_returns_last_tool(tmp_path):
     jsonl = tmp_path / "ses1.jsonl"
     sub = tmp_path / "ses1" / "subagents"

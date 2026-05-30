@@ -154,6 +154,12 @@ class StreamState:
     # current_tool 変化 / todos 更新等 (= hooks / jsonl 経路) で set、 SSE 受信側は
     # 現状 status JSON を yield して event.clear() する。 backend→frontend を即時 push。
     status_event: asyncio.Event = field(default_factory=asyncio.Event)
+    # turn 進行中か (= 推論中なら True / 完了なら False)。 全 session の JSONL を tail する
+    # monitor_all_sessions_loop が assistant の stop_reason / 素ユーザ発話から算出して更新する。
+    # frontend の青丸 (処理中) / 赤丸 (完了未読) / 停止ボタンの **backend 権威ソース**。
+    # JSONL を直接読むので、 chat SSE の result イベント取りこぼしに依存しない (= 非アクティブ
+    # タブでも追従でき、 active タブの取りこぼしも backend が拾い直せる)。
+    busy: bool = False
 
 
 def _make_agent_status(agent_id: str) -> dict:
@@ -188,6 +194,12 @@ def _make_agent_status(agent_id: str) -> dict:
 stream_states: dict[str, StreamState] = {
     sid: StreamState(agent_id=meta.agent_id) for sid, meta in sessions_meta.items()
 }
+
+# 全 session の busy / pending_question 変化を 1 本の SSE (/sessions/status/stream) に流す
+# ためのシグナル。 いずれかの session の busy が変わったら set される。 個別 session の
+# status_event とは別に、 全 session を横断する 1 接続の push を担う (= 非アクティブタブの
+# 青丸/赤丸を live 追従させる経路。 タブごとに SSE を張らずに済むのでリソースが増えない)。
+sessions_overview_event: asyncio.Event = asyncio.Event()
 
 # --- セッションごとの一時ファイル ---
 session_tmp_files: dict[str, list[Path]] = {}

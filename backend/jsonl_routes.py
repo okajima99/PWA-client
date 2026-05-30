@@ -29,7 +29,7 @@ import re
 from jsonl_events import jsonl_line_to_events
 from push import broadcast_push, notification_title_for
 from pty_runner import capture_tmux_scrollback, jsonl_path_for_session
-from state import agent_status, stream_states
+from state import agent_status, sessions_overview_event, stream_states
 from usage import compute_ctx_pct, format_model_name
 
 
@@ -192,25 +192,80 @@ def _parse_jsonl_timestamp(ts: str | None) -> float | None:
         return None
 
 
-def _track_turn_start(session_id: str, line: dict) -> None:
-    """素プロンプト (= ユーザ発言) の user 行で turn 開始時刻を記録する。
-    tool_result の user 行 (= content が list で type=tool_result を含む) は除外。"""
+def _is_user_prompt(line: dict) -> bool:
+    """素プロンプト (= 実ユーザ発言の user 行) か。 tool_result の user 行 (= content が
+    list で type=tool_result) や isMeta / isSidechain は除外する。"""
     if line.get("type") != "user" or line.get("isSidechain") or line.get("isMeta"):
-        return
+        return False
     content = (line.get("message") or {}).get("content")
-    is_prompt = False
-    if isinstance(content, str) and content.strip():
-        is_prompt = True
-    elif isinstance(content, list):
-        is_prompt = any(
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return any(
             isinstance(b, dict) and b.get("type") == "text" and (b.get("text") or "").strip()
             for b in content
         )
-    if not is_prompt:
+    return False
+
+
+def _track_turn_start(session_id: str, line: dict) -> None:
+    """素プロンプト (= ユーザ発言) の user 行で turn 開始時刻を記録する。"""
+    if not _is_user_prompt(line):
         return
     ts = _parse_jsonl_timestamp(line.get("timestamp"))
     if ts is not None:
         _turn_started_at[session_id] = ts
+
+
+def _update_busy(session_id: str, line: dict) -> None:
+    """JSONL 1 行から session の busy (= turn 進行中か) を更新する。 変化したら
+    sessions_overview_event を叩いて /sessions/status/stream に push させる。
+
+    素ユーザ発話 → busy=True (推論開始)。 assistant 行は stop_reason で判定:
+    `tool_use` (= ツール継続中) は busy=True、 それ以外の確定 stop_reason
+    (end_turn / max_tokens / refusal 等) は busy=False (= turn 完了)。 jsonl_events の
+    result 合成と同一基準で、 SSE result 配信を経由しないので取りこぼさない。"""
+    st = stream_states.get(session_id)
+    if st is None:
+        return
+    new = st.busy
+    if line.get("type") == "assistant":
+        sr = (line.get("message") or {}).get("stop_reason")
+        if sr == "tool_use":
+            new = True
+        elif sr:
+            new = False
+    elif _is_user_prompt(line):
+        new = True
+    if new != st.busy:
+        st.busy = new
+        sessions_overview_event.set()
+
+
+def _compute_busy_from_tail(path: Path, tail_bytes: int = 32768) -> bool:
+    """JSONL 末尾を読んで現在の busy を算出する (= monitor 初回 / path 切替時の初期化用)。
+    後ろから最初に当たった確定シグナル (assistant の stop_reason or 素ユーザ発話) で決める。"""
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            f.seek(max(0, size - tail_bytes))
+            data = f.read()
+    except OSError:
+        return False
+    for raw in reversed([ln for ln in data.split(b"\n") if ln.strip()]):
+        try:
+            d = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if d.get("type") == "assistant":
+            sr = (d.get("message") or {}).get("stop_reason")
+            if sr == "tool_use":
+                return True
+            if sr:
+                return False
+        elif _is_user_prompt(d):
+            return True
+    return False
 
 
 def _attach_duration_to_result(session_id: str, line: dict, events: list[dict]) -> None:
@@ -693,6 +748,14 @@ async def monitor_all_sessions_loop():
                             state[sid] = (path, path.stat().st_size)
                         except OSError:
                             pass
+                        # busy は過去行を通知しない代わりに末尾から現在値を 1 回算出する
+                        # (= backend 起動時に推論中だった session も正しく busy=True にする)。
+                        st = stream_states.get(sid)
+                        if st is not None:
+                            new_busy = _compute_busy_from_tail(path)
+                            if new_busy != st.busy:
+                                st.busy = new_busy
+                                sessions_overview_event.set()
                         continue
                     lines, new_pos, status = _read_tail(path, prev[1])
                     if status == "error":
@@ -710,6 +773,7 @@ async def monitor_all_sessions_loop():
                         except json.JSONDecodeError:
                             continue
                         _maybe_push_blockers(sid, obj)
+                        _update_busy(sid, obj)
             except asyncio.CancelledError:
                 raise
             except Exception:

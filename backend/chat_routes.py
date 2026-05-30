@@ -30,6 +30,7 @@ from state import (
     rename_session,
     session_tmp_files,
     sessions_meta,
+    sessions_overview_event,
     shared_status,
     stream_states,
     unregister_session,
@@ -198,6 +199,52 @@ async def status_stream(session_id: str, _: str = Depends(require_session)):
                 # この timeout で rate-limits 込みの最新 status を定期 push する
                 # (= 5h/7d を ~20 秒粒度で更新)。
                 yield f"data: {json.dumps(_build_status(session_id))}\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _build_sessions_overview() -> dict:
+    """全 session の busy / pending_question を 1 dict で返す (= /sessions/overview/stream payload)。
+
+    busy は monitor_all_sessions_loop が JSONL から算出した backend 権威値 (= chat SSE の
+    result 配信に依存しない)。 frontend は各 sid の busy で loading を上書きして、 青丸
+    (処理中) / 赤丸 (完了未読) / 停止ボタンを **非アクティブタブでも** live 追従させる。"""
+    out: dict[str, dict] = {}
+    for sid in list(sessions_meta.keys()):
+        st = stream_states.get(sid)
+        a = agent_status.get(sid) or {}
+        out[sid] = {
+            "busy": bool(st.busy) if st is not None else False,
+            "pending_question": bool(a.get("pending_question")),
+        }
+    return out
+
+
+@router.get("/sessions/overview/stream")
+async def sessions_overview_stream():
+    """全 session の busy / pending を 1 本で push する SSE (= 案 B)。
+
+    タブごとに SSE を張らず 1 接続で全 session をカバーするので、 session 数が増えても
+    接続は 1 本のまま (= リソース増加なし)。 sessions_overview_event が set されるたびに
+    最新 snapshot を yield。 20 秒の timeout で keep-alive 兼 定期同期。
+
+    注: event は全接続で共有するため、 複数デバイスで同時に開くと clear 競合で片方の即時
+    push を取りこぼしうるが、 その場合も 20 秒の定期 push で追従する (= 単一デバイス運用が
+    主なので実用上の遅延は出ない)。"""
+    async def gen():
+        # 接続直後に snapshot を 1 chunk で送る (= retry + 初期 data を結合)。
+        yield f"retry: 3000\n\ndata: {json.dumps(_build_sessions_overview())}\n\n"
+        while True:
+            try:
+                await asyncio.wait_for(sessions_overview_event.wait(), timeout=20.0)
+                sessions_overview_event.clear()
+                yield f"data: {json.dumps(_build_sessions_overview())}\n\n"
+            except asyncio.TimeoutError:
+                yield f"data: {json.dumps(_build_sessions_overview())}\n\n"
 
     return StreamingResponse(
         gen(),
