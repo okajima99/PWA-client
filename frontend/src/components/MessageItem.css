@@ -56,32 +56,6 @@
   content-visibility: auto;
 }
 
-/* 番号待ち TUI プロンプト notice (= モデル切替確認 / survey / 許可 等)。 */
-.pending-prompt {
-  max-width: 90%;
-  border: 1px solid var(--accent);
-  border-radius: 12px;
-  background: var(--bg3);
-  padding: 10px 12px;
-  font-size: 13px;
-}
-.pending-prompt-head {
-  color: var(--accent);
-  font-weight: 700;
-  font-size: 12px;
-  margin-bottom: 4px;
-}
-.pending-prompt-q { color: var(--text); margin-bottom: 6px; }
-.pending-prompt-opts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  margin-bottom: 6px;
-}
-.pp-opt { color: var(--text); }
-.pp-opt b { color: var(--accent); margin-right: 3px; }
-.pending-prompt-hint { color: var(--text-dim); font-size: 11px; }
-
 .message.user { justify-content: flex-end; }
 .message.agent,
 .message.system,
