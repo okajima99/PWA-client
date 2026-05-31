@@ -224,7 +224,9 @@ async def spawn_pty_session(
         asyncio.create_task(_send_launch_alias(session_id, launch_alias))
     # 新規 tmux session でも reattach でも、 claude プロセス起動 (= launch_alias 後の数秒、
     # 既存セッションなら即時) を待って backend mem の binding に登録する
-    asyncio.create_task(_register_claude_when_ready(session_id))
+    # pty_discover への遅延 import で循環回避 (= pty_discover が pty_runner の _run_tmux に依存)
+    from pty_discover import register_claude_when_ready as _rcwr
+    asyncio.create_task(_rcwr(session_id))
     return session
 
 
@@ -237,31 +239,6 @@ async def _send_launch_alias(session_id: str, alias: str, delay: float = 1.0) ->
             logger.warning("launch alias send failed session=%s alias=%s", session_id, alias)
     except Exception:
         logger.exception("_send_launch_alias error session=%s", session_id)
-
-
-async def _register_claude_when_ready(
-    session_id: str, max_wait: float = 8.0, interval: float = 0.5,
-) -> None:
-    """tmux pane の子 claude プロセスが立ち上がるのを polling で待ち、 jsonl_watcher に登録する。
-
-    launch_alias 経由だと claude 起動まで 1-2 秒、 環境次第でもう少しかかる。
-    `max_wait` 秒以内に claude プロセスが見つからなければ諦める (= 既存 zsh のみで claude
-    起動しないケース等)。
-    """
-    import jsonl_watcher  # 循環 import 回避のため遅延 import
-    deadline = time.time() + max_wait
-    while time.time() < deadline:
-        await asyncio.sleep(interval)
-        for pane_pid in _tmux_pane_pids(session_id):
-            claude_pid = _find_claude_descendant(pane_pid)
-            if claude_pid is None:
-                continue
-            start_time = _process_start_time(claude_pid)
-            cwd = _process_cwd(claude_pid)
-            if start_time is None or cwd is None:
-                continue
-            jsonl_watcher.register_pending(session_id, claude_pid, cwd, start_time)
-            return
 
 
 def _attach_reader(session: PtySession) -> None:
@@ -521,90 +498,6 @@ def kill_tmux_session(session_id: str) -> bool:
         return False
     r = _run_tmux("kill-session", "-t", _tmux_session_name(session_id), text=True)
     return r is not None and r.returncode == 0
-
-
-# ---- claude プロセス調査ヘルパ (= jsonl_watcher.register_pending への入力収集) ----
-
-def _tmux_pane_pids(session_id: str) -> list[int]:
-    if not USE_TMUX_WRAP:
-        return []
-    r = _run_tmux("list-panes", "-t", _tmux_session_name(session_id), "-F", "#{pane_pid}", text=True)
-    if r is None or r.returncode != 0:
-        return []
-    return [int(s) for s in r.stdout.split() if s.strip().isdigit()]
-
-
-def _find_claude_descendant(root_pid: int, max_depth: int = 6) -> int | None:
-    """BFS で子孫プロセスを辿り、 ps の comm の basename が 'claude' のものを返す。"""
-    queue: list[tuple[int, int]] = [(root_pid, 0)]
-    while queue:
-        pid, depth = queue.pop(0)
-        if depth >= max_depth:
-            continue
-        try:
-            result = subprocess.run(
-                ["pgrep", "-P", str(pid)],
-                capture_output=True, text=True, timeout=2,
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            continue
-        if result.returncode != 0:
-            continue
-        for child_str in result.stdout.split():
-            child_str = child_str.strip()
-            if not child_str.isdigit():
-                continue
-            child_pid = int(child_str)
-            try:
-                ps = subprocess.run(
-                    ["ps", "-p", str(child_pid), "-o", "comm="],
-                    capture_output=True, text=True, timeout=2,
-                )
-            except (subprocess.TimeoutExpired, OSError):
-                continue
-            comm = ps.stdout.strip()
-            if comm and Path(comm).name == "claude":
-                return child_pid
-            queue.append((child_pid, depth + 1))
-    return None
-
-
-def _process_start_time(pid: int) -> float | None:
-    """`ps -o lstart=` で取得した起動時刻文字列を unix epoch に変換。"""
-    try:
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "lstart="],
-            capture_output=True, text=True, timeout=2,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-    s = result.stdout.strip()
-    if not s:
-        return None
-    # macOS lstart 形式: "Sun May 24 20:24:00 2026"
-    try:
-        return time.mktime(time.strptime(s, "%a %b %d %H:%M:%S %Y"))
-    except ValueError:
-        return None
-
-
-def _process_cwd(pid: int) -> str | None:
-    """lsof で cwd エントリを取得。 macOS は /proc が無いので lsof 経由。"""
-    try:
-        result = subprocess.run(
-            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
-            capture_output=True, text=True, timeout=2,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-    for line in result.stdout.split("\n"):
-        if line.startswith("n"):
-            return line[1:]
-    return None
 
 
 def jsonl_path_for_session(session_id: str) -> Path | None:

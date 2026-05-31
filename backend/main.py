@@ -146,7 +146,8 @@ async def lifespan(app: FastAPI):
     jsonl_watcher.start_watcher()
     # 既存 tmux session (= backend 再起動跨ぎ) の claude プロセスを registry に登録
     for sid in list(sessions_meta.keys()):
-        _asyncio.create_task(pty_runner._register_claude_when_ready(sid))
+        from pty_discover import register_claude_when_ready as _rcwr  # noqa: PLC0415
+        _asyncio.create_task(_rcwr(sid))
 
     # uploads/tmp: 起動時 sweep + 1 時間ごとの定期 GC (= 無停止運用でも溜め続けない)
     _prune_uploads_tmp()
