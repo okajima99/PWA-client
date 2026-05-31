@@ -49,11 +49,9 @@ Claude Code をスマートフォンから操作するための PWA クライア
 - バックエンドは Mac 上で常駐し、 `claude` CLI を**実 PTY (= 疑似端末) + tmux で対話起動**する。
   claude が書く会話ログ (JSONL) を backend が tail して SSE でチャット UI に流し、 入力は
   tmux 経由でそのセッションへ送る (= 出力 = JSONL tail、 入力 = キー送出 に分離した設計)
-- **`claude -p` / `--print` ・ Agent SDK ・ API プロキシは一切使わない**。 ターミナルで直接
-  `claude` を打つのと区別できない first-party な対話セッションとして動かすことで、 3rd-party
-  programmatic ツール判定による使用量ペナルティを構造的に回避する (= 旧 SDK + proxy 経路は
-  この判定で素の数倍の subscription budget を消費していた。 経緯と実測は
-  `docs/pty-migration.md` / `docs/penalty-baseline.md` を参照)
+- backend は `claude` CLI を **実 PTY (= 疑似端末) + tmux で対話起動**するだけで、 SDK や
+  `--print` 等の非対話モードは経由しない。 ターミナルで `claude` を打つ時とまったく同じ
+  起動経路 (= TUI 形式) で動かしている
 - **手元の Claude Code サブスクリプション (= Pro / Max) でそのまま使える** — 別途 API キーや
   API 従量課金は不要 (= claude CLI 自身の認証経路をそのまま使うため)
 - iPhone / Android からは Tailscale 経由で Mac の HTTPS にアクセス
@@ -147,7 +145,73 @@ backend は app 内で `RotatingFileHandler` を組んでるので、 上の `St
 / `logs/backend.error.log` に 5MB × 3 世代で自動 rotate される (= 長期運用しても
 ディスクを食い続けない)。
 
-Windows なら NSSM や Task Scheduler、 Linux なら systemd user service で同等のことを。
+Linux なら systemd user service で同等のことを。 Windows は WSL2 で動かす想定で、
+セットアップ手順は下記の **Windows (WSL2)** 節を参照。
+
+#### Windows (WSL2)
+
+backend は POSIX 前提 (= PTY / tmux / lsof) なので Windows native では動かない。 Windows で
+使う場合は **WSL2 (Ubuntu) の中で Linux backend を動かす**のが素直。 frontend は Windows 側
+ブラウザでそのまま開ける (= Tailscale 経由)。
+
+1. **WSL2 を入れる** (PowerShell を管理者で開いて 1 コマンド):
+   ```powershell
+   wsl --install -d Ubuntu
+   ```
+   再起動後に Ubuntu が立ち上がるので、 ユーザを作成する。
+
+2. **Ubuntu 内でセットアップ** (= 上記 macOS 手順とほぼ同じ、 `brew` の代わりに `apt`):
+   ```bash
+   sudo apt update
+   sudo apt install -y python3 python3-venv python3-pip nodejs npm tmux git curl
+   # claude CLI を install (公式手順に従う)
+   # https://docs.claude.com/en/docs/claude-code
+   ```
+
+3. **リポを clone + backend / frontend をセットアップ** (= Path A の macOS 例と同手順):
+   ```bash
+   git clone https://github.com/<your-handle>/claude-pwa-client.git
+   cd claude-pwa-client
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install -r backend/requirements.txt
+   cp backend/config.example.json backend/config.json
+   # config.json を編集 (claude_path は `which claude` の結果に揃える)
+   python backend/gen_vapid.py
+   (cd frontend && npm install && npm run build)
+   ```
+
+4. **自動起動は systemd user service で** (`~/.config/systemd/user/claudepwa.service`):
+   ```ini
+   [Unit]
+   Description=Claude PWA backend
+
+   [Service]
+   WorkingDirectory=%h/claude-pwa-client
+   ExecStart=/bin/bash -lc 'source .venv/bin/activate && exec uvicorn backend.main:app --host 0.0.0.0 --port 8000'
+   Restart=always
+
+   [Install]
+   WantedBy=default.target
+   ```
+   有効化:
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now claudepwa.service
+   # Ubuntu を閉じても backend を残す:
+   loginctl enable-linger $USER
+   ```
+
+5. **Tailscale を WSL2 に直接入れる** (= tailnet に WSL Linux 環境として参加させる):
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh
+   sudo tailscale up
+   sudo tailscale serve --bg http://localhost:8000
+   ```
+   これで `https://<wsl-host>.tail<xxxx>.ts.net/` が backend を指す。 Windows 側にも
+   Tailscale を入れて同 tailnet に参加させれば、 Windows のブラウザ・スマホからも繋がる。
+
+   (補足: WSL2 の network mode を「mirrored」 にすれば Windows ホストの Tailscale を共有
+   できるが、 設定が増えるので「WSL 内に直接 Tailscale」 の方が単純で安定。)
 
 #### スマホから接続
 

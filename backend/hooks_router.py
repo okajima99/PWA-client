@@ -1,14 +1,13 @@
-"""claude CLI hooks の受信エンドポイント (= phase 5 Web Push 接続経路)。
+"""claude CLI hooks の受信エンドポイント (= Web Push 接続経路)。
 
 claude CLI は `~/.claude/settings.json` の `hooks` 配下に登録された command を、
 イベント発生時に shell で起動し、 JSON payload を stdin で渡す
-(= docs/pty-migration.md §10.2、 https://code.claude.com/docs/en/hooks)。
+(= https://code.claude.com/docs/en/hooks)。
 
 設定側 (= ユーザ環境) で `Stop` / `Notification` 等の hook に
     curl -sS -X POST http://localhost:8000/hooks/event --data-binary @-
-を仕込めば、 本エンドポイントが受け取って Web Push に翻訳する。 これにより
-PTY 経路 (= penalty 回避) で動かしてる claude でも、 turn 完了 / 通知ダイアログ
-等の契機を PWA 側に届けられる。
+を仕込めば、 本エンドポイントが受け取って Web Push に翻訳する。 PTY 経由で動かしてる
+claude でも、 turn 完了 / 通知ダイアログ等の契機を PWA 側に届けられる。
 
 session_id 解決:
     claude payload の `session_id` は claude 内部の uuid であり PWA session

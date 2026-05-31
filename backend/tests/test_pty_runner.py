@@ -37,7 +37,7 @@ def restore_env():
 
 
 def test_spawn_rejects_anthropic_base_url(restore_env):
-    """ANTHROPIC_BASE_URL が親 env に残ってたら起動拒否 (= penalty trigger 防御)。"""
+    """ANTHROPIC_BASE_URL が親 env に残ってたら起動拒否 (= proxy 経由を防ぐ)。"""
     os.environ["ANTHROPIC_BASE_URL"] = "http://localhost:8000/proxy"
     with pytest.raises(RuntimeError, match="ANTHROPIC_BASE_URL"):
         asyncio.run(pty_runner.spawn_pty_session("test-rejects-base-url"))

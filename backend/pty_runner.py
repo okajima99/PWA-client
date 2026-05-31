@@ -1,12 +1,13 @@
 """PTY-attached claude CLI runner.
 
-`claude` を実 pseudo-terminal で起動し、 terminal 直叩きと区別不能な経路にする。
-これにより Anthropic の 3rd-party programmatic penalty を回避する (= docs/pty-migration.md §1.3)。
+`claude` を実 pseudo-terminal + tmux で起動し、 ターミナルで `claude` を打つ時とまったく
+同じ起動経路 (= TUI 形式) で動かす。 backend は SDK や `--print` 等の非対話モードを経由
+しない。
 
-絶対制約 (= penalty 回避の必要条件、 全て守る):
+経路上の不変条件 (= TUI 形式を保つために守る):
     - claude-agent-sdk を import / 経由しない
     - ANTHROPIC_BASE_URL を子 env に渡さない (= 親 env にも設定されてないことを起動時確認)
-    - --print / --output-format / --input-format / --permission-mode 等 programmatic 印を渡さない
+    - --print / --output-format / --input-format / --permission-mode 等の非対話フラグを渡さない
     - slave fd を子の stdin/stdout/stderr に dup して、 子で isatty() True
     - bypassPermissions 系の flag を渡さない (= default interactive)
 
@@ -134,7 +135,7 @@ async def spawn_pty_session(
     """claude を PTY 経由で起動して PtySession を返す。
 
     起動時 sanity check: ANTHROPIC_BASE_URL が親 env に残ってたら起動を拒否。
-    残ってると子 claude が proxy 経由になって penalty trigger を踏む。
+    残ってると子 claude が proxy 経由に切り替わり TUI 形式が崩れる。
 
     `launch_alias` 指定時、 tmux session を**新規**作成する場合に限り、 zsh prompt が
     出るのを少し待ってから `tmux send-keys` でその alias + Enter を流す。 これでタブ
@@ -155,7 +156,7 @@ async def spawn_pty_session(
     master_fd, slave_fd = pty.openpty()
     _set_winsize(master_fd, initial_rows, initial_cols)
 
-    # 子 env: 親をそのまま継承、 ただし penalty trigger になりうる変数は明示的に剥がす
+    # 子 env: 親をそのまま継承、 ただし proxy 経由に切り替わる変数は明示的に剥がす
     child_env = dict(os.environ)
     for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_URL"):
         child_env.pop(var, None)
@@ -193,7 +194,7 @@ async def spawn_pty_session(
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
-            # programmatic 印になる引数は一切渡さない
+            # 非対話モード (= --print 等) になる引数は一切渡さない
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,
