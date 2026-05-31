@@ -146,6 +146,20 @@ def test_is_user_prompt_true_for_real_text():
     assert jr._is_user_prompt({"type": "user", "message": {"content": [{"type": "text", "text": "hi"}]}}) is True
 
 
+def test_is_user_prompt_false_for_harness_xml():
+    """claude TUI が user 行として書く harness XML (slash command / shell stdout 等) を
+    ユーザ発話扱いしない (= ターミナルで /clear や ls 等を打っただけで busy が立つ事象を防ぐ)。"""
+    # 文字列 content (slash command)
+    assert jr._is_user_prompt(_user("<command-name>/clear</command-name>")) is False
+    assert jr._is_user_prompt(_user("<command-message>clear</command-message>")) is False
+    assert jr._is_user_prompt(_user("<command-args>sonnet</command-args>")) is False
+    assert jr._is_user_prompt(_user("<local-command-stdout>foo</local-command-stdout>")) is False
+    assert jr._is_user_prompt(_user("<local-command-stderr>err</local-command-stderr>")) is False
+    # list content (text block で同じ XML)
+    line = {"type": "user", "message": {"content": [{"type": "text", "text": "<command-name>/clear</command-name>"}]}}
+    assert jr._is_user_prompt(line) is False
+
+
 def test_is_user_prompt_false_for_tool_result_and_meta():
     # tool_result の user 行 (content が list で text 無し) は除外
     assert jr._is_user_prompt({"type": "user", "message": {"content": [{"type": "tool_result", "content": "r"}]}}) is False

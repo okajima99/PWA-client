@@ -194,17 +194,31 @@ def _parse_jsonl_timestamp(ts: str | None) -> float | None:
 
 def _is_user_prompt(line: dict) -> bool:
     """素プロンプト (= 実ユーザ発言の user 行) か。 tool_result の user 行 (= content が
-    list で type=tool_result) や isMeta / isSidechain は除外する。"""
+    list で type=tool_result) や isMeta / isSidechain は除外する。
+
+    さらに claude TUI が user 行として書く harness 内部表現
+    (= `<command-name>/clear</command-name>` / `<local-command-stdout>...</local-command-stdout>`
+    等。 ターミナルから slash command や shell コマンドを打った時に発生) も除外する。
+    これらをユーザ発話扱いすると、 チャットに何も送ってないのに busy=True が立って停止ボタンが
+    アクティブになる事象を引き起こす (2026-05-31 修正)。 harness XML 検出は jsonl_events と
+    共通化 (= 同じ regex を 2 箇所で持つと判定がズレるため)。"""
     if line.get("type") != "user" or line.get("isSidechain") or line.get("isMeta"):
         return False
+    from jsonl_events import HARNESS_XML_RE
     content = (line.get("message") or {}).get("content")
     if isinstance(content, str):
-        return bool(content.strip())
+        s = content.strip()
+        if not s:
+            return False
+        return not HARNESS_XML_RE.match(s)
     if isinstance(content, list):
-        return any(
-            isinstance(b, dict) and b.get("type") == "text" and (b.get("text") or "").strip()
-            for b in content
-        )
+        for b in content:
+            if not isinstance(b, dict) or b.get("type") != "text":
+                continue
+            t = (b.get("text") or "").strip()
+            if t and not HARNESS_XML_RE.match(t):
+                return True
+        return False
     return False
 
 

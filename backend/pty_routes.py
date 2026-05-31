@@ -40,11 +40,9 @@ from pty_runner import (
 from state import sessions_meta
 
 
-# 素プロンプト (= ユーザ発言の user 行) 判定用の harness XML プレフィックス。
-# /clear や local-command-* の内部表現は ユーザ発言ではないので除外する。
-_HARNESS_RE = re.compile(
-    r"^\s*<(command-name|command-message|command-args|local-command-[a-z-]+)\b"
-)
+# 素プロンプト判定用の harness XML 検出 regex は jsonl_events と共通 (= 同じ regex を別々の
+# 場所に持つと判定がズレてバグを呼ぶ。 2026-05-31 統一)。
+from jsonl_events import HARNESS_XML_RE as _HARNESS_RE  # noqa: E402
 
 # slash command (= /deep-research, /clear 等) 専用の送信確認マーカー。 claude は slash
 # command を `<command-name>/xxx</command-name>` の user 行として JSONL に書くので、 素

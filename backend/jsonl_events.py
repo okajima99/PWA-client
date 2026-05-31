@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import re
 
-# claude が JSONL の user 行に書く harness 内部表現を検出するための regex。
-# 該当行はユーザ発話ではないので chat には出さない。
+# claude が JSONL の user 行に書く harness 内部表現を検出するための regex (= 公開)。
+# 該当行はユーザ発話ではないので chat には出さない + busy 判定でも除外する
+# (jsonl_routes._is_user_prompt が import して使う)。
 # 既知パターン (= 2026-05-24 実機 dump で確認):
 #   <command-name>/clear</command-name>           ← slash command 起動
 #   <command-message>clear</command-message>      ← 上記の続き
@@ -26,9 +27,11 @@ import re
 #   <local-command-stdout>...ANSI...</local-command-stdout>  ← slash command の応答
 #   <local-command-stderr>...</local-command-stderr>         ← 上記の error 版 (将来用)
 # 後発の `<local-command-*>` を catch-all で潰すため、 prefix で広めに wildcard 一致。
-_HARNESS_XML_RE = re.compile(
+HARNESS_XML_RE = re.compile(
     r"^\s*<(command-name|command-message|command-args|local-command-[a-z-]+)\b"
 )
+# 後方互換 (旧 module-private 名)。 新規参照は HARNESS_XML_RE を使う。
+_HARNESS_XML_RE = HARNESS_XML_RE
 
 
 def jsonl_line_to_events(line: dict) -> list[dict]:
