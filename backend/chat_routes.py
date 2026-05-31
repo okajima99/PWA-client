@@ -156,7 +156,6 @@ def _build_status(session_id: str) -> dict:
         "subagent": a["subagent"],
         "pending_plan": a.get("pending_plan"),
         "pending_question": a.get("pending_question"),
-        "pending_prompt": a.get("pending_prompt"),
         "five_hour_pct": rl["five_hour_pct"] if rl.get("five_hour_pct") is not None else shared_status["five_hour_pct"],
         "seven_day_pct": rl["seven_day_pct"] if rl.get("seven_day_pct") is not None else shared_status["seven_day_pct"],
         "five_hour_resets_at": rl.get("five_hour_resets_at") or shared_status["five_hour_resets_at"],
@@ -262,79 +261,7 @@ def list_agents():
     ]
 
 
-# --- session 別 model / effort 切替 ---
-# 4.8 で追加された値: "auto" (= 内容に応じて effort 自動調整) / "ultracode" (= xhigh +
-# auto workflow セット)。 実機で `/effort <値>` が通るかは別途確認 (= 通らなければ claude が
-# 未知コマンドとして無視するだけ)。
-ALLOWED_EFFORTS = {"low", "medium", "high", "xhigh", "max", "auto", "ultracode"}
-
-
-@router.get("/sessions/{session_id}/config")
-def get_session_config(session_id: str, _: str = Depends(require_session)):
-    """session の model / effort 上書き値を返す (= 未設定なら null)。
-    UI が現在の選択を表示するため。"""
-    state = stream_states[session_id]
-    cfg = AGENTS.get(state.agent_id) or {}
-    return {
-        "model": state.model_override,
-        "effort": state.effort_override,
-        "fast": state.fast_mode,
-        "default_model": cfg.get("model"),
-        "default_effort": "medium",
-    }
-
-
-@router.patch("/sessions/{session_id}/config")
-async def patch_session_config(session_id: str, payload: dict = Body(...), _: str = Depends(require_session)):
-    """session の model / effort 上書きを更新する。 None / 未指定で「デフォルトに戻す」。
-    PTY 経路では state 値だけでなく claude TUI に slash command を流して
-    実切替まで完遂する (= `/model <name>` / `/effort <level>`)。"""
-    state = stream_states[session_id]
-    # 推論中の切替ガードは設けない。 claude TUI 側で「推論中の /model」 が効かなければ
-    # tmux send-keys が黙って吸われるだけ (= UI 上は変えたつもりで実切替されない)、
-    # ユーザが完了後に再試行する想定。
-    changed_model = False
-    changed_effort = False
-    changed_fast = False
-    if "model" in payload:
-        m = payload["model"]
-        if m is not None and not isinstance(m, str):
-            raise HTTPException(status_code=400, detail="model は文字列か null")
-        if state.model_override != m:
-            state.model_override = m or None
-            changed_model = True
-    if "effort" in payload:
-        e = payload["effort"]
-        if e is not None:
-            if not isinstance(e, str) or e not in ALLOWED_EFFORTS:
-                raise HTTPException(status_code=400, detail=f"effort は {ALLOWED_EFFORTS} のいずれか or null")
-        if state.effort_override != e:
-            state.effort_override = e or None
-            changed_effort = True
-    if "fast" in payload:
-        # `/fast` はトグル (= 引数なしで ON⇄OFF 反転)。 PWA が持つ希望状態と現状が食い違う
-        # 時だけ 1 回打って同期する。 2 連打すると ON→OFF に戻ってしまうので差分判定必須。
-        f = bool(payload["fast"])
-        if state.fast_mode != f:
-            state.fast_mode = f
-            changed_fast = True
-    # PTY 経路: claude TUI に slash command を tmux send-keys で投入する (= 実切替)。
-    # 失敗 (= tmux session が無い、 claude TUI が引数取らない、 等) でも 200 で返す:
-    # state の override 値は更新されてるので UI 表示は新値、 ユーザが必要なら再試行する。
-    from pty_runner import tmux_send_keys
-    if changed_model and state.model_override:
-        tmux_send_keys(session_id, text=f"/model {state.model_override}", enter=True)
-    if changed_effort and state.effort_override:
-        # claude TUI に `/effort <level>` コマンドが存在するかは要実機確認 (= 公式 docs に
-        # 明示記載なし)。 存在しない場合は claude が「未知コマンド」 として無視する、
-        # その時は実装側で対応案を再検討する。
-        tmux_send_keys(session_id, text=f"/effort {state.effort_override}", enter=True)
-    if changed_fast:
-        # `/fast` は引数なしのトグル。 差分時のみ 1 回打鍵 (= 上の差分判定で担保)。
-        tmux_send_keys(session_id, text="/fast", enter=True)
-    return {
-        "ok": True,
-        "model": state.model_override,
-        "effort": state.effort_override,
-        "fast": state.fast_mode,
-    }
+# 旧: session 別 model / effort / fast 切替 endpoint (= ⋯ メニューの ModelEffortPicker
+# 用)。 2026-05-31 撤去。 設計方針「制御はターミナル」 に揃え、 切替はターミナルから
+# `/model <name>` `/effort <level>` `/fast` を直打ちする (= picker で切替えても結局
+# 切替確認プロンプトが出てターミナル操作が要る、 多くの場合 default 固定で十分)。

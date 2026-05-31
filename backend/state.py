@@ -143,13 +143,6 @@ class StreamState:
     agent_id: str = ""  # どの AGENTS 設定 (cwd / notification_title) を参照するか
     # AskUserQuestion の回答待ち tool_use id (= /status payload に載せる)。
     pending_question_tool_id: str | None = None
-    # session 別 model / effort 上書き。 None なら AGENTS 設定 + env デフォルトを使う。
-    # PATCH /sessions/{id}/config で更新 → claude TUI に /model /effort を send-keys。
-    model_override: str | None = None
-    effort_override: str | None = None  # low | medium | high | xhigh | max | auto | ultracode
-    # `/fast` トグルの希望状態 (= 2.5x 速 / 1/3 価格)。 PATCH /config で差分時のみ `/fast` 打鍵。
-    # claude プロセス側の真の状態は backend からは観測できないので PWA 起動時は OFF 基準に揃える。
-    fast_mode: bool = False
     # 状態変化シグナル (= /status/{sid}/stream SSE が wait する event)。
     # current_tool 変化 / todos 更新等 (= hooks / jsonl 経路) で set、 SSE 受信側は
     # 現状 status JSON を yield して event.clear() する。 backend→frontend を即時 push。
@@ -183,11 +176,6 @@ def _make_agent_status(agent_id: str) -> dict:
         # 無いので None で立て、 JSONL の AskUserQuestion tool_use 行で補完する。
         # {tool_use_id: str|None, questions: [...]} または None
         "pending_question": None,
-        # 番号待ち TUI プロンプト (= モデル切替確認 / survey / 許可 等、 Stop でも
-        # AskUserQuestion でもないやつ)。 prompt_watch が capture-pane で検出して立て、
-        # プロンプトが消えたら落とす。 ターミナルに切り替えなくても「何を聞かれてるか」 を
-        # チャットに出すため。 {question: str, options: [{key,label}], text: str} または None
-        "pending_prompt": None,
     }
 
 

@@ -31,7 +31,6 @@ import { setBadge } from './utils/badge.js'
 import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
 import ChatInput from './components/ChatInput.jsx'
-import ModelEffortPicker from './components/ModelEffortPicker.jsx'
 // session 削除後の IndexedDB orphan 画像掃除を遅延する時間 (= setMessages の state 反映を待つ)。
 const IMAGE_GC_AFTER_DELETE_MS = 300
 // 起動時の初回 GC 遅延 (= localStorage 復元 + 初期 fetch の messages 確定を待つ)。
@@ -219,13 +218,9 @@ export default function App() {
   const isPendingSend = !!(activeSid && (pendingSendUntilRef.current[activeSid] || 0) > now)
   // AskUserQuestion 回答待ち (= pending_question) 中も停止ボタンにする。 質問が出てる間に
   // メッセージボックスから通常メッセージを誤送信させない (= 送信は質問バブルの UI 経由のみ)。
-  // ただし pending_prompt (= 番号待ち TUI プロンプト) 中は逆に「送信ボタン」 を出す: claude は
-  // 待ち状態で、 ユーザは入力欄に番号を打って答える必要があるため (loading が stale で true の
-  // まま残ってても、 プロンプトが出てる = 待ち確定なので停止表示を上書きして送信を出す)。
   const showStopButton = !!(
     activeSid
     && (loading[activeSid] || isPendingSend || status?.pending_question)
-    && !status?.pending_prompt
   )
 
   // SW からの「push-received」 メッセージで即座に fetchLatest を発火させる。
@@ -309,52 +304,6 @@ export default function App() {
     markAsSeen(sid)
   }, [setActiveId, markAsSeen])
 
-  // session ごとの model / effort 上書き設定 (= ⋯ メニュー → Model & Effort ダイアログで切替)。
-  // backend が返す default_model / default_effort は override 未設定時の表示用。
-  // 推論中 (= loading[activeSid]) は backend が 409 で弾く + UI 側でも disable。
-  const [sessionConfig, setSessionConfig] = useState({
-    model: null, effort: null, fast: false, defaultModel: null, defaultEffort: null,
-  })
-  const [pickerOpen, setPickerOpen] = useState(null) // null | 'config'
-  useEffect(() => {
-    if (!activeSid) {
-      setSessionConfig({ model: null, effort: null, fast: false, defaultModel: null, defaultEffort: null })
-      return
-    }
-    let cancelled = false
-    apiFetch(`/sessions/${activeSid}/config`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (!d || cancelled) return
-        setSessionConfig({
-          model: d.model, effort: d.effort, fast: !!d.fast,
-          defaultModel: d.default_model, defaultEffort: d.default_effort,
-        })
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [activeSid])
-  const patchSessionConfig = useCallback(async (patch) => {
-    if (!activeSid) return
-    try {
-      const res = await apiFetch(`/sessions/${activeSid}/config`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      })
-      if (res.ok) {
-        const d = await res.json()
-        setSessionConfig(prev => ({ ...prev, model: d.model, effort: d.effort, fast: !!d.fast }))
-      }
-    } catch { /* ignore */ }
-  }, [activeSid])
-
-  // override 値が無ければ backend が返した default を ✓ 位置に使う。
-  const activeModel = sessionConfig.model ?? sessionConfig.defaultModel
-  const activeEffort = sessionConfig.effort ?? sessionConfig.defaultEffort
-  const activeFast = !!sessionConfig.fast
-  const configDisabled = !!(activeSid && loading[activeSid])
-
   const displayMessages = useMemo(() => {
     if (!activeSid) return []
     // 直近 N 件のみ render する。 古い履歴は state / localStorage には残っているが DOM に
@@ -368,11 +317,7 @@ export default function App() {
     // 回答後は JSONL flush で本物の回答済みバブルが messages に入り、 同時に backend が
     // pending_question を clear するので、 このライブバブルは自然に消える。
     const pq = status?.pending_question
-    // 番号待ち TUI プロンプト (= モデル切替確認 / survey / 許可 等)。 ターミナルに切り替え
-    // なくても「何を聞かれてるか」 が分かるよう、 chat 末尾にバブルとして差し込む。 番号は
-    // ユーザが普通に入力欄から送って回答する (= タップ式バブルは作らない方針)。
-    const pp = status?.pending_prompt
-    const base = (loading[activeSid] && !msgs.some(m => m.streaming) && !pq && !pp)
+    const base = (loading[activeSid] && !msgs.some(m => m.streaming) && !pq)
       ? [...msgs, { id: '__loading__', role: '__loading__' }]
       : msgs
     if (pq) {
@@ -390,18 +335,8 @@ export default function App() {
         },
       }]
     }
-    if (pp) {
-      return [...base, {
-        id: '__pending_prompt__',
-        role: 'agent',
-        text: '',
-        tools: [],
-        streaming: false,
-        pendingPrompt: pp,
-      }]
-    }
     return base
-  }, [messages, loading, activeSid, status?.pending_question, status?.pending_prompt])
+  }, [messages, loading, activeSid, status?.pending_question])
 
   const handleEndSession = () => {
     setMenuOpen(false)
@@ -603,40 +538,13 @@ export default function App() {
           onOpenTree={() => setTreeOpen('~')}
           activeViewMode={activeViewMode}
           onToggleView={() => { if (activeSid) setViewModes(prev => ({ ...prev, [activeSid]: flippedViewMode })) }}
-          onOpenPicker={() => setPickerOpen('config')}
           onEndSession={() => setConfirmEnd(true)}
           showStopButton={showStopButton}
           onStop={() => setConfirmStop(true)}
-          onSend={() => {
-            // 番号待ち TUI プロンプト表示中に、 その選択肢番号を送ったら、 メッセージでなく
-            // 生キー (= Enter 無し) で TUI に流す (= survey/モデル切替確認 等は数字キー押下で
-            // 答えるもので、 text+Enter だとメッセージとして貫通してしまうため)。
-            const pp = status?.pending_prompt
-            const txt = (input[activeSid] || '').trim()
-            if (pp && activeSid && /^\d+$/.test(txt) && (pp.options || []).some(o => o.key === txt)) {
-              apiFetch(`/pty/${encodeURIComponent(activeSid)}/send`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: txt, enter: false }),
-              }).catch(() => {})
-              setInput(prev => ({ ...prev, [activeSid]: '' }))
-              return
-            }
-            sendMessage()
-          }}
+          onSend={() => sendMessage()}
           currentAttachments={currentAttachments}
         />
       )}
-
-      <ModelEffortPicker
-        open={pickerOpen === 'config' && !!activeSid}
-        model={activeModel}
-        effort={activeEffort}
-        fast={activeFast}
-        disabled={configDisabled}
-        onPick={patchSessionConfig}
-        onClose={() => setPickerOpen(null)}
-      />
 
       {/* claude が ExitPlanMode で出した承認プロンプトを overlay として表示。
           backend がアクティブ session の agent_status.pending_plan を SSE で流す。 */}

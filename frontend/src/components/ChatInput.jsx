@@ -16,7 +16,6 @@ export default function ChatInput({
   onOpenTree,
   activeViewMode,
   onToggleView,
-  onOpenPicker,
   onEndSession,
   showStopButton,
   onStop,
@@ -56,14 +55,6 @@ export default function ChatInput({
             >
               {activeViewMode === 'terminal' ? '💬 チャットで表示' : '⌨ ターミナルで表示'}
             </button>
-            {activeSession && (
-              <button
-                className="menu-item"
-                onClick={() => { onOpenPicker(); setMenuOpen(false) }}
-              >
-                Model & Effort
-              </button>
-            )}
             <button
               onClick={() => { setMenuOpen(false); onEndSession() }}
               className="menu-item end"
