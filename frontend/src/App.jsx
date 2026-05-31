@@ -29,7 +29,7 @@ import {
 } from './hooks/useAppEffects.js'
 import { setBadge } from './utils/badge.js'
 import { gcImages } from './utils/imageStore.js'
-import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
+import { usePushSubscription } from './hooks/usePushSubscription.js'
 import ChatInput from './components/ChatInput.jsx'
 // session 削除後の IndexedDB orphan 画像掃除を遅延する時間 (= setMessages の state 反映を待つ)。
 const IMAGE_GC_AFTER_DELETE_MS = 300
@@ -361,29 +361,10 @@ export default function App() {
     }, IMAGE_GC_AFTER_DELETE_MS)
   }
 
-  // Web Push
-  const [pushEnabled, setPushEnabled] = useState(() => isPushEnabledLocally())
-  const [pushBusy, setPushBusy] = useState(false)
-  const pushAvailable = isPushSupported() && isStandalone()
-
-  const handleTogglePush = async () => {
-    if (pushBusy) return
-    setPushBusy(true)
-    setMenuOpen(false)
-    try {
-      if (pushEnabled) {
-        await disablePush()
-        setPushEnabled(false)
-      } else {
-        await enablePush()
-        setPushEnabled(true)
-      }
-    } catch (e) {
-      alert(e?.message || '通知設定の変更に失敗しました')
-    } finally {
-      setPushBusy(false)
-    }
-  }
+  // Web Push 購読状態 (= 環境制約・トグル・連打防止) は専用 hook に集約。
+  const { pushEnabled, pushBusy, pushAvailable, handleTogglePush } = usePushSubscription({
+    onCloseMenu: () => setMenuOpen(false),
+  })
 
   // IndexedDB 画像の orphan GC: 起動時 1 回 + セッション削除トリガで増分掃除。
   // dep は [] でよい (= 起動時 1 回しか走らせない、 起動から 5 秒待って messages 確定後に実行)。
