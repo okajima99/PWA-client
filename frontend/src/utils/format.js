@@ -252,6 +252,55 @@ export function formatTool(block) {
       label = `stop background task ${tid}`
       break
     }
+    case 'TaskCreate': {
+      // input: { subject, description, activeForm } (= セッション TODO の登録)
+      const subj = input?.subject ?? ''
+      shortLabel = `📋 +task: ${truncate(subj, SHORT_LABEL_MAX - 9)}`
+      const lines = [`create task: ${subj}`]
+      if (input?.description) lines.push('', input.description)
+      label = lines.join('\n')
+      break
+    }
+    case 'TaskUpdate': {
+      // input: { taskId, status?, subject?, ... }
+      const tid = input?.taskId ?? '?'
+      const st = input?.status
+      shortLabel = st ? `📋 task ${tid} → ${st}` : `📋 task ${tid} update`
+      const lines = [`update task ${tid}`]
+      if (st) lines.push(`status: ${st}`)
+      if (input?.subject) lines.push(`subject: ${input.subject}`)
+      if (input?.description) lines.push('', input.description)
+      label = lines.join('\n')
+      break
+    }
+    case 'TaskGet': {
+      shortLabel = `📋 task get: ${input?.taskId ?? '?'}`
+      label = `get task ${input?.taskId ?? '?'}`
+      break
+    }
+    case 'TaskList': {
+      const filt = input?.status ? ` (status=${input.status})` : ''
+      shortLabel = `📋 task list${filt}`
+      label = `list tasks${filt}`
+      break
+    }
+    case 'ToolSearch': {
+      // input: { query, max_results } (= deferred tool のスキーマ取得)
+      const q = input?.query ?? ''
+      shortLabel = `🔎 tool search: ${truncate(q, SHORT_LABEL_MAX - 16)}`
+      label = `tool search: ${q}` + (input?.max_results ? `\nmax_results: ${input.max_results}` : '')
+      break
+    }
+    case 'Workflow': {
+      // input: { script?, scriptPath?, name?, args? }。 script は巨大な JS なので出さず、
+      // 予定義名 / scriptPath を出す (= inline script は名前が無いので汎用表記)。
+      const wfName = input?.name || input?.scriptPath || '(inline script)'
+      shortLabel = `🔀 workflow: ${truncate(wfName, SHORT_LABEL_MAX - 12)}`
+      const lines = [`workflow: ${wfName}`]
+      if (input?.args !== undefined) lines.push('', 'args:', JSON.stringify(input.args, null, 2))
+      label = lines.join('\n')
+      break
+    }
     case 'ShareOnboardingGuide': {
       const mode = input?.mode || 'check'
       shortLabel = `📤 share onboarding (${mode})`
